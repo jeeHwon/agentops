@@ -198,7 +198,7 @@ def _agent_readme(agent_id: str) -> str:
         1. Agent 폴더에서 구조와 Skill을 검증합니다.
 
            ```bash
-           codex-agentops validate
+           aops validate
            ```
 
         2. 일반 Codex를 실행합니다.
@@ -213,7 +213,7 @@ def _agent_readme(agent_id: str) -> str:
         6. `RelevanceToQuery`, `Safety`, `Completeness` Feedback을 확인합니다. 이 평가는 백그라운드에서 실행되므로 Trace보다 늦게 표시될 수 있습니다.
         7. 결과를 기준으로 `spec.md`, `AGENTS.md`, `SKILL.md`를 수정하고 같은 절차로 다시 테스트합니다.
 
-        각 Turn은 종료 즉시 업로드되므로 Codex 세션을 종료할 필요가 없습니다. 전송 실패 상태는 `codex-agentops status`로 확인하고 `codex-agentops flush`로 다시 전송할 수 있습니다.
+        각 Turn은 종료 즉시 업로드되므로 Codex 세션을 종료할 필요가 없습니다. 전송 실패 상태는 `aops status`로 확인하고 `aops flush`로 다시 전송할 수 있습니다.
 
         ## 파일별 역할
 

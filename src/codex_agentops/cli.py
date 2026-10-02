@@ -30,9 +30,13 @@ from .paths import outbox_path
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="codex-agentops", description="Codex AgentOps CLI")
+    parser = argparse.ArgumentParser(prog="aops", description="Codex AgentOps CLI")
     parser.add_argument("--version", action="version", version=__version__)
-    commands = parser.add_subparsers(dest="command", required=True)
+    commands = parser.add_subparsers(
+        dest="command",
+        required=True,
+        metavar="{configure,init,validate,doctor,status,flush}",
+    )
 
     configure = commands.add_parser("configure", help="Databricks Profile을 선택하고 MLflow를 검증합니다")
     configure.add_argument("--profile", help="사용자가 선택한 Databricks CLI Profile")
@@ -62,13 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     flush = commands.add_parser("flush", help="전송 대기 Trace를 다시 업로드합니다")
     flush.add_argument("--limit", type=int, default=100)
 
-    commands.add_parser("_hook", help=argparse.SUPPRESS)
-    upload = commands.add_parser("_upload", help=argparse.SUPPRESS)
+    commands.add_parser("_hook")
+    upload = commands.add_parser("_upload")
     upload.add_argument("--limit", type=int, default=100)
     upload.add_argument("--wait-for-usage", type=float, default=0)
-    commands.add_parser("_collector", help=argparse.SUPPRESS)
-    commands.add_parser("_remove-otel-config", help=argparse.SUPPRESS)
-    reconcile = commands.add_parser("_reconcile", help=argparse.SUPPRESS)
+    commands.add_parser("_collector")
+    commands.add_parser("_remove-otel-config")
+    reconcile = commands.add_parser("_reconcile")
     reconcile.add_argument("--session-id", required=True)
     reconcile.add_argument("--transcript-path", required=True)
     return parser

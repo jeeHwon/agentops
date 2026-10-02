@@ -60,7 +60,7 @@ def handle_hook(raw: dict[str, Any], *, launch_uploader: bool = True) -> dict[st
             return {
                 "systemMessage": (
                     f"Codex AgentOps has {previous_failures} pending MLflow upload(s). "
-                    "Run `codex-agentops flush` or `codex-agentops doctor`."
+                    "Run `aops flush` or `aops doctor`."
                 )
             }
         return {}

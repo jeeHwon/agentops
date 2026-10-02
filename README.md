@@ -30,12 +30,12 @@ cd agentops
 ./install.sh
 ```
 
-설치 스크립트는 `codex-agentops` Python CLI를 설치하고 현재 저장소를 로컬 Codex Plugin Marketplace로 등록합니다.
+설치 스크립트는 짧은 `aops` CLI와 호환용 `codex-agentops` 별칭을 설치하고 현재 저장소를 로컬 Codex Plugin Marketplace로 등록합니다.
 
 ## 설정
 
 ```bash
-codex-agentops configure \
+aops configure \
   --profile <databricks-profile> \
   --experiment /Shared/codex-agentops
 ```
@@ -56,9 +56,9 @@ codex-agentops configure \
 ## Agent 생성과 테스트
 
 ```bash
-codex-agentops init my-agent
+aops init my-agent
 cd my-agent
-codex-agentops validate
+aops validate
 codex
 ```
 
@@ -85,7 +85,7 @@ my-agent/
 `validate`는 Agent Manifest와 로컬 Skill의 최소 구조를 정적으로 검사합니다.
 
 ```bash
-codex-agentops validate [agent-folder]
+aops validate [agent-folder]
 ```
 
 검사 항목은 다음과 같습니다.
@@ -99,9 +99,9 @@ codex-agentops validate [agent-folder]
 `doctor`는 설치, Plugin, Hook, Databricks 인증, MLflow, OTel과 로컬 Outbox 상태를 확인합니다.
 
 ```bash
-codex-agentops doctor --write-test-trace
-codex-agentops status
-codex-agentops flush
+aops doctor --write-test-trace
+aops status
+aops flush
 ```
 
 ## MLflow Trace 구조

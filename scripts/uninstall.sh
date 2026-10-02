@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-codex-agentops _remove-otel-config >/dev/null 2>&1 || true
+if command -v aops >/dev/null 2>&1; then
+  aops _remove-otel-config >/dev/null 2>&1 || true
+elif command -v codex-agentops >/dev/null 2>&1; then
+  codex-agentops _remove-otel-config >/dev/null 2>&1 || true
+fi
 codex plugin remove codex-agentops@codex-agentops >/dev/null 2>&1 || true
 codex plugin marketplace remove codex-agentops >/dev/null 2>&1 || true
 uv tool uninstall codex-agentops >/dev/null 2>&1 || true

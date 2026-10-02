@@ -30,7 +30,7 @@ def test_create_agent_contains_only_standard_definition_files(tmp_path):
     assert "1. **`spec.md`에서 Agent의 업무와 운영 기준을 명시합니다.**" in readme
     assert "## 검증하고 사용하기" in readme
     assert "### Skill 템플릿" in readme
-    assert "codex-agentops validate" in readme
+    assert "aops validate" in readme
 
     skill = skill_path.read_text(encoding="utf-8")
     _, frontmatter, body = skill.split("---", 2)

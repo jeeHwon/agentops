@@ -37,7 +37,7 @@ class Settings:
         host = str(raw.get("host", "")).strip().rstrip("/")
         experiment = str(raw.get("experiment", DEFAULT_EXPERIMENT)).strip()
         if not profile:
-            raise ConfigError("Databricks profile is missing; run `codex-agentops configure`.")
+            raise ConfigError("Databricks Profile이 없습니다. `aops configure`를 실행하세요.")
         if not host.startswith("https://"):
             raise ConfigError("Databricks host must be an https URL.")
         if not experiment.startswith("/"):
@@ -66,7 +66,7 @@ def load_settings(path: Path | None = None) -> Settings:
     try:
         raw = json.loads(target.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise ConfigError("Codex AgentOps is not configured; run `codex-agentops configure`.") from exc
+        raise ConfigError("Codex AgentOps가 설정되지 않았습니다. `aops configure`를 실행하세요.") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigError(f"Cannot read configuration at {target}: {exc}") from exc
     if not isinstance(raw, dict):

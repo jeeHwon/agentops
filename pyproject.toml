@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
+aops = "codex_agentops.cli:main"
 codex-agentops = "codex_agentops.cli:main"
 
 [dependency-groups]

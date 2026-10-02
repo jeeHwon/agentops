@@ -4,7 +4,8 @@ from codex_agentops.cli import build_parser
 
 
 def test_configure_accepts_portable_experiment_and_warehouse_options():
-    args = build_parser().parse_args(
+    parser = build_parser()
+    args = parser.parse_args(
         [
             "configure",
             "--profile",
@@ -19,3 +20,4 @@ def test_configure_accepts_portable_experiment_and_warehouse_options():
     assert args.profile == "test-profile"
     assert args.experiment == "/Users/example/agentops"
     assert args.warehouse_id == "warehouse-1"
+    assert parser.prog == "aops"
