@@ -20,7 +20,8 @@ Codex AgentOps는 일반 Codex CLI에서 실행되는 하네스 에이전트를 
 - Plugin과 Hook을 지원하는 [Codex CLI](https://learn.chatgpt.com/docs/hooks)
 - 인증된 Profile이 하나 이상 있는 [Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/)
 - [`uv`](https://docs.astral.sh/uv/)
-- 인증된 사용자가 접근할 수 있는 기존 Databricks MLflow Experiment와 SQL Warehouse
+- 인증된 사용자가 접근할 수 있는 Databricks SQL Warehouse
+- MLflow Experiment를 조회하고 생성할 수 있는 Databricks Workspace 권한
 
 ## 설치
 
@@ -46,12 +47,12 @@ aops configure \
 
 - Databricks 인증
 - SQL Warehouse 접근
-- MLflow Experiment 조회
+- MLflow Experiment 조회 또는 생성
 - Test Trace 기록 및 재조회
 - Codex 설정 파일 구문
 - 백그라운드 품질 Scorer 등록
 
-기본 Experiment는 `/Shared/codex-agentops`이며 설정 전에 존재해야 합니다. Prompt, 응답 및 지원되는 Tool 본문을 저장하지 않으려면 `--no-content`를 사용합니다.
+기본 Experiment는 `/Shared/codex-agentops`입니다. Experiment가 없으면 `aops configure`가 생성하고, 이미 있으면 그대로 재사용합니다. Prompt, 응답 및 지원되는 Tool 본문을 저장하지 않으려면 `--no-content`를 사용합니다.
 
 ## Agent 생성과 테스트
 

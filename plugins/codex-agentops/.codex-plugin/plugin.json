@@ -1,6 +1,6 @@
 {
   "name": "codex-agentops",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "표준 Codex 하네스 에이전트를 위한 Turn 단위 MLflow 모니터링",
   "author": {
     "name": "Contributors"

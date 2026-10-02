@@ -24,7 +24,7 @@ class MlflowTurnExporter:
         self.settings = settings
         self.tracking_uri = f"databricks://{settings.profile}"
 
-    def _client_and_experiment(self):
+    def _client_and_experiment(self, *, create_if_missing: bool = False):
         import mlflow
         from mlflow import MlflowClient
 
@@ -34,9 +34,29 @@ class MlflowTurnExporter:
             os.environ["MLFLOW_TRACING_SQL_WAREHOUSE_ID"] = self.settings.warehouse_id
         client = MlflowClient(tracking_uri=self.tracking_uri)
         experiment = client.get_experiment_by_name(self.settings.experiment)
+        if experiment is None and create_if_missing:
+            try:
+                experiment_id = client.create_experiment(self.settings.experiment)
+            except Exception as exc:
+                # Another configure process may have created the same experiment
+                # after our initial lookup. Re-read before reporting a failure.
+                try:
+                    experiment = client.get_experiment_by_name(self.settings.experiment)
+                except Exception:
+                    experiment = None
+                if experiment is None:
+                    raise RuntimeError(
+                        "MLflow Experiment를 생성하지 못했습니다: "
+                        f"{self.settings.experiment}. Databricks Workspace에서 "
+                        f"Experiment 생성 권한을 확인하세요. 원인: {exc}"
+                    ) from exc
+            else:
+                mlflow.set_experiment(experiment_id=experiment_id)
+                return client, experiment_id
         if experiment is None:
             raise RuntimeError(
-                f"Platform-managed MLflow experiment does not exist: {self.settings.experiment}"
+                f"MLflow Experiment가 없습니다: {self.settings.experiment}. "
+                "먼저 `aops configure`를 실행하세요."
             )
         mlflow.set_experiment(experiment_id=experiment.experiment_id)
         return client, experiment.experiment_id
@@ -44,7 +64,7 @@ class MlflowTurnExporter:
     def write_test_trace(self) -> str:
         import mlflow
 
-        client, experiment_id = self._client_and_experiment()
+        client, experiment_id = self._client_and_experiment(create_if_missing=True)
         now = time.time_ns()
         root = client.start_trace(
             name="codex-agentops.configuration-test",

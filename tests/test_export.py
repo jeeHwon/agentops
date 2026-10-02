@@ -257,8 +257,144 @@ def test_configuration_trace_is_flushed_and_readable(tmp_path, monkeypatch):
     experiment_id = client.create_experiment("configuration-test")
     settings = Settings("test-profile", "https://example.cloud.databricks.com")
     exporter = MlflowTurnExporter(settings)
-    monkeypatch.setattr(exporter, "_client_and_experiment", lambda: (client, experiment_id))
+    monkeypatch.setattr(
+        exporter,
+        "_client_and_experiment",
+        lambda *, create_if_missing=False: (client, experiment_id),
+    )
 
     trace_id = exporter.write_test_trace()
     trace = client.get_trace(trace_id)
     assert trace.data.spans[0].name == "codex-agentops.configuration-test"
+
+
+def test_configuration_creates_missing_experiment(monkeypatch):
+    import mlflow
+
+    class Experiment:
+        experiment_id = "created-experiment"
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.experiment = None
+            self.created_names = []
+
+        def get_experiment_by_name(self, _name):
+            return self.experiment
+
+        def create_experiment(self, name):
+            self.created_names.append(name)
+            self.experiment = Experiment()
+            return self.experiment.experiment_id
+
+    client = FakeClient()
+    selected = []
+    monkeypatch.setattr(mlflow, "MlflowClient", lambda **_kwargs: client)
+    monkeypatch.setattr(mlflow, "set_tracking_uri", lambda _uri: None)
+    monkeypatch.setattr(mlflow, "set_experiment", lambda **kwargs: selected.append(kwargs))
+    exporter = MlflowTurnExporter(
+        Settings(
+            "test-profile",
+            "https://example.cloud.databricks.com",
+            experiment="/Shared/codex-agentops",
+        )
+    )
+
+    returned_client, experiment_id = exporter._client_and_experiment(create_if_missing=True)
+
+    assert returned_client is client
+    assert experiment_id == "created-experiment"
+    assert client.created_names == ["/Shared/codex-agentops"]
+    assert selected == [{"experiment_id": "created-experiment"}]
+
+
+def test_configuration_reuses_existing_experiment(monkeypatch):
+    import mlflow
+
+    class Experiment:
+        experiment_id = "existing-experiment"
+
+    class FakeClient:
+        def get_experiment_by_name(self, _name):
+            return Experiment()
+
+        def create_experiment(self, _name):
+            raise AssertionError("기존 Experiment를 다시 생성하면 안 됩니다")
+
+    client = FakeClient()
+    monkeypatch.setattr(mlflow, "MlflowClient", lambda **_kwargs: client)
+    monkeypatch.setattr(mlflow, "set_tracking_uri", lambda _uri: None)
+    monkeypatch.setattr(mlflow, "set_experiment", lambda **_kwargs: None)
+    exporter = MlflowTurnExporter(Settings("test-profile", "https://example.com"))
+
+    _, experiment_id = exporter._client_and_experiment(create_if_missing=True)
+
+    assert experiment_id == "existing-experiment"
+
+
+def test_runtime_does_not_create_missing_experiment(monkeypatch):
+    import mlflow
+    import pytest
+
+    class FakeClient:
+        def get_experiment_by_name(self, _name):
+            return None
+
+        def create_experiment(self, _name):
+            raise AssertionError("Runtime 조회에서 Experiment를 생성하면 안 됩니다")
+
+    monkeypatch.setattr(mlflow, "MlflowClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr(mlflow, "set_tracking_uri", lambda _uri: None)
+    exporter = MlflowTurnExporter(Settings("test-profile", "https://example.com"))
+
+    with pytest.raises(RuntimeError, match="aops configure"):
+        exporter._client_and_experiment()
+
+
+def test_configuration_recovers_from_concurrent_experiment_creation(monkeypatch):
+    import mlflow
+
+    class Experiment:
+        experiment_id = "concurrently-created"
+
+    class FakeClient:
+        def __init__(self):
+            self.lookups = 0
+
+        def get_experiment_by_name(self, _name):
+            self.lookups += 1
+            return None if self.lookups == 1 else Experiment()
+
+        def create_experiment(self, _name):
+            raise RuntimeError("RESOURCE_ALREADY_EXISTS")
+
+    client = FakeClient()
+    monkeypatch.setattr(mlflow, "MlflowClient", lambda **_kwargs: client)
+    monkeypatch.setattr(mlflow, "set_tracking_uri", lambda _uri: None)
+    monkeypatch.setattr(mlflow, "set_experiment", lambda **_kwargs: None)
+    exporter = MlflowTurnExporter(Settings("test-profile", "https://example.com"))
+
+    _, experiment_id = exporter._client_and_experiment(create_if_missing=True)
+
+    assert experiment_id == "concurrently-created"
+
+
+def test_configuration_reports_experiment_creation_permission_failure(monkeypatch):
+    import mlflow
+    import pytest
+
+    class FakeClient:
+        def get_experiment_by_name(self, _name):
+            return None
+
+        def create_experiment(self, _name):
+            raise RuntimeError("PERMISSION_DENIED")
+
+    monkeypatch.setattr(mlflow, "MlflowClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr(mlflow, "set_tracking_uri", lambda _uri: None)
+    exporter = MlflowTurnExporter(Settings("test-profile", "https://example.com"))
+
+    with pytest.raises(RuntimeError, match="Experiment 생성 권한") as error:
+        exporter._client_and_experiment(create_if_missing=True)
+
+    assert "PERMISSION_DENIED" in str(error.value)
