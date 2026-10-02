@@ -117,6 +117,20 @@ Prompt, 응답과 지원되는 Tool 본문은 안정적인 Hook Payload에서만
 
 Hosted `WebSearch`와 같이 로컬 Function Tool Hook 경로를 사용하지 않는 Tool은 Tool Span으로 기록되지 않습니다. 자세한 내용은 공식 [Codex Hooks 문서](https://learn.chatgpt.com/docs/hooks)와 [Codex OTel 설정 문서](https://learn.chatgpt.com/docs/config-file/config-advanced#observability-and-telemetry)를 참고하세요.
 
+## 2차 구현 범위
+
+2차에서는 대규모 운영을 위해 Unity Catalog 기반 Trace 저장소를 선택적으로 지원합니다.
+
+- `aops configure`에서 Trace를 저장할 UC Catalog와 Schema를 명시할 수 있어야 합니다.
+- 지원되는 Workspace에서는 MLflow Experiment를 UC Schema와 연결해야 합니다.
+- 연결 과정에서 `mlflow_experiment_trace_otel_spans`, `mlflow_experiment_trace_otel_logs`, `mlflow_experiment_trace_otel_metrics` 테이블을 생성하고 검증해야 합니다.
+- 설정 전에 UC Trace 저장 기능의 Cloud, Region 및 Preview 지원 여부를 확인해야 합니다.
+- 사용자 또는 Service Principal의 `USE CATALOG`, `USE SCHEMA`, `SELECT`, `MODIFY` 권한을 검증해야 합니다.
+- UC 연결을 사용하지 않는 환경에서는 기존 Workspace 관리형 Trace 저장소를 계속 사용할 수 있어야 합니다.
+- 기존 Experiment를 UC Schema에 연결하면 이전 Workspace 관리형 Trace가 화면에서 숨겨질 수 있음을 설정 전에 안내해야 합니다.
+- 운영 환경에서는 Trace와 LLM Scorer의 샘플링 비율을 분리하여 설정할 수 있어야 합니다.
+- 5,000명 규모를 가정한 동시 업로드, Outbox 적체, Scorer 처리 지연과 비용 부하 테스트를 수행해야 합니다.
+
 ## 개인정보와 보안
 
 본문 저장은 기본으로 활성화되며 `configure --no-content`로 비활성화할 수 있습니다. 저장 전 일반적인 Secret, 이메일, 전화번호와 식별번호 패턴을 마스킹하고 각 본문을 15,000자로 제한합니다. 규제 대상 데이터나 고도로 민감한 데이터를 사용하기 전에 조직의 보안 기준에 맞게 정책을 검토하세요.
