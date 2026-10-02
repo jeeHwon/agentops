@@ -1,28 +1,28 @@
 # Codex AgentOps
 
-Codex AgentOps adds turn-level MLflow observability to harness agents that run in the standard Codex CLI. Users edit only the agent instructions and skills; the installed plugin handles tracing, token usage, redaction, retries, and background quality evaluation.
+Codex AgentOps는 일반 Codex CLI에서 실행되는 하네스 에이전트를 Turn 단위 MLflow Trace로 기록하는 범용 AgentOps 도구입니다. 사용자는 Agent의 지침과 Skill만 편집하며, 설치된 Plugin이 Trace, Token, 마스킹, 재시도와 백그라운드 품질 평가를 담당합니다.
 
-## What it provides
+## 주요 기능
 
-- Standard harness-agent folders with `AGENTS.md`, `spec.md`, and local `SKILL.md` files
-- Normal `codex` CLI workflow without a custom chat wrapper
-- One MLflow trace for each completed Codex turn
-- Nested spans for supported tools, MCP calls, and subagents
-- Exact input, output, cached-input, cache-write, reasoning, and total token usage
-- Background `RelevanceToQuery`, `Safety`, and `Completeness` feedback
-- Secret and PII redaction, a 15,000-character content limit, and a durable SQLite outbox
-- Diagnostics and retry commands that do not block the Codex response
+- `AGENTS.md`, `spec.md`, 로컬 `SKILL.md` 기반 표준 하네스 에이전트 폴더 생성
+- 별도의 Chat Wrapper 없이 기존 `codex` 명령 그대로 사용
+- 완료된 Codex Turn마다 MLflow Root Trace 생성
+- 지원되는 Tool, MCP, 하위 Agent를 부모·자식 Span으로 기록
+- 입력, 출력, 캐시 입력, 캐시 생성, 추론 및 전체 Token의 정확한 집계
+- `RelevanceToQuery`, `Safety`, `Completeness` 백그라운드 품질 평가
+- Secret·개인정보 마스킹, 본문 15,000자 제한 및 SQLite Outbox 기반 재전송
+- 모니터링 장애가 Codex 응답을 막지 않는 비동기 처리
 
-## Requirements
+## 사전 요구사항
 
-- macOS or Linux
-- Python 3.11 or later
-- [Codex CLI](https://learn.chatgpt.com/docs/hooks) with plugin and hook support
-- [Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/) with at least one authenticated profile
+- macOS 또는 Linux
+- Python 3.11 이상
+- Plugin과 Hook을 지원하는 [Codex CLI](https://learn.chatgpt.com/docs/hooks)
+- 인증된 Profile이 하나 이상 있는 [Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/)
 - [`uv`](https://docs.astral.sh/uv/)
-- An existing Databricks MLflow experiment and a SQL warehouse available to the authenticated user
+- 인증된 사용자가 접근할 수 있는 기존 Databricks MLflow Experiment와 SQL Warehouse
 
-## Install
+## 설치
 
 ```bash
 git clone https://github.com/jeeHwon/agentops.git
@@ -30,9 +30,9 @@ cd agentops
 ./install.sh
 ```
 
-The installer adds the `codex-agentops` Python CLI and installs the repository as a local Codex plugin marketplace.
+설치 스크립트는 `codex-agentops` Python CLI를 설치하고 현재 저장소를 로컬 Codex Plugin Marketplace로 등록합니다.
 
-## Configure
+## 설정
 
 ```bash
 codex-agentops configure \
@@ -40,13 +40,20 @@ codex-agentops configure \
   --experiment /Shared/codex-agentops
 ```
 
-Use `--warehouse-id <id>` to select a specific SQL warehouse. Without it, the CLI selects the first available warehouse. If `--profile` is omitted, the CLI asks you to select one and never silently chooses a profile.
+특정 SQL Warehouse를 사용하려면 `--warehouse-id <id>`를 추가합니다. 생략하면 접근 가능한 첫 번째 Warehouse를 선택합니다. `--profile`을 생략하면 Profile 목록을 표시하고 사용자가 직접 선택하게 하며 임의로 자동 선택하지 않습니다.
 
-Configuration performs real checks: Databricks authentication, SQL warehouse access, MLflow experiment lookup, a write-and-read test trace, Codex configuration parsing, and background scorer registration.
+설정 과정에서는 다음을 실제로 검증합니다.
 
-The default experiment is `/Shared/codex-agentops`. The experiment must already exist. Use `--no-content` if prompts, responses, and supported tool bodies must not be stored.
+- Databricks 인증
+- SQL Warehouse 접근
+- MLflow Experiment 조회
+- Test Trace 기록 및 재조회
+- Codex 설정 파일 구문
+- 백그라운드 품질 Scorer 등록
 
-## Create and test an agent
+기본 Experiment는 `/Shared/codex-agentops`이며 설정 전에 존재해야 합니다. Prompt, 응답 및 지원되는 Tool 본문을 저장하지 않으려면 `--no-content`를 사용합니다.
+
+## Agent 생성과 테스트
 
 ```bash
 codex-agentops init my-agent
@@ -55,9 +62,9 @@ codex-agentops validate
 codex
 ```
 
-Open `/hooks` once in Codex and review and trust the `codex-agentops` hooks. Continue using the normal `codex` command. Each `Stop` or `Interrupt` closes the current turn and starts an asynchronous MLflow upload; the session does not need to end.
+Codex에서 최초 한 번 `/hooks`를 열어 `codex-agentops` Hook을 검토하고 신뢰합니다. 이후에는 일반 `codex` 명령을 그대로 사용합니다. 각 `Stop` 또는 `Interrupt`에서 현재 Turn을 닫고 MLflow 업로드를 시작하므로 세션을 종료할 필요가 없습니다.
 
-The generated folder contains only the editable agent definition:
+생성되는 폴더에는 사용자가 편집할 Agent 정의만 포함됩니다.
 
 ```text
 my-agent/
@@ -71,17 +78,25 @@ my-agent/
         └── SKILL.md
 ```
 
-Edit `spec.md`, `AGENTS.md`, and the `SKILL.md` files to implement business behavior. Runtime, server, and monitoring code stays in the installed package and plugin.
+`spec.md`, `AGENTS.md`, `SKILL.md`를 수정하여 업무 로직을 정의합니다. Runtime, 서버와 모니터링 코드는 설치된 공통 패키지와 Plugin에 유지됩니다.
 
-## Validate and diagnose
+## 구조 검증과 진단
 
-`validate` checks the agent manifest and local skill structure:
+`validate`는 Agent Manifest와 로컬 Skill의 최소 구조를 정적으로 검사합니다.
 
 ```bash
 codex-agentops validate [agent-folder]
 ```
 
-`doctor` checks the installation, plugin, hooks, Databricks authentication, MLflow access, OTel status, and local outbox:
+검사 항목은 다음과 같습니다.
+
+- `agent.yaml`의 존재, YAML 형식, Schema Version, Agent ID와 이름
+- `.agents/skills` 아래 최소 한 개의 Skill 존재
+- 각 Skill 폴더의 `SKILL.md` 존재
+- Skill frontmatter의 이름, 설명과 폴더명 일치
+- 비어 있지 않은 Skill 본문
+
+`doctor`는 설치, Plugin, Hook, Databricks 인증, MLflow, OTel과 로컬 Outbox 상태를 확인합니다.
 
 ```bash
 codex-agentops doctor --write-test-trace
@@ -89,38 +104,40 @@ codex-agentops status
 codex-agentops flush
 ```
 
-## Trace model
+## MLflow Trace 구조
 
-Each completed user turn becomes an `agent.turn` root trace. Supported subagents become `AGENT` spans, and their supported tool and MCP calls become child `TOOL` spans. The root token usage includes both the root turn and its completed subagents; each subagent span also carries its own token attributes.
+완료된 사용자 Turn은 `agent.turn` Root Trace가 됩니다. 지원되는 하위 Agent는 `AGENT` Span으로 기록되고, 해당 Agent가 실행한 Tool과 MCP는 그 아래의 `TOOL` Span으로 연결됩니다.
 
-Codex AgentOps reads prompt, response, and supported tool content only from stable hook payloads. It does not reconstruct those bodies from the transcript. Transcript parsing is limited to versioned `token_usage_record` entries as a guarded token fallback.
+Root Token에는 Root Turn과 완료된 하위 Agent의 Token이 합산됩니다. 각 하위 Agent Span에는 해당 Agent의 개별 Token도 기록됩니다.
 
-When the local collector receives Codex OTel logs, `response.completed` supplies token usage and `codex.tool_result` supplies actual tool duration and success. An existing external OTel exporter is preserved; in that configuration, exact tool duration is unavailable unless the same events are also routed to Codex AgentOps. `doctor` reports this condition.
+Prompt, 응답과 지원되는 Tool 본문은 안정적인 Hook Payload에서만 읽습니다. Transcript에서 본문을 재구성하지 않으며, 정확한 Token 보강을 위해 버전이 명시된 `token_usage_record`만 제한적으로 읽습니다.
 
-Hosted tools such as `WebSearch` do not use the local function-tool hook path and therefore do not appear as tool spans. See the official [Codex Hooks documentation](https://learn.chatgpt.com/docs/hooks) and [Codex OTel configuration](https://learn.chatgpt.com/docs/config-file/config-advanced#observability-and-telemetry).
+로컬 Collector가 Codex OTel 로그를 받으면 `response.completed`에서 Token을, `codex.tool_result`에서 실제 Tool 실행시간과 성공 여부를 수집합니다. 기존 외부 OTel Exporter가 있으면 설정을 변경하지 않으며, 동일 이벤트가 Codex AgentOps에도 전달되지 않는 경우 정확한 Tool 실행시간은 기록되지 않습니다. `doctor`가 이 상태를 경고합니다.
 
-## Privacy
+Hosted `WebSearch`와 같이 로컬 Function Tool Hook 경로를 사용하지 않는 Tool은 Tool Span으로 기록되지 않습니다. 자세한 내용은 공식 [Codex Hooks 문서](https://learn.chatgpt.com/docs/hooks)와 [Codex OTel 설정 문서](https://learn.chatgpt.com/docs/config-file/config-advanced#observability-and-telemetry)를 참고하세요.
 
-Content capture is enabled by default and can be disabled during configuration with `--no-content`. Before storage, the runtime masks common secrets, email addresses, phone numbers, and identity-number patterns, then limits each body to 15,000 characters. Review these defaults before using the project with regulated or highly sensitive data.
+## 개인정보와 보안
 
-Local state is stored under the platform XDG config and data directories. Override them with `CODEX_AGENTOPS_CONFIG_DIR` and `CODEX_AGENTOPS_DATA_DIR`.
+본문 저장은 기본으로 활성화되며 `configure --no-content`로 비활성화할 수 있습니다. 저장 전 일반적인 Secret, 이메일, 전화번호와 식별번호 패턴을 마스킹하고 각 본문을 15,000자로 제한합니다. 규제 대상 데이터나 고도로 민감한 데이터를 사용하기 전에 조직의 보안 기준에 맞게 정책을 검토하세요.
 
-## Update or uninstall
+로컬 설정과 Outbox는 운영체제의 XDG Config 및 Data 디렉터리에 저장됩니다. `CODEX_AGENTOPS_CONFIG_DIR`, `CODEX_AGENTOPS_DATA_DIR` 환경변수로 경로를 변경할 수 있습니다.
+
+## 업데이트와 제거
 
 ```bash
 ./scripts/update.sh
 ./scripts/uninstall.sh
 ```
 
-Uninstalling removes the CLI, plugin, marketplace entry, and the managed OTel block. It preserves local configuration and queued telemetry data.
+제거 시 CLI, Plugin, Marketplace 등록과 관리되는 OTel 설정 블록을 삭제합니다. 사용자 설정과 전송 대기 중인 로컬 Telemetry 데이터는 보존합니다.
 
-## Development
+## 개발 및 테스트
 
 ```bash
 uv sync --dev
 uv run pytest
 ```
 
-## License
+## 라이선스
 
 MIT

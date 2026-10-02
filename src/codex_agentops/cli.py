@@ -34,32 +34,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
 
-    configure = commands.add_parser("configure", help="select a Databricks profile and verify MLflow")
-    configure.add_argument("--profile", help="Databricks CLI profile selected by the user")
+    configure = commands.add_parser("configure", help="Databricks Profile을 선택하고 MLflow를 검증합니다")
+    configure.add_argument("--profile", help="사용자가 선택한 Databricks CLI Profile")
     configure.add_argument(
         "--experiment",
         default=DEFAULT_EXPERIMENT,
-        help=f"existing MLflow experiment path (default: {DEFAULT_EXPERIMENT})",
+        help=f"기존 MLflow Experiment 경로 (기본값: {DEFAULT_EXPERIMENT})",
     )
     configure.add_argument(
         "--warehouse-id",
-        help="SQL warehouse used for background scorers (default: first available warehouse)",
+        help="백그라운드 Scorer용 SQL Warehouse ID (기본값: 접근 가능한 첫 Warehouse)",
     )
-    configure.add_argument("--no-content", action="store_true", help="store metadata without prompt/output bodies")
-    configure.add_argument("--otel-port", type=int, default=DEFAULT_OTEL_PORT, help="local Codex OTel port")
+    configure.add_argument("--no-content", action="store_true", help="Prompt와 응답 본문 없이 메타데이터만 저장합니다")
+    configure.add_argument("--otel-port", type=int, default=DEFAULT_OTEL_PORT, help="로컬 Codex OTel Port")
 
-    init = commands.add_parser("init", help="create a standard Agent folder")
+    init = commands.add_parser("init", help="표준 Agent 폴더를 생성합니다")
     init.add_argument("agent_id")
-    init.add_argument("--path", type=Path, help="destination path (default: ./<agent-id>)")
+    init.add_argument("--path", type=Path, help="생성 경로 (기본값: ./<agent-id>)")
 
-    validate = commands.add_parser("validate", help="validate a standard Agent folder")
+    validate = commands.add_parser("validate", help="표준 Agent 폴더 구조를 검증합니다")
     validate.add_argument("path", nargs="?", type=Path, default=Path.cwd())
 
-    doctor = commands.add_parser("doctor", help="diagnose installation, hooks, auth, MLflow, and outbox")
+    doctor = commands.add_parser("doctor", help="설치, Hook, 인증, MLflow와 Outbox를 진단합니다")
     doctor.add_argument("--write-test-trace", action="store_true")
 
-    commands.add_parser("status", help="show local outbox status")
-    flush = commands.add_parser("flush", help="retry and upload pending traces")
+    commands.add_parser("status", help="로컬 Outbox 상태를 표시합니다")
+    flush = commands.add_parser("flush", help="전송 대기 Trace를 다시 업로드합니다")
     flush.add_argument("--limit", type=int, default=100)
 
     commands.add_parser("_hook", help=argparse.SUPPRESS)
@@ -82,10 +82,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "init":
             target = args.path or Path.cwd() / args.agent_id
             root = create_agent(args.agent_id, target)
-            print(f"Created Agent: {root}")
-            print(f"Edit guide: {root / 'README.md'}")
-            print(f"Skill template: {root / '.agents/skills/example-skill/SKILL.md'}")
-            print(f"Next: cd {root} && codex")
+            print(f"Agent 생성 완료: {root}")
+            print(f"편집 안내: {root / 'README.md'}")
+            print(f"Skill 템플릿: {root / '.agents/skills/example-skill/SKILL.md'}")
+            print(f"다음 단계: cd {root} && codex")
             return 0
         if args.command == "validate":
             manifest = validate_agent(args.path)
@@ -156,17 +156,17 @@ def _configure(args: argparse.Namespace) -> int:
         ensure_collector(settings)
     trace_id = MlflowTurnExporter(settings).write_test_trace()
     scorers = configure_turn_monitoring(settings)
-    print(f"Configured: {path}")
+    print(f"설정 완료: {path}")
     print(f"Databricks: {identity} @ {profile.host}")
-    print(f"MLflow experiment: {settings.experiment}")
-    print(f"SQL warehouse: {settings.warehouse_id}")
+    print(f"MLflow Experiment: {settings.experiment}")
+    print(f"SQL Warehouse: {settings.warehouse_id}")
     if settings.otel_mode == "local":
         print(f"Codex OTel: {codex_path} -> http://127.0.0.1:{settings.otel_port}")
     else:
-        print(f"Codex OTel: existing configuration preserved at {codex_path}")
+        print(f"Codex OTel: 기존 설정을 보존했습니다: {codex_path}")
     print(f"Codex: {codex_version}")
-    print(f"Test trace: {trace_id}")
-    print("Background turn scorers:")
+    print(f"Test Trace: {trace_id}")
+    print("백그라운드 Turn Scorer:")
     for scorer in scorers:
         print(
             f"  {scorer.name}: sample_rate={scorer.sample_rate:g}, "

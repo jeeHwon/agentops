@@ -1,5 +1,5 @@
 {
-  "description": "Capture supported Codex events for standard Codex AgentOps folders.",
+  "description": "표준 Codex AgentOps 폴더에서 지원되는 Codex 이벤트를 수집합니다.",
   "hooks": {
     "SessionStart": [
       {

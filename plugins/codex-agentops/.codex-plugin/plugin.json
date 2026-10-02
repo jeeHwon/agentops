@@ -1,7 +1,7 @@
 {
   "name": "codex-agentops",
   "version": "0.1.0",
-  "description": "Turn-level MLflow observability for standard Codex harness agents",
+  "description": "표준 Codex 하네스 에이전트를 위한 Turn 단위 MLflow 모니터링",
   "author": {
     "name": "Contributors"
   },
@@ -9,13 +9,13 @@
   "keywords": ["agentops", "codex", "databricks", "mlflow"],
   "interface": {
     "displayName": "Codex AgentOps",
-    "shortDescription": "Observe standard Harness Agent turns in MLflow.",
-    "longDescription": "Captures Codex turn, tool, and subagent hooks plus official OTel token and tool timing, stores them in a local outbox, and uploads complete MLflow traces. Transcript token records are used only as a guarded fallback.",
+    "shortDescription": "하네스 에이전트의 Turn을 MLflow에서 모니터링합니다.",
+    "longDescription": "Codex Turn, Tool, 하위 Agent Hook과 공식 OTel Token 및 Tool 실행시간을 수집하고 로컬 Outbox를 통해 완전한 MLflow Trace를 업로드합니다. Transcript Token 기록은 제한된 보강 경로로만 사용합니다.",
     "developerName": "Contributors",
     "category": "Developer Tools",
     "capabilities": ["Observability"],
     "defaultPrompt": [
-      "Check this Agent folder and help me test its harness and skills."
+      "이 Agent 폴더의 Harness와 Skill을 확인하고 테스트해 주세요."
     ]
   }
 }

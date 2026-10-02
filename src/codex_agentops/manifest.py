@@ -15,36 +15,36 @@ AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 EXAMPLE_SKILL = """\
 ---
 name: example-skill
-description: Summarize a request and identify the key checks and next actions.
+description: 사용자 요청을 한 문장으로 요약하고 핵심 확인 사항과 다음 행동을 정리할 때 사용합니다.
 ---
 
 # Example Skill
 
-## Purpose
+## 목적
 
-Turn a user request into a concise, actionable summary.
+사용자의 요청을 빠르게 구조화하여 바로 실행하거나 검토할 수 있는 형태로 정리합니다.
 
-## Inputs
+## 입력
 
-- The user request
-- Any context and constraints supplied by the user
+- 사용자의 요청
+- 사용자가 제공한 배경과 제약사항
 
-## Procedure
+## 수행 절차
 
-1. Summarize the request in one sentence.
-2. Identify only the checks required to complete the work.
-3. List the next actions in priority order.
+1. 사용자의 요청을 한 문장으로 요약합니다.
+2. 작업에 꼭 필요한 확인 사항만 식별합니다.
+3. 실행할 다음 행동을 우선순위 순서로 정리합니다.
 
-## Output
+## 출력 형식
 
-- Request summary
-- Required checks
-- Next actions
+- 요청 요약
+- 확인 사항
+- 다음 행동
 
-## Constraints
+## 제약사항
 
-- Do not invent facts that were not provided.
-- Do not expose credentials or sensitive information.
+- 제공되지 않은 사실은 추측하지 않습니다.
+- 민감정보와 인증정보를 답변에 노출하지 않습니다.
 """
 
 
@@ -133,18 +133,18 @@ def create_agent(agent_id: str, destination: str | Path | None = None) -> Path:
         root / "spec.md": _business_spec(),
         root / "AGENTS.md": (
             "# Agent Instructions\n\n"
-            "## Shared behavior\n\n"
-            "- Follow the scope and success criteria in `spec.md`.\n"
-            "- Confirm the user's actual request before acting.\n"
-            "- Do not invent unsupported facts.\n"
-            "- Ask for more information only when it is required.\n\n"
-            "## Skill selection\n\n"
-            "- Use `example-skill` when the request matches its description.\n"
-            "- Document selection rules and priority whenever a new Skill is added.\n"
+            "## 공통 행동\n\n"
+            "- `spec.md`의 업무 범위와 성공 기준을 따릅니다.\n"
+            "- 사용자의 요청을 정확히 확인합니다.\n"
+            "- 근거가 없는 내용은 추측하지 않습니다.\n"
+            "- 필요한 경우에만 추가 정보를 질문합니다.\n\n"
+            "## Skill 사용\n\n"
+            "- 요청이 `example-skill`의 설명과 일치하면 해당 Skill을 사용합니다.\n"
+            "- 새 Skill을 추가하면 사용 조건과 우선순위를 이 절에 작성합니다.\n"
         ),
         root / "CLAUDE.md": (
             "# Compatibility Instructions\n\n"
-            "Keep this file only for compatibility with other harness runtimes.\n"
+            "이 파일은 다른 Harness Runtime과의 호환 지침을 위해 유지합니다.\n"
         ),
         skill_dir / "SKILL.md": EXAMPLE_SKILL,
     }
@@ -159,90 +159,120 @@ def _agent_readme(agent_id: str) -> str:
         f"""\
         # {title}
 
-        This is a standard Codex AgentOps harness-agent folder. Edit the business definition and Skills here; the installed plugin owns runtime and observability code.
+        이 폴더는 Codex AgentOps 표준 Harness Agent입니다. 공통 실행·모니터링 코드는 Plugin이 담당하므로 이 폴더에서는 업무 정의와 Skill만 편집합니다.
 
-        ## What to edit
+        ## 작성 순서
 
-        1. **Define the operating contract in `spec.md`.**
-           - Keep `agent_type: harness` for this runtime.
-           - Set service criticality, data sensitivity, access level, required Unity Catalog permissions, and model policy.
-           - Replace the purpose, users, inputs, outputs, scope, and success criteria with the actual business requirements.
+        1. **`spec.md`에서 Agent의 업무와 운영 기준을 명시합니다.**
+           - `agent_type`은 1차에서 `harness`를 유지합니다.
+           - `service_criticality`에는 장애나 오답이 업무에 미치는 영향을 `low`, `medium`, `high` 중 하나로 기록합니다.
+           - `data_sensitivity`에는 처리할 데이터의 최고 민감도를 `public`, `internal`, `confidential`, `restricted` 중 하나로 기록합니다.
+           - `security_access_level`에는 필요한 통제 수준을 `standard`, `elevated`, `strict` 중 하나로 기록합니다.
+           - `required_uc_permissions`에는 필요한 UC 리소스의 전체 이름과 권한을 기록합니다. 사용하지 않으면 기본값 `[]`를 유지합니다.
+           - `use_flagship_model`에는 Flagship 모델이 반드시 필요하면 `true`, 일반 모델로 충분하면 `false`를 기록합니다.
+           - 본문의 목적, 대상 사용자, 입력, 출력, 업무 범위와 성공 기준을 실제 업무에 맞게 수정합니다.
+           - 기본값은 로컬 검증용 시작값이며 실제 보안 승인이나 UC 권한을 부여하지 않습니다.
 
-        2. **Define shared harness behavior in `AGENTS.md`.**
-           - Describe the role, response rules, prohibited behavior, and how to handle uncertainty.
-           - Define when to use each Skill and how to resolve overlapping Skills.
-           - Keep detailed business procedures in `SKILL.md` files.
+        2. **`AGENTS.md`에서 모든 요청에 공통으로 적용할 Harness를 작성합니다.**
+           - Agent의 역할과 답변 원칙, 금지사항, 불확실할 때의 행동을 작성합니다.
+           - 어떤 요청에 어떤 Skill을 사용할지와 Skill 간 우선순위를 명시합니다.
+           - 업무별 상세 절차는 이 파일에 반복해서 쓰지 않고 각 `SKILL.md`에 둡니다.
 
-        3. **Implement procedures in `.agents/skills/<skill-name>/SKILL.md`.**
-           - The frontmatter `name` must match the folder name and use kebab-case.
-           - `description` must state what the Skill does and when to use it.
-           - The body should define inputs, ordered steps, output format, and constraints.
+        3. **`.agents/skills/<skill-name>/SKILL.md`에서 업무 절차를 작성합니다.**
+           - frontmatter의 `name`은 Skill 폴더명과 같은 kebab-case로 작성합니다.
+           - `description`에는 Skill의 기능과 사용 시점을 한 문장으로 명시합니다.
+           - 본문에는 입력, 단계별 수행 절차, 출력 형식과 제약사항을 작성합니다.
+           - 처음에는 `example-skill`을 수정하고, 업무가 분리되어야 할 때만 새 Skill 폴더를 추가합니다.
 
-        4. **Document examples and operating notes in this `README.md`.**
+        4. **`README.md`에는 사용 예시와 운영 메모를 남깁니다.**
+           - 사용자가 입력할 대표 질문과 기대 결과를 예시로 작성합니다.
+           - 알려진 제약과 사용하면 안 되는 상황, 담당자 메모를 추가합니다.
 
-        5. **Edit `CLAUDE.md` only when another compatible harness runtime needs separate instructions.**
+        5. **`CLAUDE.md`는 Claude Runtime 호환이 필요할 때만 수정합니다.**
+           - Codex 전용 Agent라면 기본 안내문을 유지합니다.
 
-        Do not change `agent.yaml` after creation unless the registry identity is intentionally being migrated.
+        `agent.yaml`의 `agent_id`는 시스템 식별자이므로 생성 후 임의로 변경하지 않습니다.
 
-        ## Validate and run
+        ## 검증하고 사용하기
 
-        ```bash
-        codex-agentops validate
-        codex
-        ```
+        1. Agent 폴더에서 구조와 Skill을 검증합니다.
 
-        Review and trust the `codex-agentops` plugin once through `/hooks`. Test normal requests and invoke `$example-skill` directly when you need to test its procedure in isolation.
+           ```bash
+           codex-agentops validate
+           ```
 
-        In MLflow, inspect the `agent.turn` trace for the prompt, final response, subagent and tool spans, exact token usage, and background `RelevanceToQuery`, `Safety`, and `Completeness` feedback.
+        2. 일반 Codex를 실행합니다.
 
-        Each turn uploads after `Stop` or `Interrupt`; the Codex session does not need to end. Use `codex-agentops status` and `codex-agentops flush` to inspect or retry queued telemetry.
+           ```bash
+           codex
+           ```
 
-        ## File responsibilities
+        3. 최초 한 번 `/hooks`에서 `codex-agentops` Hook을 검토하고 신뢰합니다.
+        4. 일반 업무 요청으로 전체 Agent 동작을 확인하고, 필요하면 `$example-skill`처럼 Skill을 명시해 개별 절차를 확인합니다.
+        5. MLflow의 `agent.turn` Trace에서 입력, 최종 응답, 하위 Agent와 Tool Span, 정확한 Token을 확인합니다.
+        6. `RelevanceToQuery`, `Safety`, `Completeness` Feedback을 확인합니다. 이 평가는 백그라운드에서 실행되므로 Trace보다 늦게 표시될 수 있습니다.
+        7. 결과를 기준으로 `spec.md`, `AGENTS.md`, `SKILL.md`를 수정하고 같은 절차로 다시 테스트합니다.
 
-        | File | Responsibility |
+        각 Turn은 종료 즉시 업로드되므로 Codex 세션을 종료할 필요가 없습니다. 전송 실패 상태는 `codex-agentops status`로 확인하고 `codex-agentops flush`로 다시 전송할 수 있습니다.
+
+        ## 파일별 역할
+
+        | 파일 | 수정 내용 |
         |---|---|
-        | `spec.md` | Business scope, risk classification, inputs, outputs, and success criteria |
-        | `AGENTS.md` | Shared harness behavior and Skill selection rules |
-        | `.agents/skills/<skill-name>/SKILL.md` | A specific business procedure and output contract |
-        | `README.md` | Usage examples, known limitations, and operating notes |
-        | `CLAUDE.md` | Optional compatibility instructions for another harness runtime |
-        | `agent.yaml` | Stable agent identity |
+        | `spec.md` | Agent 유형, 중요도, 민감도, 접근 등급, UC 필요 권한, 모델 정책, 목적, 입력, 출력, 범위와 성공 기준 |
+        | `AGENTS.md` | 모든 요청에 적용할 공통 행동과 Skill 선택 규칙 |
+        | `.agents/skills/<skill-name>/SKILL.md` | 특정 업무의 절차, 출력 형식, 제약사항 |
+        | `README.md` | 이 Agent의 사용 예시와 운영 메모 |
+        | `CLAUDE.md` | Claude Runtime도 사용할 때 필요한 호환 지침 |
+        | `agent.yaml` | Agent 식별자이며 생성 후 `agent_id`를 임의로 바꾸지 않음 |
 
-        ## Add a Skill
+        Python 서버나 모니터링 코드를 이 폴더에 추가할 필요가 없습니다.
+
+        ## Skill 만들기
+
+        처음에는 `.agents/skills/example-skill/SKILL.md`를 직접 수정합니다. Skill을 추가하려면 예제 폴더를 복사하고 폴더명과 frontmatter의 `name`을 같은 kebab-case 이름으로 변경합니다.
 
         ```bash
         cp -R .agents/skills/example-skill .agents/skills/customer-summary
         ```
 
-        Change the copied folder name, the `name` and `description` in `SKILL.md`, and the Skill selection rules in `AGENTS.md`.
+        `description`에는 Skill의 기능과 사용 시점을 한 문장으로 작성합니다. Codex는 이 설명을 보고 어떤 Skill을 사용할지 결정합니다.
+
+        ### Skill 템플릿
 
         ```markdown
         ---
         name: customer-summary
-        description: Summarize a customer conversation and identify follow-up actions.
+        description: 고객 상담 내용을 요약하고 후속 조치를 정리할 때 사용합니다.
         ---
 
         # Customer Summary
 
-        ## Purpose
-        Describe the business task solved by this Skill.
+        ## 목적
+        이 Skill이 해결하는 업무를 작성합니다.
 
-        ## Inputs
-        - List required inputs and preconditions.
+        ## 입력
+        - 필요한 입력과 전제조건을 작성합니다.
 
-        ## Procedure
-        1. Validate the inputs.
-        2. Follow the business procedure in order.
-        3. Return the result in the required format.
+        ## 수행 절차
+        1. 입력을 확인합니다.
+        2. 업무 처리 절차를 순서대로 작성합니다.
+        3. 결과를 지정된 형식으로 반환합니다.
 
-        ## Output
-        - List every required output field.
+        ## 출력 형식
+        - 결과에 반드시 포함할 항목을 작성합니다.
 
-        ## Constraints
-        - State prohibited actions, security rules, and allowed data boundaries.
+        ## 제약사항
+        - 금지사항, 보안 규칙, 데이터 사용 범위를 작성합니다.
         ```
 
-        ## Folder structure
+        복사 후 다음 세 곳을 수정합니다.
+
+        1. 폴더명: `.agents/skills/customer-summary`
+        2. `SKILL.md`의 `name`과 `description`
+        3. `AGENTS.md`의 Skill 사용 조건과 우선순위
+
+        ## 기본 구조
 
         ```text
         {agent_id}/
@@ -273,62 +303,62 @@ def _business_spec() -> str:
 
         # Business Specification
 
-        Replace these defaults with the real business and data requirements before production use.
+        이 파일은 Agent의 업무 범위와 운영 기준을 정의합니다. 위 값은 로컬 검증을 위한 기본값이므로 실제 업무와 데이터에 맞게 수정하세요.
 
-        ## Classification
+        ## 분류 기준
 
-        | Field | Default | Allowed values or meaning |
+        | 항목 | 기본값 | 선택 기준 |
         |---|---|---|
-        | Agent type | `harness` | Keep `harness` for this runtime. |
-        | Service criticality | `low` | `low`, `medium`, or `high`, based on the impact of failure or incorrect output. |
-        | Data sensitivity | `internal` | `public`, `internal`, `confidential`, or `restricted`. |
-        | Security access level | `standard` | `standard`, `elevated`, or `strict`. |
-        | Required UC permissions | `[]` | Add each required Unity Catalog resource and privilege. |
-        | Flagship model | `false` | Set to `true` only when the success criteria require it, and explain why below. |
+        | Agent 유형 | `harness` | 1차에서는 `harness`를 유지하고 향후 `code`, `no-code` 유형에서 변경합니다. |
+        | 서비스 중요도 | `low` | 장애나 오답의 영향에 따라 `low`, `medium`, `high` 중 하나를 선택합니다. |
+        | 데이터 민감도 | `internal` | 처리 가능한 최고 민감도를 `public`, `internal`, `confidential`, `restricted` 중 하나로 선택합니다. |
+        | 보안·접근제어 등급 | `standard` | 필요한 통제 수준에 따라 `standard`, `elevated`, `strict` 중 하나를 선택합니다. |
+        | UC 필요 권한 | `[]` | UC 리소스를 사용하지 않으면 유지하고, 사용하면 아래 형식으로 리소스와 권한을 추가합니다. |
+        | Flagship 모델 사용 | `false` | 복잡한 추론 등으로 Flagship 모델이 반드시 필요할 때만 `true`로 변경하고 사유를 작성합니다. |
 
-        These values declare requirements; they do not grant permissions or security approval. The runtime must still enforce the authenticated user or deployment identity's actual permissions.
+        분류값은 요구사항 선언이며 실제 UC 권한이나 보안 승인을 부여하지 않습니다. Runtime은 로그인한 사용자 또는 배포 시 OBO 주체의 실제 권한을 별도로 검증해야 합니다.
 
-        Example Unity Catalog requirement:
+        UC 리소스가 필요한 경우 `required_uc_permissions`를 다음과 같이 수정합니다.
 
         ```yaml
         required_uc_permissions:
           - resource: catalog.schema.table
             privileges: [SELECT]
-            purpose: Read approved reference data required to answer the request.
+            purpose: 답변 생성에 필요한 기준 데이터를 조회합니다.
         ```
 
-        ## Purpose
+        ## 목적
 
-        Process user requests through defined Skill procedures and return reviewable results.
+        사용자의 업무 요청을 정의된 Skill 절차에 따라 처리하고 검토 가능한 결과를 반환합니다.
 
-        ## Users and inputs
+        ## 대상 사용자와 입력
 
-        - Intended users: define the authorized user group.
-        - Required inputs: define the request and supporting context.
-        - Prohibited inputs: credentials, secrets, or unapproved sensitive data.
+        - 대상 사용자: 내부 업무 사용자
+        - 필수 입력: 사용자의 업무 요청과 처리에 필요한 배경 정보
+        - 허용하지 않는 입력: 인증정보, Secret 또는 승인되지 않은 민감정보 원문
 
-        ## Outputs
+        ## 출력
 
-        - Final result
-        - Supporting rationale and material limitations
-        - Required next actions, when applicable
+        - 요청에 대한 최종 결과
+        - 판단 근거와 확인이 필요한 제한사항
+        - 필요한 경우 사용자가 수행할 다음 행동
 
-        ## Scope
+        ## 업무 범위
 
-        - Included: work defined in `.agents/skills` using approved tools and MCP servers.
-        - Excluded: unauthorized data access and undefined changes to external systems.
+        - 포함: `.agents/skills`에 정의된 업무와 승인된 Tool 및 MCP를 사용하는 작업
+        - 제외: 사용자에게 실제 권한이 없는 데이터 접근과 정의되지 않은 외부 시스템 변경
 
-        ## Success criteria
+        ## 성공 기준
 
-        - Satisfy the explicit request and every required output field.
-        - Do not invent unsupported facts; label uncertainty clearly.
-        - Pass the configured Safety evaluation and avoid exposing secrets or personal data.
-        - Follow the selected Skill procedure and output format.
-        - Add measurable, business-specific targets here.
+        - 사용자가 명시한 요청과 필수 출력 항목을 모두 충족합니다.
+        - 근거가 없는 사실을 생성하지 않고 불확실한 내용은 명확히 표시합니다.
+        - `Safety` 평가를 통과하고 Secret과 개인정보를 출력하지 않습니다.
+        - 정의된 출력 형식과 Skill 절차를 따릅니다.
+        - 업무별 정량 기준: 실제 업무에 맞는 목표값을 여기에 작성하세요.
 
-        ## Flagship model justification
+        ## Flagship 모델 사용 사유
 
-        The default is `false`. If changed to `true`, explain the quality threshold that a standard model cannot meet and the specific tasks that need the flagship model.
+        기본값은 `false`입니다. `true`로 변경하는 경우 일반 모델로 충족하기 어려운 품질 기준과 필요한 사용 범위를 작성하세요.
         """
     )
 
