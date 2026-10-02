@@ -1,0 +1,20 @@
+{
+  "name": "codex-agentops",
+  "interface": {
+    "displayName": "Codex AgentOps"
+  },
+  "plugins": [
+    {
+      "name": "codex-agentops",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex-agentops"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

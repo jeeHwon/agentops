@@ -1,0 +1,21 @@
+{
+  "name": "codex-agentops",
+  "version": "0.1.0",
+  "description": "Turn-level MLflow observability for standard Codex harness agents",
+  "author": {
+    "name": "Contributors"
+  },
+  "repository": "https://github.com/jeeHwon/agentops",
+  "keywords": ["agentops", "codex", "databricks", "mlflow"],
+  "interface": {
+    "displayName": "Codex AgentOps",
+    "shortDescription": "Observe standard Harness Agent turns in MLflow.",
+    "longDescription": "Captures Codex turn, tool, and subagent hooks plus official OTel token and tool timing, stores them in a local outbox, and uploads complete MLflow traces. Transcript token records are used only as a guarded fallback.",
+    "developerName": "Contributors",
+    "category": "Developer Tools",
+    "capabilities": ["Observability"],
+    "defaultPrompt": [
+      "Check this Agent folder and help me test its harness and skills."
+    ]
+  }
+}
