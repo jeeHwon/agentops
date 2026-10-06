@@ -242,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Local Path: {target}")
             if has_release_contract(target) and not args.no_sync:
                 skills = AgentReleaseLoader(registry.profile).sync_skills(target)
+                validate_agent(target)
                 print(f"UC Skill 검증 및 동기화 완료: {len(skills)}개")
             print(f"검증: cd {target} && aops validate")
             print(f"실행: cd {target} && codex")

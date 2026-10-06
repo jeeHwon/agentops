@@ -1,6 +1,6 @@
 {
   "name": "codex-agentops",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "UC Skill 버전을 고정하는 Harness Agent Registry, MCP 배포와 MLflow 모니터링",
   "author": {
     "name": "Contributors"

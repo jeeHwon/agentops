@@ -190,12 +190,22 @@ class RegistryClient:
         artifact_directory = f"{self.location.volume_root}/agents/{manifest.agent_id}/{version}"
         artifact_path = f"{artifact_directory}/{archive.sha256}.tar.gz"
         metadata = {
-            "schema_version": 1,
+            "schema_version": 2,
             "agent_id": manifest.agent_id,
             "version": version,
             "artifact_sha256": archive.sha256,
             "harness_sha256": checksums.harness,
             "skills_sha256": checksums.combined_skills,
+            "artifact_contains_skills": release is None,
+            "skills": [
+                {
+                    "alias": skill.alias,
+                    "uc_name": skill.uc_name,
+                    "version": skill.version,
+                    "sha256": skill.sha256,
+                }
+                for skill in (release.skills if release is not None else ())
+            ],
             "files": archive.files,
         }
 
@@ -332,7 +342,11 @@ class RegistryClient:
             temporary_root = Path(temporary) / "agent"
             temporary_root.mkdir()
             extract_agent_archive(content, temporary_root)
-            manifest = validate_agent(temporary_root)
+            release_artifact = has_release_contract(temporary_root)
+            manifest = validate_agent(
+                temporary_root,
+                require_local_skills=not release_artifact,
+            )
             if manifest.agent_id != registered.agent_id:
                 raise RegistryError("Downloaded artifact agent_id does not match Registry metadata.")
             if target.exists():
@@ -384,7 +398,14 @@ def build_agent_archive(root: str | Path) -> AgentArchive:
     release_path = manifest.root / "release.yaml"
     if release_path.is_file():
         files.append(release_path)
-    skill_entries = sorted((manifest.root / ".agents" / "skills").rglob("*"))
+    # A registered Release stores only the Harness and the version-pinned UC Skill
+    # references in agent.yaml. Skill content remains in UC Skills so access cannot
+    # be bypassed through the Artifact Volume.
+    skill_entries = (
+        []
+        if has_release_contract(manifest.root)
+        else sorted((manifest.root / ".agents" / "skills").rglob("*"))
+    )
     codex_entries = sorted((manifest.root / ".codex").rglob("*"))
     subagent_entries = sorted((manifest.root / "subagents").rglob("*"))
     artifact_entries = skill_entries + codex_entries + subagent_entries

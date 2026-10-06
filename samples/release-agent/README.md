@@ -4,11 +4,10 @@
 
 ```bash
 aops validate samples/release-agent
-aops publish samples/release-agent
 aops assemble samples/release-agent
+aops register samples/release-agent --version 3.1.0
 cd samples/release-agent && codex
 ```
 
-`agent.yaml`의 `release` 영역은 UC Skill 이름, 논리 버전과 SHA-256을 고정합니다. 이미 게시된 Skill은
-수정하지 않습니다. Skill을 변경하면 새 UC Skill 이름과 버전, 새 해시, 새 Agent
-Release 버전을 사용합니다.
+이 Release는 기존 UC Skill `3.0.0` 두 개를 명시적으로 고정합니다. Harness만 변경했으므로
+Agent Release를 `3.1.0`으로 올리고 Skill 버전은 그대로 유지합니다.

@@ -184,7 +184,11 @@ def load_manifest(root: str | Path) -> AgentManifest:
     return AgentManifest(agent_root, agent_id, name, description, schema_version)
 
 
-def validate_agent(root: str | Path) -> AgentManifest:
+def validate_agent(
+    root: str | Path,
+    *,
+    require_local_skills: bool = True,
+) -> AgentManifest:
     manifest = load_manifest(root)
     required_files = (
         ("README.md", "spec.md", "AGENTS.md", "CLAUDE.md")
@@ -200,7 +204,7 @@ def validate_agent(root: str | Path) -> AgentManifest:
 
     skills_root = manifest.root / ".agents" / "skills"
     skill_dirs = sorted(path for path in skills_root.glob("*") if path.is_dir())
-    if not skill_dirs:
+    if require_local_skills and not skill_dirs:
         raise ManifestError(f"At least one local Skill is required under {skills_root}.")
     for skill_dir in skill_dirs:
         skill_file = skill_dir / "SKILL.md"

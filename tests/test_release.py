@@ -14,6 +14,7 @@ from codex_agentops.release import (
     hash_skill_directory,
     load_release,
 )
+from codex_agentops.registry import build_agent_archive, extract_agent_archive
 
 
 SAMPLE = Path(__file__).parents[1] / "samples" / "release-agent"
@@ -26,7 +27,7 @@ def _result(command, returncode=0, stdout="", stderr=""):
 def test_sample_release_pins_two_uc_skills_and_subagent():
     release = load_release(SAMPLE, expected_agent_id="release-sample-agent")
 
-    assert release.release_version == "3.0.0"
+    assert release.release_version == "3.1.0"
     assert release.harness_profile == "codex-v1"
     assert [skill.alias for skill in release.skills] == [
         "release-summary",
@@ -102,7 +103,7 @@ def test_assemble_downloads_hash_verifies_and_generates_runtime(tmp_path):
     assert not (target / "CLAUDE.md").exists()
     assert not (target / "release.yaml").exists()
     config = yaml.safe_load((target / "config.yaml").read_text(encoding="utf-8"))
-    assert config["release_version"] == "3.0.0"
+    assert config["release_version"] == "3.1.0"
     assert config["profiles"] == {
         "model": "standard-v1",
         "harness": "codex-v1",
@@ -130,7 +131,8 @@ def test_assemble_does_not_publish_runtime_on_hash_mismatch(tmp_path):
 
 def test_sync_skills_replaces_agent_skills_only_after_all_hashes_pass(tmp_path):
     root = tmp_path / "agent"
-    shutil.copytree(SAMPLE, root)
+    extract_agent_archive(build_agent_archive(SAMPLE).content, root)
+    assert not (root / ".agents/skills").exists()
     old_skill = root / ".agents/skills/old-skill"
     old_skill.mkdir(parents=True)
     (old_skill / "SKILL.md").write_text("old", encoding="utf-8")

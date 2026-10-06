@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from codex_agentops.manifest import create_agent, validate_agent
+from codex_agentops.manifest import ManifestError, create_agent, validate_agent
 from codex_agentops.registry import (
     RegistryError,
     build_agent_archive,
@@ -64,14 +64,22 @@ def test_archive_rejects_symbolic_links(tmp_path):
         build_agent_archive(root)
 
 
-def test_release_agent_archive_contains_release_contract_and_codex_subagent():
+def test_release_agent_archive_contains_release_contract_and_codex_subagent(tmp_path):
     sample = Path(__file__).parents[1] / "samples" / "release-agent"
     archive = build_agent_archive(sample)
 
     assert "agent.yaml" in archive.files
     assert ".codex/agents/validator.toml" in archive.files
+    assert not any(name.startswith(".agents/skills/") for name in archive.files)
     assert "release.yaml" not in archive.files
     assert "spec.md" not in archive.files
     assert "CLAUDE.md" not in archive.files
     assert ".runtime/config.yaml" not in archive.files
     assert ".aops/runtime/config.yaml" not in archive.files
+
+    destination = tmp_path / "extracted-release"
+    extract_agent_archive(archive.content, destination)
+    manifest = validate_agent(destination, require_local_skills=False)
+    assert manifest.agent_id == "release-sample-agent"
+    with pytest.raises(ManifestError, match="At least one local Skill"):
+        validate_agent(destination)
