@@ -203,6 +203,15 @@ aops deploy . \
 `ask_agent`는 호출자의 Databricks OAuth 토큰을 전달하는 OBO 방식을 사용하며 각 호출을
 MLflow Trace로 기록합니다. 원격 배포 없이 생성물만 검증하려면 `--build-only`를 사용합니다.
 
+App 이름은 항상 `mcp-`로 시작합니다. Databricks는 이 이름 규칙의 Apps MCP 서버를
+Unity Gateway와 AI Playground에서 자동으로 검색하므로 별도의 UC Connection이나 외부
+MCP Service를 만들 필요가 없습니다. 배포가 끝나면 `aops`가 `app:<app-name>` 형식의
+Unity Gateway 식별자를 출력합니다. 로컬 코딩 에이전트에 연결할 때는 다음처럼 사용합니다.
+
+```bash
+ug mcp add --names "app:<app-name>"
+```
+
 ## 모니터링 확인
 
 Codex Turn 종료 Hook과 OTel 이벤트는 Token, Tool 호출, Sub-agent와 응답 정보를 로컬

@@ -56,6 +56,11 @@ class DeploymentResult:
     def mcp_url(self) -> str | None:
         return f"{self.app_url.rstrip('/')}/mcp" if self.app_url else None
 
+    @property
+    def gateway_selector(self) -> str | None:
+        """Unity Gateway selector for a deployed Databricks-hosted MCP app."""
+        return f"app:{self.build.app_name}" if self.app_url else None
+
 
 CommandRunner = Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]]
 ExperimentResolver = Callable[[str, str, str, str, str], str]
@@ -240,6 +245,11 @@ class McpAppBuilder:
                 },
                 "authentication": "oauth-obo",
                 "mcp_path": "/mcp",
+                "unity_gateway": {
+                    "discovery": "automatic",
+                    "resource_type": "databricks_app",
+                    "selector": f"app:{app_name}",
+                },
             }
             (staging / "deployment.yaml").write_text(
                 yaml.safe_dump(deployment, allow_unicode=True, sort_keys=False),

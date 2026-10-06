@@ -272,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
             if result.mcp_url:
                 print(f"Databricks App: {result.app_url}")
                 print(f"MCP URL: {result.mcp_url}")
+                print(f"Unity Gateway MCP: {result.gateway_selector}")
             elif args.build_only:
                 print("원격 배포 생략: --build-only")
             else:

@@ -7,6 +7,8 @@ import pytest
 import yaml
 
 from codex_agentops.deploy import (
+    AppBuild,
+    DeploymentResult,
     DeployError,
     McpAppBuilder,
     default_app_name,
@@ -147,10 +149,41 @@ def test_builder_preserves_runtime_files_and_wires_app_resources(tmp_path):
 
     deployment = yaml.safe_load((output / "deployment.yaml").read_text(encoding="utf-8"))
     assert deployment["authentication"] == "oauth-obo"
+    assert deployment["unity_gateway"] == {
+        "discovery": "automatic",
+        "resource_type": "databricks_app",
+        "selector": "app:mcp-release-sample-agent",
+    }
     assert deployment["trace_location"] == {
         "catalog": "poc_catalog",
         "schema": "agentops_test",
     }
+
+
+def test_deployment_result_exposes_unity_gateway_app_selector():
+    build = AppBuild(
+        root=Path("/tmp/mcp-app"),
+        app_name="mcp-release-sample-agent",
+        agent_id="release-sample-agent",
+        release_version="3.1.0",
+        model_endpoint="databricks-gpt-5-1",
+        experiment_name="/Shared/agentops/release-sample-agent",
+        experiment_id="12345",
+        trace_catalog="poc_catalog",
+        trace_schema="agentops_test",
+    )
+
+    deployed = DeploymentResult(
+        build=build,
+        app_url="https://mcp-release-sample-agent.example.databricksapps.com",
+    )
+    build_only = DeploymentResult(build=build, app_url=None)
+
+    assert deployed.mcp_url == (
+        "https://mcp-release-sample-agent.example.databricksapps.com/mcp"
+    )
+    assert deployed.gateway_selector == "app:mcp-release-sample-agent"
+    assert build_only.gateway_selector is None
 
 
 def test_builder_will_not_replace_unmanaged_directory(tmp_path):
