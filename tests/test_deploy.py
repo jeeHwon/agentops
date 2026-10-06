@@ -27,7 +27,6 @@ def _runtime(tmp_path: Path) -> Path:
     (runtime / "skills" / "release-validation").mkdir(parents=True)
     (runtime / ".codex/agents").mkdir(parents=True)
     (runtime / "AGENTS.md").write_text("# Harness\n", encoding="utf-8")
-    (runtime / "spec.md").write_text("# Specification\n", encoding="utf-8")
     (runtime / "skills/release-summary/SKILL.md").write_text(
         "# Release Summary\n", encoding="utf-8"
     )
@@ -107,7 +106,8 @@ def test_builder_preserves_runtime_files_and_wires_app_resources(tmp_path):
     assert build.root == output
     assert (output / ".aops-generated").is_file()
     assert (output / "runtime/AGENTS.md").is_file()
-    assert (output / "runtime/spec.md").is_file()
+    assert not (output / "runtime/spec.md").exists()
+    assert not (output / "runtime/CLAUDE.md").exists()
     assert (output / "runtime/skills/release-summary/SKILL.md").is_file()
     assert (output / "runtime/.codex/agents/validator.toml").is_file()
     assert not (output / "runtime/agent.md").exists()

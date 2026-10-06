@@ -24,7 +24,7 @@ from .manifest import (
     calculate_definition_checksums,
     validate_agent,
 )
-from .release import load_release
+from .release import has_release_contract, load_release
 
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -156,12 +156,17 @@ class RegistryClient:
         if not VERSION_RE.fullmatch(version):
             raise RegistryError("Version must contain only letters, numbers, dot, underscore, or hyphen.")
         manifest = validate_agent(root)
-        release = load_release(manifest.root, expected_agent_id=manifest.agent_id) if (
-            manifest.root / "release.yaml"
-        ).is_file() else None
+        has_release = has_release_contract(manifest.root)
+        if manifest.schema_version == 2 and not has_release:
+            raise RegistryError("agent.yaml release 계약이 없어 Agent를 등록할 수 없습니다.")
+        release = (
+            load_release(manifest.root, expected_agent_id=manifest.agent_id)
+            if has_release
+            else None
+        )
         if release is not None and release.release_version != version:
             raise RegistryError(
-                f"Agent version '{version}' must match release.yaml release_version "
+                f"Agent version '{version}' must match the Agent release version "
                 f"'{release.release_version}'."
             )
         if self.get(manifest.agent_id, version, allow_missing=True) is not None:
@@ -370,7 +375,12 @@ class RegistryClient:
 
 def build_agent_archive(root: str | Path) -> AgentArchive:
     manifest = validate_agent(root)
-    files = [manifest.root / name for name in ("agent.yaml", "README.md", "spec.md", "AGENTS.md", "CLAUDE.md")]
+    files = [manifest.root / name for name in ("agent.yaml", "README.md", "AGENTS.md")]
+    files.extend(
+        manifest.root / name
+        for name in ("spec.md", "CLAUDE.md")
+        if (manifest.root / name).is_file()
+    )
     release_path = manifest.root / "release.yaml"
     if release_path.is_file():
         files.append(release_path)

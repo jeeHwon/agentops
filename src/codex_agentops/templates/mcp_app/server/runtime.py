@@ -35,10 +35,7 @@ def load_runtime() -> AgentRuntime:
         raise RuntimeError("runtime/config.yaml must contain an object")
 
     sections: list[str] = []
-    for title, relative in (
-        ("Agent Harness", "AGENTS.md"),
-        ("Business Specification", "spec.md"),
-    ):
+    for title, relative in (("Agent Harness", "AGENTS.md"),):
         path = RUNTIME_ROOT / relative
         if path.is_file():
             sections.append(f"# {title}\n\n{path.read_text(encoding='utf-8')}")

@@ -6,9 +6,9 @@
 aops validate samples/release-agent
 aops publish samples/release-agent
 aops assemble samples/release-agent
-cd samples/release-agent/.runtime && codex
+cd samples/release-agent && codex
 ```
 
-`release.yaml`은 UC Skill 이름, 논리 버전과 SHA-256을 고정합니다. 이미 게시된 Skill은
+`agent.yaml`의 `release` 영역은 UC Skill 이름, 논리 버전과 SHA-256을 고정합니다. 이미 게시된 Skill은
 수정하지 않습니다. Skill을 변경하면 새 UC Skill 이름과 버전, 새 해시, 새 Agent
-`release_version`을 사용합니다.
+Release 버전을 사용합니다.

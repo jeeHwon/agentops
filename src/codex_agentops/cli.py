@@ -36,7 +36,7 @@ from .monitoring import configure_turn_monitoring
 from .outbox import Outbox
 from .paths import outbox_path
 from .registry import RegistryClient, RegistryError, parse_registry
-from .release import AgentReleaseLoader, ReleaseError, UcSkillPublisher
+from .release import AgentReleaseLoader, ReleaseError, UcSkillPublisher, has_release_contract
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -80,17 +80,17 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("path", nargs="?", type=Path, default=Path.cwd())
 
     publish = commands.add_parser(
-        "publish", help="release.yaml에 고정된 Skill 버전을 Unity Catalog에 게시합니다"
+        "publish", help="agent.yaml에 고정된 Skill 버전을 Unity Catalog에 게시합니다"
     )
     publish.add_argument("path", nargs="?", type=Path, default=Path.cwd())
     publish.add_argument("--profile", help="configure에 저장된 Profile 대신 사용할 값")
 
     assemble = commands.add_parser(
-        "assemble", help="UC Skill을 내려받아 hash 검증 후 실행 구조를 생성합니다"
+        "assemble", help="UC Skill을 검증해 배포용 Runtime을 생성합니다"
     )
     assemble.add_argument("path", nargs="?", type=Path, default=Path.cwd())
     assemble.add_argument("--profile", help="configure에 저장된 Profile 대신 사용할 값")
-    assemble.add_argument("--output", type=Path, help="실행 구조 경로 (기본값: <agent>/.runtime)")
+    assemble.add_argument("--output", type=Path, help="배포용 Runtime 경로 (기본값: <agent>/.aops/runtime)")
     assemble.add_argument("--force", action="store_true", help="기존 실행 구조를 검증된 새 구조로 교체합니다")
 
     registry_init = commands.add_parser(
@@ -111,7 +111,13 @@ def build_parser() -> argparse.ArgumentParser:
     load.add_argument("agent_id", help="내려받을 Agent ID")
     load.add_argument("--version", help="버전, 생략하면 가장 최근 등록 버전")
     load.add_argument("--path", type=Path, help="대상 폴더, 기본값은 ./<agent-id>")
-    load.add_argument("--no-assemble", action="store_true", help="Release Runtime 자동 조립을 생략합니다")
+    load.add_argument(
+        "--no-sync",
+        "--no-assemble",
+        dest="no_sync",
+        action="store_true",
+        help="UC Skill 자동 검증·동기화를 생략합니다",
+    )
     _add_registry_arguments(load)
 
     deploy = commands.add_parser(
@@ -195,9 +201,9 @@ def main(argv: list[str] | None = None) -> int:
                 destination=args.output,
                 replace=args.force,
             )
-            print(f"Agent Runtime 조립 완료: {result.runtime_root}")
+            print(f"배포용 Agent Runtime 검증 완료: {result.runtime_root}")
             print(f"Runtime Config: {result.config_path}")
-            print(f"로컬 실행: cd {result.runtime_root} && codex")
+            print(f"로컬 개발: cd {root} && codex")
             return 0
         if args.command == "registry-init":
             registry = _registry_client(args)
@@ -234,10 +240,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"Agent 로드 완료: {item.agent_id}@{item.version}")
             print(f"Local Path: {target}")
-            if (target / "release.yaml").is_file() and not args.no_assemble:
-                result = AgentReleaseLoader(registry.profile).assemble(target)
-                print(f"Release Runtime: {result.runtime_root}")
+            if has_release_contract(target) and not args.no_sync:
+                skills = AgentReleaseLoader(registry.profile).sync_skills(target)
+                print(f"UC Skill 검증 및 동기화 완료: {len(skills)}개")
             print(f"검증: cd {target} && aops validate")
+            print(f"실행: cd {target} && codex")
             return 0
         if args.command == "deploy":
             root = _agent_root(args.path)

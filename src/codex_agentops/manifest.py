@@ -58,15 +58,66 @@ max_concurrent_threads_per_session = 4
 
 EXAMPLE_SUBAGENT = '''\
 name = "validator"
-description = "결과가 spec.md의 범위와 성공 기준을 충족하는지 독립적으로 검증할 때 사용합니다."
+description = "결과가 AGENTS.md의 범위와 성공 기준을 충족하는지 독립적으로 검증할 때 사용합니다."
 sandbox_mode = "read-only"
 developer_instructions = """
-`spec.md`의 범위와 성공 기준을 먼저 읽습니다.
+`AGENTS.md`의 범위와 성공 기준을 따릅니다.
 결과의 사실성, 누락과 요구사항 충족 여부를 검증합니다.
 문제를 발견하면 근거와 수정 방향을 간단히 반환합니다.
 파일을 수정하지 않습니다.
 """
 '''
+
+
+AGENTS_TEMPLATE = """\
+---
+agent_type: harness
+service_criticality: low
+data_sensitivity: internal
+security_access_level: standard
+required_uc_permissions: []
+use_flagship_model: false
+---
+
+# Agent Instructions
+
+## 목적
+
+사용자의 업무 요청을 정의된 Skill 절차에 따라 처리하고 검토 가능한 결과를 반환합니다.
+
+## 대상 사용자와 입력
+
+- 대상 사용자: 내부 업무 사용자
+- 필수 입력: 사용자의 업무 요청과 처리에 필요한 배경 정보
+- 허용하지 않는 입력: 인증정보, Secret 또는 승인되지 않은 민감정보 원문
+
+## 출력
+
+- 요청에 대한 최종 결과
+- 판단 근거와 확인이 필요한 제한사항
+- 필요한 경우 사용자가 수행할 다음 행동
+
+## 업무 범위
+
+- 포함: `.agents/skills`에 정의된 업무와 승인된 Tool 및 MCP를 사용하는 작업
+- 제외: 사용자에게 실제 권한이 없는 데이터 접근과 정의되지 않은 외부 시스템 변경
+
+## 성공 기준
+
+- 사용자가 명시한 요청과 필수 출력 항목을 모두 충족합니다.
+- 근거가 없는 사실을 생성하지 않고 불확실한 내용은 명확히 표시합니다.
+- Secret과 개인정보를 출력하지 않습니다.
+- 정의된 출력 형식과 Skill 절차를 따릅니다.
+
+## Skill 사용
+
+- 요청과 `description`이 일치하는 Skill만 사용합니다.
+- 여러 Skill이 관련되면 필요한 Skill만 순서대로 사용합니다.
+
+## Sub-agent 사용
+
+- 독립적인 결과 검증이 필요하면 `validator` Sub-agent에게 맡깁니다.
+"""
 
 
 class ManifestError(RuntimeError):
@@ -111,11 +162,19 @@ def load_manifest(root: str | Path) -> AgentManifest:
     if not isinstance(raw, dict):
         raise ManifestError(f"Manifest {target} must be a YAML object.")
     schema_version = raw.get("schema_version")
-    agent_id = str(raw.get("agent_id", "")).strip()
-    name = str(raw.get("name", "")).strip()
-    description = str(raw.get("description", "")).strip()
-    if schema_version != 1:
-        raise ManifestError("agent.yaml schema_version must be 1.")
+    if schema_version == 1:
+        values = raw
+        id_key = "agent_id"
+    elif schema_version == 2:
+        values = raw.get("agent")
+        if not isinstance(values, dict):
+            raise ManifestError("agent.yaml schema_version 2 requires an agent object.")
+        id_key = "id"
+    else:
+        raise ManifestError("agent.yaml schema_version must be 1 or 2.")
+    agent_id = str(values.get(id_key, "")).strip()
+    name = str(values.get("name", "")).strip()
+    description = str(values.get("description", "")).strip()
     if not AGENT_ID_RE.fullmatch(agent_id):
         raise ManifestError("agent_id must use lower-case kebab-case.")
     if not name:
@@ -127,10 +186,17 @@ def load_manifest(root: str | Path) -> AgentManifest:
 
 def validate_agent(root: str | Path) -> AgentManifest:
     manifest = load_manifest(root)
-    for name in ("README.md", "spec.md", "AGENTS.md", "CLAUDE.md"):
+    required_files = (
+        ("README.md", "spec.md", "AGENTS.md", "CLAUDE.md")
+        if manifest.schema_version == 1
+        else ("README.md", "AGENTS.md")
+    )
+    for name in required_files:
         path = manifest.root / name
         if not path.is_file() or not path.read_text(encoding="utf-8").strip():
             raise ManifestError(f"Missing or empty Agent definition: {path}")
+    if manifest.schema_version == 2:
+        validate_agents_md(manifest.root / "AGENTS.md")
 
     skills_root = manifest.root / ".agents" / "skills"
     skill_dirs = sorted(path for path in skills_root.glob("*") if path.is_dir())
@@ -148,8 +214,7 @@ def validate_agent(root: str | Path) -> AgentManifest:
     custom_agents = manifest.root / ".codex" / "agents"
     for agent_file in sorted(custom_agents.glob("*.toml")):
         validate_codex_agent_config(agent_file)
-    release_path = manifest.root / "release.yaml"
-    if release_path.exists():
+    if _has_release_contract(manifest.root, manifest.schema_version):
         from .release import ReleaseError, load_release
 
         try:
@@ -173,30 +238,14 @@ def create_agent(agent_id: str, destination: str | Path | None = None) -> Path:
     codex_agents_dir.mkdir(parents=True, exist_ok=True)
     files: dict[Path, str] = {
         root / "agent.yaml": (
-            "schema_version: 1\n"
-            f"agent_id: {agent_id}\n"
-            f"name: {name}\n"
-            "description: 이 Agent가 해결하는 업무를 한 문장으로 작성하세요.\n"
+            "schema_version: 2\n"
+            "agent:\n"
+            f"  id: {agent_id}\n"
+            f"  name: {name}\n"
+            "  description: 이 Agent가 해결하는 업무를 한 문장으로 작성하세요.\n"
         ),
         root / "README.md": _agent_readme(agent_id),
-        root / "spec.md": _business_spec(),
-        root / "AGENTS.md": (
-            "# Agent Instructions\n\n"
-            "## 공통 행동\n\n"
-            "- `spec.md`의 업무 범위와 성공 기준을 따릅니다.\n"
-            "- 사용자의 요청을 정확히 확인합니다.\n"
-            "- 근거가 없는 내용은 추측하지 않습니다.\n"
-            "- 필요한 경우에만 추가 정보를 질문합니다.\n\n"
-            "## Skill 사용\n\n"
-            "- 요청과 description이 일치하는 Skill만 사용합니다.\n"
-            "- 여러 Skill이 관련되면 필요한 Skill만 순서대로 사용합니다.\n\n"
-            "## Sub-agent 사용\n\n"
-            "- 독립적인 결과 검증이 필요하면 `validator` Sub-agent에게 맡깁니다.\n"
-        ),
-        root / "CLAUDE.md": (
-            "# Compatibility Instructions\n\n"
-            "이 파일은 다른 Harness Runtime과의 호환 지침이 필요한 경우 사용합니다.\n"
-        ),
+        root / "AGENTS.md": AGENTS_TEMPLATE,
         skill_dir / "SKILL.md": EXAMPLE_SKILL,
         root / ".codex" / "config.toml": CODEX_PROJECT_CONFIG,
         codex_agents_dir / "validator.toml": EXAMPLE_SUBAGENT,
@@ -215,18 +264,15 @@ def _agent_readme(agent_id: str) -> str:
         이 폴더 하나가 로컬에서 개발하고 Registry에 버전으로 등록하는 Harness Agent입니다.
         사용자는 Markdown Harness와 Skill만 수정하고 기존 `codex` 명령으로 테스트합니다.
 
-        ## 수정할 파일
+        ## Agent 개발자가 수정할 파일
 
         | 파일 | 용도 |
         |---|---|
-        | `agent.yaml` | Agent 이름과 설명 |
-        | `spec.md` | 목적, 범위, 입출력, 데이터 등급과 성공 기준 |
-        | `AGENTS.md` | 모든 요청에 적용되는 공통 행동과 Skill 선택 원칙 |
+        | `AGENTS.md` | 목적, 범위, 성공 기준, 거버넌스와 공통 행동 |
         | `.agents/skills/*/SKILL.md` | 업무별 절차, 입력, 출력과 제약사항 |
-        | `.codex/config.toml` | 프로젝트의 Codex Sub-agent 실행 설정 |
         | `.codex/agents/*.toml` | Codex가 자동 등록하는 Sub-agent 역할과 지침 |
-        | `README.md` | 사용 예시와 운영 메모 |
-        | `CLAUDE.md` | 선택적인 다른 Harness 호환 지침 |
+
+        `agent.yaml`, `.codex/config.toml`, `README.md`는 CLI 또는 상위 플랫폼이 관리합니다.
 
         ## 개발과 검증
 
@@ -236,8 +282,7 @@ def _agent_readme(agent_id: str) -> str:
         ```
 
         Codex는 `AGENTS.md`, `.agents/skills/*/SKILL.md`, `.codex/agents/*.toml`을
-        공식 위치에서 발견합니다. `spec.md`는 `AGENTS.md` 지침에 따라 작업 시작 시
-        읽습니다. 숨김 폴더는 `ls -la`로 확인하고 Skill 목록은 Codex의 `/skills`에서
+        공식 위치에서 발견합니다. 숨김 폴더는 `ls -la`로 확인하고 Skill 목록은 Codex의 `/skills`에서
         확인합니다.
 
         새 Skill은 예제 폴더를 복사해 만듭니다. 폴더명과 `SKILL.md` frontmatter의
@@ -247,8 +292,9 @@ def _agent_readme(agent_id: str) -> str:
         cp -R .agents/skills/example-skill .agents/skills/customer-summary
         ```
 
-        Registry에 등록하면 현재 폴더가 체크섬이 있는 불변 `tar.gz` 스냅샷이 됩니다.
-        같은 Agent와 Version은 덮어쓰지 않으며, 수정본은 새 Version으로 등록합니다.
+        Release 관리 절차가 `agent.yaml`에 Skill 버전과 해시를 고정한 뒤 Registry에
+        등록하면 현재 폴더가 체크섬이 있는 불변 `tar.gz` 스냅샷이 됩니다. 같은 Agent와
+        Version은 덮어쓰지 않으며, 수정본은 새 Version으로 등록합니다.
 
         ```bash
         aops register . --version 1.0.0
@@ -262,69 +308,6 @@ def _agent_readme(agent_id: str) -> str:
 
         Agent를 Databricks App이나 API로 공유하는 배포 과정은 별도 선택 단계이며,
         이 로컬 개발 폴더에는 AppKit 서버나 UI 코드를 포함하지 않습니다.
-        """
-    )
-
-
-def _business_spec() -> str:
-    return textwrap.dedent(
-        """\
-        ---
-        agent_type: harness
-        service_criticality: low
-        data_sensitivity: internal
-        security_access_level: standard
-        required_uc_permissions: []
-        use_flagship_model: false
-        ---
-
-        # Business Specification
-
-        이 파일은 Agent의 업무 범위와 운영 기준을 정의합니다. 기본값을 실제 업무와 데이터에 맞게 수정하세요.
-
-        ## 목적
-
-        사용자의 업무 요청을 정의된 Skill 절차에 따라 처리하고 검토 가능한 결과를 반환합니다.
-
-        ## 대상 사용자와 입력
-
-        - 대상 사용자: 내부 업무 사용자
-        - 필수 입력: 사용자의 업무 요청과 처리에 필요한 배경 정보
-        - 허용하지 않는 입력: 인증정보, Secret 또는 승인되지 않은 민감정보 원문
-
-        ## 출력
-
-        - 요청에 대한 최종 결과
-        - 판단 근거와 확인이 필요한 제한사항
-        - 필요한 경우 사용자가 수행할 다음 행동
-
-        ## 업무 범위
-
-        - 포함: `.agents/skills`에 정의된 업무와 승인된 Tool 및 MCP를 사용하는 작업
-        - 제외: 사용자에게 실제 권한이 없는 데이터 접근과 정의되지 않은 외부 시스템 변경
-
-        ## 성공 기준
-
-        - 사용자가 명시한 요청과 필수 출력 항목을 모두 충족합니다.
-        - 근거가 없는 사실을 생성하지 않고 불확실한 내용은 명확히 표시합니다.
-        - Secret과 개인정보를 출력하지 않습니다.
-        - 정의된 출력 형식과 Skill 절차를 따릅니다.
-
-        ## UC 필요 권한
-
-        `required_uc_permissions`는 요구사항 선언이며 실제 권한을 부여하지 않습니다.
-        UC 리소스를 사용하면 리소스, 권한과 목적을 명시합니다.
-
-        ```yaml
-        required_uc_permissions:
-          - resource: catalog.schema.table
-            privileges: [SELECT]
-            purpose: 답변 생성에 필요한 기준 데이터를 조회합니다.
-        ```
-
-        ## Flagship 모델 사용 사유
-
-        기본값은 `false`입니다. `true`로 변경하면 일반 모델로 충족하기 어려운 품질 기준을 작성합니다.
         """
     )
 
@@ -356,6 +339,42 @@ def _validate_skill(path: Path) -> None:
         raise ManifestError(f"Skill instructions are required after frontmatter: {path}")
 
 
+def validate_agents_md(path: str | Path) -> dict:
+    target = Path(path)
+    try:
+        content = target.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ManifestError(f"Cannot read AGENTS.md {target}: {exc}") from exc
+    if not content.startswith("---\n"):
+        raise ManifestError(f"AGENTS.md must start with YAML frontmatter: {target}")
+    parts = content.split("---", 2)
+    if len(parts) != 3:
+        raise ManifestError(f"AGENTS.md frontmatter is not closed: {target}")
+    try:
+        metadata = yaml.safe_load(parts[1])
+    except yaml.YAMLError as exc:
+        raise ManifestError(f"Invalid AGENTS.md frontmatter {target}: {exc}") from exc
+    if not isinstance(metadata, dict):
+        raise ManifestError(f"AGENTS.md frontmatter must be a YAML object: {target}")
+    for key in (
+        "agent_type",
+        "service_criticality",
+        "data_sensitivity",
+        "security_access_level",
+    ):
+        if not isinstance(metadata.get(key), str) or not metadata[key].strip():
+            raise ManifestError(f"AGENTS.md requires non-empty {key}: {target}")
+    if not isinstance(metadata.get("required_uc_permissions"), list):
+        raise ManifestError(f"AGENTS.md required_uc_permissions must be a list: {target}")
+    if not isinstance(metadata.get("use_flagship_model"), bool):
+        raise ManifestError(f"AGENTS.md use_flagship_model must be true or false: {target}")
+    body = parts[2]
+    for heading in ("## 목적", "## 대상 사용자와 입력", "## 출력", "## 업무 범위", "## 성공 기준"):
+        if heading not in body:
+            raise ManifestError(f"AGENTS.md is missing required section '{heading}': {target}")
+    return metadata
+
+
 def validate_codex_agent_config(path: str | Path, *, expected_name: str | None = None) -> dict:
     target = Path(path)
     values = _load_toml(target)
@@ -377,6 +396,16 @@ def _load_toml(path: Path) -> dict:
     if not isinstance(values, dict):
         raise ManifestError(f"Codex TOML must contain a table: {path}")
     return values
+
+
+def _has_release_contract(root: Path, schema_version: int) -> bool:
+    if schema_version == 1:
+        return (root / "release.yaml").is_file()
+    try:
+        raw = yaml.safe_load((root / "agent.yaml").read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return False
+    return isinstance(raw, dict) and isinstance(raw.get("release"), dict)
 
 
 def calculate_definition_checksums(root: str | Path) -> DefinitionChecksums:

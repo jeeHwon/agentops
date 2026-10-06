@@ -26,8 +26,8 @@ def _result(command, returncode=0, stdout="", stderr=""):
 def test_sample_release_pins_two_uc_skills_and_subagent():
     release = load_release(SAMPLE, expected_agent_id="release-sample-agent")
 
-    assert release.release_version == "2.0.0"
-    assert release.harness_profile == "omnigent-v1"
+    assert release.release_version == "3.0.0"
+    assert release.harness_profile == "codex-v1"
     assert [skill.alias for skill in release.skills] == [
         "release-summary",
         "release-validation",
@@ -75,8 +75,8 @@ def test_publish_rejects_existing_skill_before_writing():
 
 def test_assemble_downloads_hash_verifies_and_generates_runtime(tmp_path):
     source_by_leaf = {
-        "release-summary-v2-0-0": SAMPLE / ".agents/skills/release-summary",
-        "release-validation-v2-0-0": SAMPLE / ".agents/skills/release-validation",
+        "release-summary-v3-0-0": SAMPLE / ".agents/skills/release-summary",
+        "release-validation-v3-0-0": SAMPLE / ".agents/skills/release-validation",
     }
 
     def runner(command):
@@ -98,11 +98,14 @@ def test_assemble_downloads_hash_verifies_and_generates_runtime(tmp_path):
     assert (target / ".agents/skills/release-validation/SKILL.md").is_file()
     assert (target / ".codex/config.toml").is_file()
     assert (target / ".codex/agents/validator.toml").is_file()
+    assert not (target / "spec.md").exists()
+    assert not (target / "CLAUDE.md").exists()
+    assert not (target / "release.yaml").exists()
     config = yaml.safe_load((target / "config.yaml").read_text(encoding="utf-8"))
-    assert config["release_version"] == "2.0.0"
+    assert config["release_version"] == "3.0.0"
     assert config["profiles"] == {
         "model": "standard-v1",
-        "harness": "omnigent-v1",
+        "harness": "codex-v1",
         "mcp_tools": "readonly-v1",
     }
     assert config["skills"][0]["markdown"] == "skills/release-summary/SKILL.md"
@@ -123,3 +126,30 @@ def test_assemble_does_not_publish_runtime_on_hash_mismatch(tmp_path):
         AgentReleaseLoader("test-profile", runner=runner).assemble(SAMPLE, destination=target)
 
     assert not target.exists()
+
+
+def test_sync_skills_replaces_agent_skills_only_after_all_hashes_pass(tmp_path):
+    root = tmp_path / "agent"
+    shutil.copytree(SAMPLE, root)
+    old_skill = root / ".agents/skills/old-skill"
+    old_skill.mkdir(parents=True)
+    (old_skill / "SKILL.md").write_text("old", encoding="utf-8")
+    source_by_leaf = {
+        "release-summary-v3-0-0": SAMPLE / ".agents/skills/release-summary",
+        "release-validation-v3-0-0": SAMPLE / ".agents/skills/release-validation",
+    }
+
+    def runner(command):
+        command = list(command)
+        remote = command[3]
+        destination = Path(command[4])
+        leaf = remote.rstrip("/").split("/")[-1]
+        shutil.copytree(source_by_leaf[leaf], destination)
+        return _result(command)
+
+    paths = AgentReleaseLoader("test-profile", runner=runner).sync_skills(root)
+
+    assert set(paths) == {"release-summary", "release-validation"}
+    assert not old_skill.exists()
+    assert (root / ".agents/skills/release-summary/SKILL.md").is_file()
+    assert (root / ".agents/skills/release-validation/SKILL.md").is_file()

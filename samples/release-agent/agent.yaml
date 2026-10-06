@@ -1,4 +1,29 @@
-schema_version: 1
-agent_id: release-sample-agent
-name: Release Sample Agent
-description: 문서 초안을 요약하고 별도 검증 절차로 품질을 확인하는 예제 Agent입니다.
+schema_version: 2
+
+agent:
+  id: release-sample-agent
+  name: Release Sample Agent
+  description: 문서 초안을 요약하고 별도 검증 절차로 품질을 확인하는 예제 Agent입니다.
+
+release:
+  version: 3.0.0
+  profiles:
+    model: standard-v1
+    harness: codex-v1
+    mcp_tools: readonly-v1
+  skills:
+    - alias: release-summary
+      uc_name: poc_catalog.agentops_test.release-summary-v3-0-0
+      version: 3.0.0
+      sha256: 98245bd027feb4957d0044f68f0b338a040c7b91827770f75255cbbfb2520ef2
+      source: .agents/skills/release-summary
+    - alias: release-validation
+      uc_name: poc_catalog.agentops_test.release-validation-v3-0-0
+      version: 3.0.0
+      sha256: 65815f827ec7981ca3423e4160f19c3af33494da2e0e54a6d02a04a62acd2d94
+      source: .agents/skills/release-validation
+  subagents:
+    - id: validator
+      instructions: .codex/agents/validator.toml
+      skills:
+        - release-validation

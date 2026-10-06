@@ -59,7 +59,7 @@ def test_archive_rejects_path_traversal(tmp_path):
 
 def test_archive_rejects_symbolic_links(tmp_path):
     root = create_agent("claims-helper", tmp_path / "source")
-    (root / ".agents/skills/example-skill/reference.txt").symlink_to(root / "spec.md")
+    (root / ".agents/skills/example-skill/reference.txt").symlink_to(root / "AGENTS.md")
     with pytest.raises(RegistryError, match="Symbolic links"):
         build_agent_archive(root)
 
@@ -68,6 +68,10 @@ def test_release_agent_archive_contains_release_contract_and_codex_subagent():
     sample = Path(__file__).parents[1] / "samples" / "release-agent"
     archive = build_agent_archive(sample)
 
-    assert "release.yaml" in archive.files
+    assert "agent.yaml" in archive.files
     assert ".codex/agents/validator.toml" in archive.files
+    assert "release.yaml" not in archive.files
+    assert "spec.md" not in archive.files
+    assert "CLAUDE.md" not in archive.files
     assert ".runtime/config.yaml" not in archive.files
+    assert ".aops/runtime/config.yaml" not in archive.files

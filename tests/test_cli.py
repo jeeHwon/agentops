@@ -67,6 +67,13 @@ def test_load_accepts_optional_version_and_path():
     assert args.agent_id == "claims-helper"
     assert args.version == "2.0.0"
     assert str(args.path) == "loaded"
+    assert args.no_sync is False
+
+
+def test_load_keeps_no_assemble_as_no_sync_compatibility_alias():
+    args = build_parser().parse_args(["load", "claims-helper", "--no-assemble"])
+
+    assert args.no_sync is True
 
 
 def test_publish_and_assemble_accept_configured_profile():

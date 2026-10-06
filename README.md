@@ -1,25 +1,27 @@
 # AgentOps
 
-Markdown로 Agent를 개발하고, UC Skill 버전을 고정하고, Databricks Registry에 Agent
-Release를 등록한 뒤 OAuth MCP App으로 배포하는 도구입니다. Agent를 내려받은 뒤 기존
-`codex` 명령을 그대로 사용할 수 있습니다.
+Markdown로 Harness Agent를 개발하고, Unity Catalog Skill과 Agent Release를 불변 버전으로
+관리하며, Databricks Apps의 OAuth MCP 서버로 배포하는 도구입니다. Agent 폴더에서 기존
+`codex` 명령을 그대로 사용합니다.
 
 ```text
-Agent Release Manifest
+Agent Registry에서 Release 선택
+        ↓
+Agent Artifact 다운로드
         ↓
 UC Skills 다운로드 및 SHA-256 검증
         ↓
-AGENTS.md / .agents/skills / .codex/agents / config.yaml 생성
+Agent 루트의 .agents/skills 동기화
         ↓
-로컬 Harness에서 개발하거나 Databricks Apps MCP로 배포
+codex로 즉시 실행·수정·검증
+        ↓
+새 Release 등록 또는 MCP App 배포(선택)
 ```
 
-- **Agent**는 개발·테스트·등록 단위입니다.
-- **Skill**은 권한·재사용·감사 단위입니다.
-- **`release.yaml`**은 Agent가 사용할 UC Skill의 이름, 버전과 해시를 고정합니다.
-
-공통 Skill이 변경되어도 등록된 Agent에는 자동 반영하지 않습니다. 변경된 Skill은 새
-이름과 버전으로 게시하고, 새 Agent Release에서 명시적으로 선택합니다.
+- **Agent**는 개발, 테스트와 등록의 단위입니다.
+- **Skill**은 재사용 가능한 업무 절차이자 권한과 감사의 단위입니다.
+- **Agent Release**는 Harness, Skill 조합, UC Skill 버전과 해시를 고정한 불변 스냅샷입니다.
+- 공통 Skill이 바뀌어도 기존 Agent Release에는 자동 반영하지 않습니다.
 
 ## 1. 설치
 
@@ -32,9 +34,12 @@ cd agentops
 aops --version
 ```
 
-## 2. Databricks 로그인
+`install.sh`는 로컬에 `aops` CLI와 Codex AgentOps Plugin을 설치합니다. Marketplace에
+공개하거나 원격 Workspace를 변경하지 않습니다.
 
-사용할 Workspace와 Profile을 직접 지정합니다.
+## 2. Databricks 설정
+
+사용할 Workspace Profile은 사용자가 직접 선택합니다.
 
 ```bash
 databricks auth login \
@@ -43,64 +48,97 @@ databricks auth login \
 
 aops configure \
   --profile <profile> \
-  --registry <catalog.schema>
+  --registry <catalog.schema> \
+  --experiment /Shared/agentops
 ```
 
-`configure`에서 사용자가 선택한 Profile, Agent Registry와 기본 SQL Warehouse를 로컬
-설정에 저장합니다. 이후 명령은 저장값을 사용하며 Workspace Profile을 임의로 선택하지
-않습니다. 다른 환경을 일시적으로 사용할 때만 `--profile`, `--registry`,
-`--warehouse-id`로 저장값을 덮어씁니다.
+`configure`는 선택한 Profile, Registry, SQL Warehouse와 MLflow Experiment를 로컬 설정에
+저장합니다. 이후 `list`, `load`, `publish`, `register`, `deploy`는 이 기본값을 사용합니다.
+다른 환경을 일시적으로 사용할 때만 해당 명령에 `--profile`, `--registry` 또는
+`--warehouse-id`를 지정합니다.
 
 ## 3. Agent 시작
 
-새 Agent를 만듭니다.
+새 Agent를 만들려면 다음 명령을 실행합니다.
 
 ```bash
 aops init my-agent
 cd my-agent
-```
-
-Registry Agent로 시작하려면 목록을 조회하고 특정 버전을 내려받습니다.
-
-```bash
-aops list
-
-aops load <agent-id> \
-  --version <version>
-```
-
-`--version`을 생략하면 최근 버전을 내려받습니다. `release.yaml`이 포함된 Agent는 UC
-Skill을 검증하고 `.runtime/`까지 자동 생성합니다. 다운로드만 하려면
-`--no-assemble`을 추가합니다.
-
-## 4. Agent 개발
-
-Agent 폴더에서 기존 Codex를 실행합니다.
-
-```bash
 codex
 ```
 
-| 파일 | 용도 |
-|---|---|
-| `agent.yaml` | Agent 식별자, 이름과 설명 |
-| `spec.md` | 목적, 범위, 입력·출력과 성공 기준 |
-| `AGENTS.md` | 항상 적용할 역할과 행동 원칙 |
-| `.agents/skills/*/SKILL.md` | 업무별 절차와 출력 형식 |
-| `.codex/config.toml` | 프로젝트의 Codex Sub-agent 실행 설정 |
-| `.codex/agents/*.toml` | Codex가 자동 등록하는 Sub-agent 역할과 지침 |
-| `release.yaml` | Agent Release와 UC Skill 버전·해시 고정 |
-| `CLAUDE.md` | 다른 Harness와의 선택적 호환 지침 |
+등록된 Agent로 시작하려면 목록을 보고 원하는 버전을 내려받습니다.
 
-Codex는 시작할 때 `AGENTS.md`를 자동으로 읽고 `.agents/skills`의 Skill 이름과 설명을
-발견합니다. 선택된 Skill의 전체 `SKILL.md`는 필요한 시점에 읽습니다.
-`.codex/agents/*.toml`은 프로젝트 전용 Sub-agent로 등록됩니다. `spec.md`, `agent.yaml`,
-`release.yaml`, `README.md`, `CLAUDE.md`는 Codex가 자동으로 지침에 넣지 않으므로,
-`AGENTS.md`에서 필요한 파일을 읽도록 명시합니다. 숨김 폴더는 `ls -la`로 확인할 수
-있고 Codex에서는 `/skills`로 발견된 Skill을 확인할 수 있습니다.
+```bash
+aops list
+aops load <agent-id> --version <version>
+cd <agent-id>
+codex
+```
 
-새 Skill은 예제 폴더를 복사합니다. 폴더명과 `SKILL.md` frontmatter의 `name`은 같아야
-합니다.
+`aops load`는 다음 작업을 자동으로 수행합니다.
+
+1. Registry의 불변 Agent Artifact를 내려받아 해시를 검증합니다.
+2. `agent.yaml`에 고정된 UC Skills를 현재 사용자 권한으로 내려받습니다.
+3. 각 Skill의 SHA-256을 검증합니다.
+4. 검증된 Skill을 Agent 루트의 `.agents/skills`에 원자적으로 동기화합니다.
+
+따라서 `.runtime`으로 이동하거나 별도 Python 서버를 실행할 필요 없이 Agent 루트에서
+바로 `codex`를 실행합니다.
+
+## 4. 표준 Agent 폴더
+
+```text
+my-agent/
+├── AGENTS.md
+├── agent.yaml
+├── README.md
+├── .agents/
+│   └── skills/
+│       └── <skill-name>/
+│           ├── SKILL.md
+│           └── references, scripts, assets ...
+└── .codex/
+    ├── config.toml
+    └── agents/
+        └── <subagent-name>.toml
+```
+
+| 파일 | 담당 | 용도 |
+|---|---|---|
+| `AGENTS.md` | Agent 개발자 | 목적, 입력·출력, 범위, 성공 기준과 공통 행동을 정의합니다. |
+| `.agents/skills/*/SKILL.md` | Agent 개발자 | 업무별 절차, 출력 형식과 제약사항을 정의합니다. |
+| `.codex/agents/*.toml` | Agent 개발자 | 필요한 경우 프로젝트 전용 Sub-agent를 정의합니다. |
+| `agent.yaml` | CLI 또는 플랫폼 | Agent 식별정보와 불변 Release 계약을 관리합니다. |
+| `.codex/config.toml` | CLI 또는 플랫폼 | Codex의 프로젝트 실행 설정을 관리합니다. |
+| `README.md` | CLI 또는 플랫폼 | Agent 사용법과 운영 메모를 제공합니다. |
+
+`CLAUDE.md`, `spec.md`, `release.yaml`은 표준 구조에서 사용하지 않습니다. 기존
+`spec.md`의 목적, 범위, 성공 기준과 거버넌스 항목은 `AGENTS.md`에 들어가고, 기존
+`release.yaml`의 내용은 `agent.yaml`의 `release` 영역에 들어갑니다.
+
+## 5. Skill 저장 위치
+
+이 저장소의 Agent Skill은 다음 공식 Repository 위치에 저장합니다.
+
+```text
+<agent-root>/.agents/skills/<skill-name>/SKILL.md
+```
+
+Codex는 현재 디렉터리부터 Git Repository 루트까지의 `.agents/skills`를 탐색합니다.
+Agent Release와 함께 Skill 버전을 고정해야 하므로 이 프로젝트에서는 Repository 위치를
+사용합니다.
+
+| 범위 | 공식 위치 | 용도 |
+|---|---|---|
+| Repository | `$REPO_ROOT/.agents/skills` | Agent와 함께 버전을 고정하고 공유하는 Skill |
+| User | `$HOME/.agents/skills` | 여러 Repository에서 개인이 공통으로 사용하는 Skill |
+| Admin | `/etc/codex/skills` | 조직이 머신 또는 컨테이너에 공통 제공하는 Skill |
+
+공식 문서: [OpenAI Codex Skills](https://developers.openai.com/codex/skills)
+
+새 Skill은 기존 템플릿을 복사해 만듭니다. 폴더명과 `SKILL.md` frontmatter의 `name`은
+같은 kebab-case여야 합니다.
 
 ```bash
 cp -R .agents/skills/example-skill .agents/skills/customer-summary
@@ -111,81 +149,48 @@ cp -R .agents/skills/example-skill .agents/skills/customer-summary
 name: customer-summary
 description: 고객 정보를 요약해야 할 때 사용합니다.
 ---
+
+# Customer Summary
+
+## 입력
+
+- 고객 정보
+
+## 수행 절차
+
+1. 핵심 사실을 확인합니다.
+2. 결정 사항과 다음 행동을 구분합니다.
+
+## 출력 형식
+
+- 핵심 요약
+- 다음 행동
 ```
 
-## 5. UC Skill을 고정한 Release
+Codex에서 `/skills`를 실행하면 발견된 Skill을 확인할 수 있습니다.
 
-실제 형식은 [`samples/release-agent`](samples/release-agent)를 참고합니다.
+## 6. Harness와 Sub-agent 개발
 
-```yaml
-schema_version: 1
-agent_id: release-sample-agent
-release_version: 1.0.0
+Codex는 시작할 때 Agent 루트의 `AGENTS.md`를 자동으로 읽습니다. 목적, 대상 사용자와
+입력, 출력, 업무 범위, 성공 기준과 공통 실행 절차를 이 파일에 작성합니다.
 
-profiles:
-  model: standard-v1
-  harness: omnigent-v1
-  mcp_tools: readonly-v1
+Sub-agent가 필요한 경우 `.codex/agents/<name>.toml`에 정의합니다.
 
-skills:
-  - alias: release-summary
-    uc_name: poc_catalog.agentops_test.release-summary-v1-0-0
-    version: 1.0.0
-    sha256: <Skill 폴더 전체의 SHA-256>
-    source: .agents/skills/release-summary
-
-subagents:
-  - id: validator
-    instructions: .codex/agents/validator.toml
-    skills: [release-validation]
+```toml
+name = "validator"
+description = "결과의 근거와 누락을 독립적으로 검증할 때 사용합니다."
+sandbox_mode = "read-only"
+developer_instructions = """
+AGENTS.md의 성공 기준에 따라 결과를 검증합니다.
+문제와 수정 방향만 반환하고 파일은 수정하지 않습니다.
+"""
 ```
 
-Skill을 UC에 게시합니다.
+Codex의 프로젝트 전용 Sub-agent 공식 위치는 `.codex/agents`입니다.
+[OpenAI Codex Subagents](https://developers.openai.com/codex/multi-agent)에서 필드와 동작을
+확인할 수 있습니다.
 
-```bash
-aops publish .
-```
-
-`publish`는 다음 순서로 동작합니다.
-
-1. 로컬 Skill 전체의 SHA-256이 `release.yaml`과 같은지 확인합니다.
-2. 같은 이름의 UC Skill이 이미 있는지 모든 Skill을 먼저 확인합니다.
-3. 새 UC Skill 객체를 만들고 파일을 업로드한 뒤 finalize합니다.
-4. 기존 UC Skill은 수정하거나 덮어쓰지 않습니다.
-
-Skill을 내려받아 실행 폴더를 조립합니다.
-
-```bash
-aops assemble .
-```
-
-기본 출력은 `.runtime/`입니다.
-
-```text
-.runtime/
-├── AGENTS.md
-├── spec.md
-├── CLAUDE.md
-├── config.yaml
-├── skills/<alias>/SKILL.md
-├── .agents/skills/<alias>/SKILL.md
-├── .codex/config.toml
-└── .codex/agents/<id>.toml
-```
-
-각 UC Skill은 다운로드 직후 SHA-256을 검증합니다. 하나라도 다르면 기존 Runtime을
-건드리지 않고 실패합니다. `config.yaml`에는 model·harness·MCP profile, subagent 구성,
-UC Skill 버전과 내려받은 Markdown 경로가 자동으로 기록됩니다.
-
-```bash
-cd .runtime
-codex
-```
-
-현재 단계에서 `profiles` 값은 Delta에 관리할 profile ID를 고정합니다. Omnigent와
-FastMCP 실행기는 이 `config.yaml`을 공통 입력으로 사용하도록 연결합니다.
-
-## 6. 검증
+## 7. 검증
 
 ```bash
 aops validate
@@ -193,35 +198,75 @@ aops validate
 
 다음을 확인합니다.
 
-- `agent.yaml`과 필수 Markdown 파일
-- Skill 이름, 폴더명, 설명과 본문
-- `release.yaml`의 Agent ID, UC Skill 버전·해시와 subagent 참조
+- `agent.yaml`, `README.md`, `AGENTS.md`의 필수 구조
+- `AGENTS.md`의 거버넌스 frontmatter와 필수 항목
+- Skill 폴더명, 이름, 설명과 본문
+- `.codex/config.toml`과 Sub-agent TOML
+- Release의 Agent ID, UC Skill 버전·해시와 Sub-agent 참조
 
-## 7. 새 버전 등록
+## 8. 단일 Release 계약
 
-```bash
-aops register . \
-  --version 1.0.0
+Release 정보는 별도 `release.yaml`을 만들지 않고 `agent.yaml`에 통합합니다.
+
+```yaml
+schema_version: 2
+
+agent:
+  id: release-sample-agent
+  name: Release Sample Agent
+  description: 문서를 요약하고 결과를 검증하는 Agent입니다.
+
+release:
+  version: 3.0.0
+  profiles:
+    model: standard-v1
+    harness: codex-v1
+    mcp_tools: readonly-v1
+  skills:
+    - alias: release-summary
+      uc_name: <catalog>.<schema>.release-summary-v3-0-0
+      version: 3.0.0
+      sha256: <Skill 폴더 전체의 SHA-256>
+      source: .agents/skills/release-summary
+  subagents:
+    - id: validator
+      instructions: .codex/agents/validator.toml
+      skills: [release-summary]
 ```
 
-등록된 버전은 수정하거나 덮어쓸 수 없습니다. `release.yaml`이 있으면 `--version`은
-`release_version`과 같아야 합니다. Agent나 Skill을 변경하면 Skill 버전과 Agent
-Release 버전을 올린 뒤 새로 등록합니다.
+`agent.yaml`은 상위 플랫폼이나 Release 관리 절차가 생성하는 시스템 파일을
+전제로 합니다. CLI만 사용하는 관리자는 [`samples/release-agent`](samples/release-agent)를
+복사해 값과 버전을 관리할 수 있습니다. Agent 개발자는 Harness와 Skill 내용에 집중합니다.
 
-## 8. MCP App 배포
+## 9. UC Skill 게시와 Agent 등록
 
-고정된 Agent Release를 Databricks Apps의 Streamable HTTP MCP 서버로 배포합니다.
+```bash
+aops publish .
+aops assemble .
+aops register . --version 3.0.0
+```
+
+`publish`는 로컬 Skill의 해시가 `agent.yaml`과 같은지 확인한 뒤 새 UC Skill 객체를
+생성합니다. 이미 존재하는 UC Skill은 수정하거나 덮어쓰지 않습니다.
+
+`assemble`은 UC Skills를 다시 내려받아 해시를 검증하고 배포용 Runtime을
+`.aops/runtime`에 생성합니다. 이 Runtime은 배포 검증용 생성물이므로 로컬 Codex 개발에는
+사용하지 않습니다.
+
+`register`는 Agent 폴더를 체크섬이 있는 `tar.gz` Artifact로 만들어 UC Volume에 저장하고
+메타데이터를 Delta Table에 기록합니다. 같은 Agent ID와 버전은 덮어쓸 수 없습니다.
+
+## 10. MCP App 배포
+
+배포는 선택 단계입니다.
 
 ```bash
 aops deploy . \
   --model-endpoint <serving-endpoint>
 ```
 
-저장된 Profile과 SQL Warehouse를 사용합니다. 기본 App
-이름은 `mcp-<agent-id>`, 기본 MLflow Experiment는
-`/Shared/agentops/<agent-id>`입니다. UC Trace 저장 위치는 `release.yaml`의 UC Skills가
-공통으로 사용하는 `<catalog>.<schema>`에서 자동 추론합니다. 필요할 때만 다음 값을
-명시합니다.
+기본 App 이름은 `mcp-<agent-id>`, 기본 MLflow Experiment는
+`/Shared/agentops/<agent-id>`입니다. 필요할 때만 값을 덮어씁니다.
 
 ```bash
 aops deploy . \
@@ -231,29 +276,8 @@ aops deploy . \
   --trace-schema <catalog.schema>
 ```
 
-원격 App을 만들지 않고 생성물까지만 확인하려면 `--build-only`를 추가합니다. 생성물은
-기본적으로 `.aops/apps/<app-name>/`에 만들어지며 직접 수정하지 않습니다.
-
-`deploy`는 다음 순서로 동작합니다.
-
-1. `release.yaml`을 읽고 UC Skills를 다시 다운로드합니다.
-2. 각 Skill의 SHA-256을 고정된 값과 비교합니다.
-3. `AGENTS.md`, `spec.md`, 개별 `SKILL.md`, Codex Sub-agent TOML을 분리된 파일로 유지한 Runtime을 만듭니다.
-4. FastAPI와 FastMCP 기반의 stateless Streamable HTTP 서버를 생성합니다.
-5. Model Serving endpoint와 MLflow Experiment를 App 리소스로 연결합니다.
-6. Databricks Bundle을 검증하고 App을 배포·시작합니다.
-7. App 서비스 주체에 Experiment 전용 UC Trace 테이블의 최소 권한을 부여합니다.
-
-App 서비스 주체에 부여하는 UC 권한은 다음으로 한정합니다.
-
-- Trace catalog의 `USE CATALOG`
-- Trace schema의 `USE SCHEMA`
-- 해당 Experiment가 만든 `otel_spans`, `otel_logs`, `otel_metrics`, `otel_annotations` 테이블의 `SELECT`, `MODIFY`
-
-Registry 테이블, Agent Artifact Volume과 업무 데이터 권한은 이 과정에서 부여하지
-않습니다.
-
-배포된 MCP 서버는 세 도구를 제공합니다.
+`--build-only`를 추가하면 원격 App을 만들지 않고 `.aops/apps/<app-name>` 생성물까지만
+검증합니다. 배포된 Databricks App은 Streamable HTTP MCP 서버로 다음 도구를 제공합니다.
 
 | MCP Tool | 기능 |
 |---|---|
@@ -261,27 +285,28 @@ Registry 테이블, Agent Artifact Volume과 업무 데이터 권한은 이 과�
 | `agent_info` | Agent ID, Release, Harness profile, UC Skill 버전·해시 확인 |
 | `ask_agent` | 고정 Harness와 Skills를 적용해 Model Serving으로 답변 생성 |
 
-`ask_agent`는 호출자의 Databricks OAuth 토큰을 전달하는 OBO 방식입니다. 호출자는 App
-접근 권한과 Model Serving endpoint의 `CAN_QUERY` 권한이 있어야 합니다. PAT가 아니라
-OAuth를 지원하는 MCP Client에서 배포 결과의 URL을 등록합니다.
+`ask_agent`는 호출자의 Databricks OAuth 토큰을 전달하는 OBO 방식입니다. 각 호출은
+MLflow에 입력, 응답, Token, 지연시간, 성공·실패, Agent Release와 Skill 버전 정보를
+기록합니다.
 
-```text
-https://<databricks-app-url>/mcp
+## 11. Codex 개발 과정 모니터링
+
+설치된 Plugin의 Turn 종료 Hook과 Codex OTel 이벤트를 사용합니다. Hook은 Turn 완료를
+알리고, OTel 이벤트는 정확한 Token, Tool 호출과 하위 Agent 정보를 보완합니다. 전송은
+로컬 Outbox를 거쳐 백그라운드에서 MLflow로 처리됩니다.
+
+```bash
+aops doctor --write-test-trace
+aops status
+aops flush
 ```
 
-각 `ask_agent` 호출은 MLflow에 다음 정보를 남깁니다.
+Agent 폴더에서 처음 `codex`를 실행한 뒤 `/hooks`에서 AgentOps Hook이 활성화되었는지
+확인합니다.
 
-- 사용자 입력과 Agent 응답
-- 입력, 출력, 전체 Token
-- 전체 지연시간과 Model Serving LLM span
-- 성공, 실패와 오류
-- Agent ID, Release Version, Harness·Model·MCP profile
-- UC Skill 이름, 버전과 SHA-256
-- 호출 사용자와 선택적 `session_id`
+## 12. Registry 관리자용 최초 설정
 
-## Registry 관리자용 최초 설정
-
-일반 사용자는 실행하지 않습니다. 관리자가 한 번만 실행합니다.
+일반 Agent 개발자는 실행하지 않습니다. 관리자가 Registry마다 한 번 실행합니다.
 
 ```bash
 aops registry-init
@@ -292,43 +317,8 @@ aops registry-init
 └── Agent 버전, 소유자, 설명, Skill 목록과 체크섬을 저장하는 Delta Table
 
 /Volumes/<catalog>/<schema>/agent_artifacts
-└── Agent 버전별 불변 tar.gz 파일을 저장하는 UC Volume
+└── Agent 버전별 불변 tar.gz Artifact를 저장하는 UC Volume
 ```
-
-## Codex 개발 과정 모니터링
-
-```bash
-aops configure \
-  --profile <profile> \
-  --registry <catalog.schema> \
-  --experiment /Shared/codex-agentops
-```
-
-Agent 폴더에서 `codex`를 실행한 뒤 최초 한 번 `/hooks`에서 AgentOps Hook을 확인합니다.
-각 Turn이 끝날 때 MLflow Trace, Token, Tool과 하위 Agent 정보가 비동기로 기록됩니다.
-
-```bash
-aops doctor --write-test-trace
-aops status
-aops flush
-```
-
-## 전체 사용 순서
-
-```text
-설치와 로그인
-  → aops list와 aops load 또는 aops init
-  → codex로 Harness와 Skill 개발
-  → aops validate
-  → aops publish로 불변 UC Skill 게시
-  → aops assemble로 Runtime 검증
-  → aops register로 새 Agent Release 등록
-  → aops deploy로 Databricks Apps MCP 배포
-  → OAuth MCP Client에서 /mcp 연결
-  → MLflow에서 Trace와 Token 확인
-```
-
-배포는 선택 단계입니다. 로컬 개발과 Registry 등록은 App 없이도 사용할 수 있습니다.
 
 ## 개발 테스트
 
