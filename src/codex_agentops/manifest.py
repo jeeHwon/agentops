@@ -210,14 +210,13 @@ def _agent_readme(agent_id: str) -> str:
         같은 Agent와 Version은 덮어쓰지 않으며, 수정본은 새 Version으로 등록합니다.
 
         ```bash
-        aops register . --version 1.0.0 --profile <profile> --registry <catalog.schema>
+        aops register . --version 1.0.0
         ```
 
         다른 Agent를 내려받을 때는 원격 버전을 명시합니다.
 
         ```bash
-        aops load <agent-id> --version <version> --profile <profile> \\
-          --registry <catalog.schema>
+        aops load <agent-id> --version <version>
         ```
 
         Agent를 Databricks App이나 API로 공유하는 배포 과정은 별도 선택 단계이며,

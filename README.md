@@ -41,10 +41,15 @@ databricks auth login \
   --host https://<workspace-host> \
   --profile <profile>
 
-databricks warehouses list --profile <profile>
+aops configure \
+  --profile <profile> \
+  --registry <catalog.schema>
 ```
 
-`aops`는 Databricks Profile을 자동 선택하지 않습니다.
+`configure`에서 사용자가 선택한 Profile, Agent Registry와 기본 SQL Warehouse를 로컬
+설정에 저장합니다. 이후 명령은 저장값을 사용하며 Workspace Profile을 임의로 선택하지
+않습니다. 다른 환경을 일시적으로 사용할 때만 `--profile`, `--registry`,
+`--warehouse-id`로 저장값을 덮어씁니다.
 
 ## 3. Agent 시작
 
@@ -58,16 +63,10 @@ cd my-agent
 Registry Agent로 시작하려면 목록을 조회하고 특정 버전을 내려받습니다.
 
 ```bash
-aops list \
-  --profile <profile> \
-  --registry <catalog.schema> \
-  --warehouse-id <warehouse-id>
+aops list
 
 aops load <agent-id> \
-  --version <version> \
-  --profile <profile> \
-  --registry <catalog.schema> \
-  --warehouse-id <warehouse-id>
+  --version <version>
 ```
 
 `--version`을 생략하면 최근 버전을 내려받습니다. `release.yaml`이 포함된 Agent는 UC
@@ -136,7 +135,7 @@ subagents:
 Skill을 UC에 게시합니다.
 
 ```bash
-aops publish . --profile <profile>
+aops publish .
 ```
 
 `publish`는 다음 순서로 동작합니다.
@@ -149,7 +148,7 @@ aops publish . --profile <profile>
 Skill을 내려받아 실행 폴더를 조립합니다.
 
 ```bash
-aops assemble . --profile <profile>
+aops assemble .
 ```
 
 기본 출력은 `.runtime/`입니다.
@@ -193,10 +192,7 @@ aops validate
 
 ```bash
 aops register . \
-  --version 1.0.0 \
-  --profile <profile> \
-  --registry <catalog.schema> \
-  --warehouse-id <warehouse-id>
+  --version 1.0.0
 ```
 
 등록된 버전은 수정하거나 덮어쓸 수 없습니다. `release.yaml`이 있으면 `--version`은
@@ -209,12 +205,10 @@ Release 버전을 올린 뒤 새로 등록합니다.
 
 ```bash
 aops deploy . \
-  --profile <profile> \
-  --model-endpoint <serving-endpoint> \
-  --warehouse-id <warehouse-id>
+  --model-endpoint <serving-endpoint>
 ```
 
-`--warehouse-id`를 생략하면 접근 가능한 SQL Warehouse를 조회해 사용합니다. 기본 App
+저장된 Profile과 SQL Warehouse를 사용합니다. 기본 App
 이름은 `mcp-<agent-id>`, 기본 MLflow Experiment는
 `/Shared/agentops/<agent-id>`입니다. UC Trace 저장 위치는 `release.yaml`의 UC Skills가
 공통으로 사용하는 `<catalog>.<schema>`에서 자동 추론합니다. 필요할 때만 다음 값을
@@ -222,7 +216,6 @@ aops deploy . \
 
 ```bash
 aops deploy . \
-  --profile <profile> \
   --model-endpoint <serving-endpoint> \
   --app-name mcp-my-agent \
   --experiment /Shared/agentops/my-agent \
@@ -282,10 +275,7 @@ https://<databricks-app-url>/mcp
 일반 사용자는 실행하지 않습니다. 관리자가 한 번만 실행합니다.
 
 ```bash
-aops registry-init \
-  --profile <profile> \
-  --registry <catalog.schema> \
-  --warehouse-id <warehouse-id>
+aops registry-init
 ```
 
 ```text
@@ -301,7 +291,7 @@ aops registry-init \
 ```bash
 aops configure \
   --profile <profile> \
-  --warehouse-id <warehouse-id> \
+  --registry <catalog.schema> \
   --experiment /Shared/codex-agentops
 ```
 

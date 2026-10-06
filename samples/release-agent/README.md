@@ -4,8 +4,8 @@
 
 ```bash
 aops validate samples/release-agent
-aops publish samples/release-agent --profile <profile>
-aops assemble samples/release-agent --profile <profile>
+aops publish samples/release-agent
+aops assemble samples/release-agent
 cd samples/release-agent/.runtime && codex
 ```
 

@@ -11,7 +11,14 @@ from pathlib import Path
 from . import __version__
 from .codex_config import configure_otel, remove_otel_config, validate_codex_config
 from .collector import ensure_collector, serve_collector
-from .config import DEFAULT_EXPERIMENT, DEFAULT_OTEL_PORT, Settings, load_settings, save_settings
+from .config import (
+    DEFAULT_EXPERIMENT,
+    DEFAULT_OTEL_PORT,
+    ConfigError,
+    Settings,
+    load_settings,
+    save_settings,
+)
 from .databricks import (
     DatabricksError,
     choose_profile,
@@ -44,7 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    configure = commands.add_parser("configure", help="Databricks Profile을 선택하고 MLflow를 검증합니다")
+    configure = commands.add_parser(
+        "configure",
+        help="기본 Databricks Profile, Registry와 MLflow를 설정합니다",
+    )
     configure.add_argument("--profile", help="사용자가 선택한 Databricks CLI Profile")
     configure.add_argument(
         "--experiment",
@@ -54,6 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
     configure.add_argument(
         "--warehouse-id",
         help="백그라운드 Scorer용 SQL Warehouse ID (기본값: 접근 가능한 첫 Warehouse)",
+    )
+    configure.add_argument(
+        "--registry",
+        help="기본 Agent Registry 위치: <catalog>.<schema>",
     )
     configure.add_argument("--no-content", action="store_true", help="Prompt와 응답 본문 없이 메타데이터만 저장합니다")
     configure.add_argument("--otel-port", type=int, default=DEFAULT_OTEL_PORT, help="로컬 Codex OTel Port")
@@ -69,13 +83,13 @@ def build_parser() -> argparse.ArgumentParser:
         "publish", help="release.yaml에 고정된 Skill 버전을 Unity Catalog에 게시합니다"
     )
     publish.add_argument("path", nargs="?", type=Path, default=Path.cwd())
-    publish.add_argument("--profile", required=True, help="명시적으로 선택한 Databricks CLI Profile")
+    publish.add_argument("--profile", help="configure에 저장된 Profile 대신 사용할 값")
 
     assemble = commands.add_parser(
         "assemble", help="UC Skill을 내려받아 hash 검증 후 실행 구조를 생성합니다"
     )
     assemble.add_argument("path", nargs="?", type=Path, default=Path.cwd())
-    assemble.add_argument("--profile", required=True, help="명시적으로 선택한 Databricks CLI Profile")
+    assemble.add_argument("--profile", help="configure에 저장된 Profile 대신 사용할 값")
     assemble.add_argument("--output", type=Path, help="실행 구조 경로 (기본값: <agent>/.runtime)")
     assemble.add_argument("--force", action="store_true", help="기존 실행 구조를 검증된 새 구조로 교체합니다")
 
@@ -104,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
         "deploy", help="고정 Agent Release를 Databricks Apps MCP 서버로 배포합니다"
     )
     deploy.add_argument("path", nargs="?", type=Path, default=Path.cwd())
-    deploy.add_argument("--profile", required=True, help="명시적으로 선택한 Databricks CLI Profile")
+    deploy.add_argument("--profile", help="configure에 저장된 Profile 대신 사용할 값")
     deploy.add_argument(
         "--model-endpoint",
         required=True,
@@ -165,8 +179,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "publish":
             root = _agent_root(args.path)
-            _validate_profile(args.profile)
-            published = UcSkillPublisher(args.profile).publish_release(root)
+            profile = _resolve_profile(args.profile)
+            published = UcSkillPublisher(profile).publish_release(root)
             for skill in published:
                 print(
                     f"UC Skill 게시 완료: {skill.uc_name} "
@@ -175,8 +189,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "assemble":
             root = _agent_root(args.path)
-            _validate_profile(args.profile)
-            result = AgentReleaseLoader(args.profile).assemble(
+            profile = _resolve_profile(args.profile)
+            result = AgentReleaseLoader(profile).assemble(
                 root,
                 destination=args.output,
                 replace=args.force,
@@ -221,15 +235,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Agent 로드 완료: {item.agent_id}@{item.version}")
             print(f"Local Path: {target}")
             if (target / "release.yaml").is_file() and not args.no_assemble:
-                result = AgentReleaseLoader(args.profile).assemble(target)
+                result = AgentReleaseLoader(registry.profile).assemble(target)
                 print(f"Release Runtime: {result.runtime_root}")
             print(f"검증: cd {target} && aops validate")
             return 0
         if args.command == "deploy":
             root = _agent_root(args.path)
-            _validate_profile(args.profile)
-            warehouse_id = args.warehouse_id or get_default_warehouse(args.profile)
-            result = DatabricksAppDeployer(args.profile).deploy(
+            profile = _resolve_profile(args.profile)
+            warehouse_id = _resolve_warehouse(profile, args.warehouse_id)
+            result = DatabricksAppDeployer(profile).deploy(
                 root,
                 model_endpoint=args.model_endpoint,
                 experiment_name=args.experiment,
@@ -314,18 +328,40 @@ def _agent_root(path: Path) -> Path:
 
 
 def _add_registry_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--profile", required=True, help="명시적으로 선택한 Databricks CLI Profile")
-    parser.add_argument("--registry", required=True, help="Registry 위치: <catalog>.<schema>")
-    parser.add_argument("--warehouse-id", help="Registry Delta Table 조회용 SQL Warehouse ID")
+    parser.add_argument("--profile", help="configure에 저장된 Profile 대신 사용할 값")
+    parser.add_argument("--registry", help="configure에 저장된 Registry 대신 사용할 <catalog>.<schema>")
+    parser.add_argument("--warehouse-id", help="configure에 저장된 SQL Warehouse 대신 사용할 ID")
     parser.add_argument("--volume", default="agent_artifacts", help="Artifact Volume 이름")
     parser.add_argument("--table", default="agent_versions", help="Metadata Delta Table 이름")
 
 
 def _registry_client(args: argparse.Namespace) -> RegistryClient:
-    profile = get_profile(args.profile, list_profiles())
+    settings = None
+    if not args.profile or not args.registry:
+        settings = load_settings()
+    elif not args.warehouse_id:
+        try:
+            settings = load_settings()
+        except ConfigError:
+            pass
+
+    profile_name = args.profile or settings.profile
+    registry_name = args.registry or settings.registry
+    if not registry_name:
+        raise RegistryError(
+            "Agent Registry가 설정되지 않았습니다. "
+            "`aops configure --registry <catalog.schema>`를 실행하세요."
+        )
+
+    profile = get_profile(profile_name, list_profiles())
     validate_profile(profile)
-    warehouse_id = args.warehouse_id or get_default_warehouse(profile.name)
-    location = parse_registry(args.registry, volume=args.volume, table=args.table)
+    configured_warehouse = (
+        settings.warehouse_id
+        if settings and settings.profile == profile.name
+        else ""
+    )
+    warehouse_id = args.warehouse_id or configured_warehouse or get_default_warehouse(profile.name)
+    location = parse_registry(registry_name, volume=args.volume, table=args.table)
     return RegistryClient(
         profile=profile.name,
         warehouse_id=warehouse_id,
@@ -338,16 +374,45 @@ def _validate_profile(profile_name: str) -> None:
     validate_profile(profile)
 
 
+def _resolve_profile(profile_name: str | None) -> str:
+    resolved = profile_name or load_settings().profile
+    _validate_profile(resolved)
+    return resolved
+
+
+def _resolve_warehouse(profile_name: str, warehouse_id: str | None) -> str:
+    if warehouse_id:
+        return warehouse_id
+    try:
+        settings = load_settings()
+    except ConfigError:
+        settings = None
+    if settings and settings.profile == profile_name and settings.warehouse_id:
+        return settings.warehouse_id
+    return get_default_warehouse(profile_name)
+
+
 def _configure(args: argparse.Namespace) -> int:
     profiles = list_profiles()
     profile = get_profile(args.profile, profiles) if args.profile else choose_profile(profiles)
     identity = validate_profile(profile)
     warehouse_id = args.warehouse_id or get_default_warehouse(profile.name)
+    registry_name = (args.registry or "").strip()
+    if registry_name:
+        parse_registry(registry_name)
+    else:
+        try:
+            previous = load_settings()
+        except ConfigError:
+            previous = None
+        if previous and previous.profile == profile.name:
+            registry_name = previous.registry
     settings = Settings(
         profile=profile.name,
         host=profile.host,
         user_name=identity,
         warehouse_id=warehouse_id,
+        registry=registry_name,
         experiment=args.experiment,
         capture_content=not args.no_content,
         otel_port=args.otel_port,
@@ -365,6 +430,7 @@ def _configure(args: argparse.Namespace) -> int:
     print(f"Databricks: {identity} @ {profile.host}")
     print(f"MLflow Experiment: {settings.experiment}")
     print(f"SQL Warehouse: {settings.warehouse_id}")
+    print(f"Agent Registry: {settings.registry or '미설정'}")
     if settings.otel_mode == "local":
         print(f"Codex OTel: {codex_path} -> http://127.0.0.1:{settings.otel_port}")
     else:

@@ -12,12 +12,16 @@ def test_settings_round_trip_without_token(tmp_path):
     settings = Settings(
         profile="test-profile",
         host="https://example.cloud.databricks.com",
+        warehouse_id="warehouse-1",
+        registry="poc_catalog.agentops_test",
         capture_content=True,
     )
     save_settings(settings, target)
     loaded = load_settings(target)
     assert loaded.profile == settings.profile
     assert loaded.host == settings.host
+    assert loaded.warehouse_id == "warehouse-1"
+    assert loaded.registry == "poc_catalog.agentops_test"
     assert loaded.capture_content is True
     assert loaded.configured_at
     raw = target.read_text()

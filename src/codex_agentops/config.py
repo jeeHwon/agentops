@@ -25,6 +25,7 @@ class Settings:
     host: str
     user_name: str = ""
     warehouse_id: str = ""
+    registry: str = ""
     experiment: str = DEFAULT_EXPERIMENT
     capture_content: bool = True
     otel_port: int = DEFAULT_OTEL_PORT
@@ -53,6 +54,7 @@ class Settings:
             host=host,
             user_name=str(raw.get("user_name", "")),
             warehouse_id=str(raw.get("warehouse_id", "")),
+            registry=str(raw.get("registry", "")).strip(),
             experiment=experiment,
             capture_content=bool(raw.get("capture_content", True)),
             otel_port=otel_port,
