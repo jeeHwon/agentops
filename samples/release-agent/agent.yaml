@@ -1,0 +1,4 @@
+schema_version: 1
+agent_id: release-sample-agent
+name: Release Sample Agent
+description: 문서 초안을 요약하고 별도 검증 절차로 품질을 확인하는 예제 Agent입니다.

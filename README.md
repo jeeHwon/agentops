@@ -1,103 +1,312 @@
-# Codex AgentOps
+# AgentOps
 
-Codex AgentOps는 일반 Codex CLI에서 실행되는 하네스 에이전트를 Turn 단위 MLflow Trace로 기록하는 범용 AgentOps 도구입니다. 사용자는 Agent의 지침과 Skill만 편집하며, 설치된 Plugin이 Trace, Token, 마스킹, 재시도와 백그라운드 품질 평가를 담당합니다.
+Markdown로 Agent를 개발하고, UC Skill 버전을 고정하고, Databricks Registry에 Agent
+Release를 등록한 뒤 OAuth MCP App으로 배포하는 도구입니다. Agent를 내려받은 뒤 기존
+`codex` 명령을 그대로 사용할 수 있습니다.
 
-## 주요 기능
+```text
+Agent Release Manifest
+        ↓
+UC Skills 다운로드 및 SHA-256 검증
+        ↓
+AGENTS.md / skills / subagents / config.yaml 생성
+        ↓
+로컬 Harness에서 개발하거나 Databricks Apps MCP로 배포
+```
 
-- `AGENTS.md`, `spec.md`, 로컬 `SKILL.md` 기반 표준 하네스 에이전트 폴더 생성
-- 별도의 Chat Wrapper 없이 기존 `codex` 명령 그대로 사용
-- 완료된 Codex Turn마다 MLflow Root Trace 생성
-- 지원되는 Tool, MCP, 하위 Agent를 부모·자식 Span으로 기록
-- 입력, 출력, 캐시 입력, 캐시 생성, 추론 및 전체 Token의 정확한 집계
-- `RelevanceToQuery`, `Safety`, `Completeness` 백그라운드 품질 평가
-- Secret·개인정보 마스킹, 본문 15,000자 제한 및 SQLite Outbox 기반 재전송
-- 모니터링 장애가 Codex 응답을 막지 않는 비동기 처리
+- **Agent**는 개발·테스트·등록 단위입니다.
+- **Skill**은 권한·재사용·감사 단위입니다.
+- **`release.yaml`**은 Agent가 사용할 UC Skill의 이름, 버전과 해시를 고정합니다.
 
-## 사전 요구사항
+공통 Skill이 변경되어도 등록된 Agent에는 자동 반영하지 않습니다. 변경된 Skill은 새
+이름과 버전으로 게시하고, 새 Agent Release에서 명시적으로 선택합니다.
 
-- macOS 또는 Linux
-- Python 3.11 이상
-- Plugin과 Hook을 지원하는 [Codex CLI](https://learn.chatgpt.com/docs/hooks)
-- 인증된 Profile이 하나 이상 있는 [Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/)
-- [`uv`](https://docs.astral.sh/uv/)
-- 인증된 사용자가 접근할 수 있는 Databricks SQL Warehouse
-- MLflow Experiment를 조회하고 생성할 수 있는 Databricks Workspace 권한
+## 1. 설치
 
-## 설치
+Codex CLI, Databricks CLI, Python 3.11 이상과 `uv`가 필요합니다.
 
 ```bash
 git clone https://github.com/jeeHwon/agentops.git
 cd agentops
 ./install.sh
+aops --version
 ```
 
-설치 스크립트는 짧은 `aops` CLI와 호환용 `codex-agentops` 별칭을 설치하고 현재 저장소를 로컬 Codex Plugin Marketplace로 등록합니다.
+## 2. Databricks 로그인
 
-## 설정
+사용할 Workspace와 Profile을 직접 지정합니다.
 
 ```bash
-aops configure \
-  --profile <databricks-profile> \
-  --experiment /Shared/codex-agentops
+databricks auth login \
+  --host https://<workspace-host> \
+  --profile <profile>
+
+databricks warehouses list --profile <profile>
 ```
 
-특정 SQL Warehouse를 사용하려면 `--warehouse-id <id>`를 추가합니다. 생략하면 접근 가능한 첫 번째 Warehouse를 선택합니다. `--profile`을 생략하면 Profile 목록을 표시하고 사용자가 직접 선택하게 하며 임의로 자동 선택하지 않습니다.
+`aops`는 Databricks Profile을 자동 선택하지 않습니다.
 
-설정 과정에서는 다음을 실제로 검증합니다.
+## 3. Agent 시작
 
-- Databricks 인증
-- SQL Warehouse 접근
-- MLflow Experiment 조회 또는 생성
-- Test Trace 기록 및 재조회
-- Codex 설정 파일 구문
-- 백그라운드 품질 Scorer 등록
-
-기본 Experiment는 `/Shared/codex-agentops`입니다. Experiment가 없으면 `aops configure`가 생성하고, 이미 있으면 그대로 재사용합니다. Prompt, 응답 및 지원되는 Tool 본문을 저장하지 않으려면 `--no-content`를 사용합니다.
-
-## Agent 생성과 테스트
+새 Agent를 만듭니다.
 
 ```bash
 aops init my-agent
 cd my-agent
-aops validate
+```
+
+Registry Agent로 시작하려면 목록을 조회하고 특정 버전을 내려받습니다.
+
+```bash
+aops list \
+  --profile <profile> \
+  --registry <catalog.schema> \
+  --warehouse-id <warehouse-id>
+
+aops load <agent-id> \
+  --version <version> \
+  --profile <profile> \
+  --registry <catalog.schema> \
+  --warehouse-id <warehouse-id>
+```
+
+`--version`을 생략하면 최근 버전을 내려받습니다. `release.yaml`이 포함된 Agent는 UC
+Skill을 검증하고 `.runtime/`까지 자동 생성합니다. 다운로드만 하려면
+`--no-assemble`을 추가합니다.
+
+## 4. Agent 개발
+
+Agent 폴더에서 기존 Codex를 실행합니다.
+
+```bash
 codex
 ```
 
-Codex에서 최초 한 번 `/hooks`를 열어 `codex-agentops` Hook을 검토하고 신뢰합니다. 이후에는 일반 `codex` 명령을 그대로 사용합니다. 각 `Stop` 또는 `Interrupt`에서 현재 Turn을 닫고 MLflow 업로드를 시작하므로 세션을 종료할 필요가 없습니다.
+| 파일 | 용도 |
+|---|---|
+| `agent.yaml` | Agent 식별자, 이름과 설명 |
+| `spec.md` | 목적, 범위, 입력·출력과 성공 기준 |
+| `AGENTS.md` | 항상 적용할 역할과 행동 원칙 |
+| `.agents/skills/*/SKILL.md` | 업무별 절차와 출력 형식 |
+| `subagents/*.md` | 하위 Agent별 역할과 검증 절차 |
+| `release.yaml` | Agent Release와 UC Skill 버전·해시 고정 |
+| `CLAUDE.md` | 다른 Harness와의 선택적 호환 지침 |
 
-생성되는 폴더에는 사용자가 편집할 Agent 정의만 포함됩니다.
-
-```text
-my-agent/
-├── agent.yaml
-├── README.md
-├── spec.md
-├── AGENTS.md
-├── CLAUDE.md
-└── .agents/skills/
-    └── example-skill/
-        └── SKILL.md
-```
-
-`spec.md`, `AGENTS.md`, `SKILL.md`를 수정하여 업무 로직을 정의합니다. Runtime, 서버와 모니터링 코드는 설치된 공통 패키지와 Plugin에 유지됩니다.
-
-## 구조 검증과 진단
-
-`validate`는 Agent Manifest와 로컬 Skill의 최소 구조를 정적으로 검사합니다.
+새 Skill은 예제 폴더를 복사합니다. 폴더명과 `SKILL.md` frontmatter의 `name`은 같아야
+합니다.
 
 ```bash
-aops validate [agent-folder]
+cp -R .agents/skills/example-skill .agents/skills/customer-summary
 ```
 
-검사 항목은 다음과 같습니다.
+```yaml
+---
+name: customer-summary
+description: 고객 정보를 요약해야 할 때 사용합니다.
+---
+```
 
-- `agent.yaml`의 존재, YAML 형식, Schema Version, Agent ID와 이름
-- `.agents/skills` 아래 최소 한 개의 Skill 존재
-- 각 Skill 폴더의 `SKILL.md` 존재
-- Skill frontmatter의 이름, 설명과 폴더명 일치
-- 비어 있지 않은 Skill 본문
+## 5. UC Skill을 고정한 Release
 
-`doctor`는 설치, Plugin, Hook, Databricks 인증, MLflow, OTel과 로컬 Outbox 상태를 확인합니다.
+실제 형식은 [`samples/release-agent`](samples/release-agent)를 참고합니다.
+
+```yaml
+schema_version: 1
+agent_id: release-sample-agent
+release_version: 1.0.0
+
+profiles:
+  model: standard-v1
+  harness: omnigent-v1
+  mcp_tools: readonly-v1
+
+skills:
+  - alias: release-summary
+    uc_name: poc_catalog.agentops_test.release-summary-v1-0-0
+    version: 1.0.0
+    sha256: <Skill 폴더 전체의 SHA-256>
+    source: .agents/skills/release-summary-v1-0-0
+
+subagents:
+  - id: validator
+    instructions: subagents/validator.md
+    skills: [release-validation]
+```
+
+Skill을 UC에 게시합니다.
+
+```bash
+aops publish . --profile <profile>
+```
+
+`publish`는 다음 순서로 동작합니다.
+
+1. 로컬 Skill 전체의 SHA-256이 `release.yaml`과 같은지 확인합니다.
+2. 같은 이름의 UC Skill이 이미 있는지 모든 Skill을 먼저 확인합니다.
+3. 새 UC Skill 객체를 만들고 파일을 업로드한 뒤 finalize합니다.
+4. 기존 UC Skill은 수정하거나 덮어쓰지 않습니다.
+
+Skill을 내려받아 실행 폴더를 조립합니다.
+
+```bash
+aops assemble . --profile <profile>
+```
+
+기본 출력은 `.runtime/`입니다.
+
+```text
+.runtime/
+├── AGENTS.md
+├── spec.md
+├── CLAUDE.md
+├── config.yaml
+├── skills/<alias>/SKILL.md
+├── subagents/<id>.md
+└── .agents/skills/<alias>/SKILL.md
+```
+
+각 UC Skill은 다운로드 직후 SHA-256을 검증합니다. 하나라도 다르면 기존 Runtime을
+건드리지 않고 실패합니다. `config.yaml`에는 model·harness·MCP profile, subagent 구성,
+UC Skill 버전과 내려받은 Markdown 경로가 자동으로 기록됩니다.
+
+```bash
+cd .runtime
+codex
+```
+
+현재 단계에서 `profiles` 값은 Delta에 관리할 profile ID를 고정합니다. Omnigent와
+FastMCP 실행기는 이 `config.yaml`을 공통 입력으로 사용하도록 연결합니다.
+
+## 6. 검증
+
+```bash
+aops validate
+```
+
+다음을 확인합니다.
+
+- `agent.yaml`과 필수 Markdown 파일
+- Skill 이름, 폴더명, 설명과 본문
+- `release.yaml`의 Agent ID, UC Skill 버전·해시와 subagent 참조
+
+## 7. 새 버전 등록
+
+```bash
+aops register . \
+  --version 1.0.0 \
+  --profile <profile> \
+  --registry <catalog.schema> \
+  --warehouse-id <warehouse-id>
+```
+
+등록된 버전은 수정하거나 덮어쓸 수 없습니다. `release.yaml`이 있으면 `--version`은
+`release_version`과 같아야 합니다. Agent나 Skill을 변경하면 Skill 버전과 Agent
+Release 버전을 올린 뒤 새로 등록합니다.
+
+## 8. MCP App 배포
+
+고정된 Agent Release를 Databricks Apps의 Streamable HTTP MCP 서버로 배포합니다.
+
+```bash
+aops deploy . \
+  --profile <profile> \
+  --model-endpoint <serving-endpoint> \
+  --warehouse-id <warehouse-id>
+```
+
+`--warehouse-id`를 생략하면 접근 가능한 SQL Warehouse를 조회해 사용합니다. 기본 App
+이름은 `mcp-<agent-id>`, 기본 MLflow Experiment는
+`/Shared/agentops/<agent-id>`입니다. UC Trace 저장 위치는 `release.yaml`의 UC Skills가
+공통으로 사용하는 `<catalog>.<schema>`에서 자동 추론합니다. 필요할 때만 다음 값을
+명시합니다.
+
+```bash
+aops deploy . \
+  --profile <profile> \
+  --model-endpoint <serving-endpoint> \
+  --app-name mcp-my-agent \
+  --experiment /Shared/agentops/my-agent \
+  --trace-schema <catalog.schema>
+```
+
+원격 App을 만들지 않고 생성물까지만 확인하려면 `--build-only`를 추가합니다. 생성물은
+기본적으로 `.aops/apps/<app-name>/`에 만들어지며 직접 수정하지 않습니다.
+
+`deploy`는 다음 순서로 동작합니다.
+
+1. `release.yaml`을 읽고 UC Skills를 다시 다운로드합니다.
+2. 각 Skill의 SHA-256을 고정된 값과 비교합니다.
+3. `AGENTS.md`, `spec.md`, 개별 `SKILL.md`, subagent Markdown을 분리된 파일로 유지한 Runtime을 만듭니다.
+4. FastAPI와 FastMCP 기반의 stateless Streamable HTTP 서버를 생성합니다.
+5. Model Serving endpoint와 MLflow Experiment를 App 리소스로 연결합니다.
+6. Databricks Bundle을 검증하고 App을 배포·시작합니다.
+7. App 서비스 주체에 Experiment 전용 UC Trace 테이블의 최소 권한을 부여합니다.
+
+App 서비스 주체에 부여하는 UC 권한은 다음으로 한정합니다.
+
+- Trace catalog의 `USE CATALOG`
+- Trace schema의 `USE SCHEMA`
+- 해당 Experiment가 만든 `otel_spans`, `otel_logs`, `otel_metrics`, `otel_annotations` 테이블의 `SELECT`, `MODIFY`
+
+Registry 테이블, Agent Artifact Volume과 업무 데이터 권한은 이 과정에서 부여하지
+않습니다.
+
+배포된 MCP 서버는 세 도구를 제공합니다.
+
+| MCP Tool | 기능 |
+|---|---|
+| `health` | 서버와 Agent Release 상태 확인 |
+| `agent_info` | Agent ID, Release, Harness profile, UC Skill 버전·해시 확인 |
+| `ask_agent` | 고정 Harness와 Skills를 적용해 Model Serving으로 답변 생성 |
+
+`ask_agent`는 호출자의 Databricks OAuth 토큰을 전달하는 OBO 방식입니다. 호출자는 App
+접근 권한과 Model Serving endpoint의 `CAN_QUERY` 권한이 있어야 합니다. PAT가 아니라
+OAuth를 지원하는 MCP Client에서 배포 결과의 URL을 등록합니다.
+
+```text
+https://<databricks-app-url>/mcp
+```
+
+각 `ask_agent` 호출은 MLflow에 다음 정보를 남깁니다.
+
+- 사용자 입력과 Agent 응답
+- 입력, 출력, 전체 Token
+- 전체 지연시간과 Model Serving LLM span
+- 성공, 실패와 오류
+- Agent ID, Release Version, Harness·Model·MCP profile
+- UC Skill 이름, 버전과 SHA-256
+- 호출 사용자와 선택적 `session_id`
+
+## Registry 관리자용 최초 설정
+
+일반 사용자는 실행하지 않습니다. 관리자가 한 번만 실행합니다.
+
+```bash
+aops registry-init \
+  --profile <profile> \
+  --registry <catalog.schema> \
+  --warehouse-id <warehouse-id>
+```
+
+```text
+<catalog>.<schema>.agent_versions
+└── Agent 버전, 소유자, 설명, Skill 목록과 체크섬을 저장하는 Delta Table
+
+/Volumes/<catalog>/<schema>/agent_artifacts
+└── Agent 버전별 불변 tar.gz 파일을 저장하는 UC Volume
+```
+
+## Codex 개발 과정 모니터링
+
+```bash
+aops configure \
+  --profile <profile> \
+  --warehouse-id <warehouse-id> \
+  --experiment /Shared/codex-agentops
+```
+
+Agent 폴더에서 `codex`를 실행한 뒤 최초 한 번 `/hooks`에서 AgentOps Hook을 확인합니다.
+각 Turn이 끝날 때 MLflow Trace, Token, Tool과 하위 Agent 정보가 비동기로 기록됩니다.
 
 ```bash
 aops doctor --write-test-trace
@@ -105,48 +314,24 @@ aops status
 aops flush
 ```
 
-## MLflow Trace 구조
+## 전체 사용 순서
 
-완료된 사용자 Turn은 `agent.turn` Root Trace가 됩니다. 지원되는 하위 Agent는 `AGENT` Span으로 기록되고, 해당 Agent가 실행한 Tool과 MCP는 그 아래의 `TOOL` Span으로 연결됩니다.
-
-Root Token에는 Root Turn과 완료된 하위 Agent의 Token이 합산됩니다. 각 하위 Agent Span에는 해당 Agent의 개별 Token도 기록됩니다.
-
-Prompt, 응답과 지원되는 Tool 본문은 안정적인 Hook Payload에서만 읽습니다. Transcript에서 본문을 재구성하지 않으며, 정확한 Token 보강을 위해 버전이 명시된 `token_usage_record`만 제한적으로 읽습니다.
-
-로컬 Collector가 Codex OTel 로그를 받으면 `response.completed`에서 Token을, `codex.tool_result`에서 실제 Tool 실행시간과 성공 여부를 수집합니다. 기존 외부 OTel Exporter가 있으면 설정을 변경하지 않으며, 동일 이벤트가 Codex AgentOps에도 전달되지 않는 경우 정확한 Tool 실행시간은 기록되지 않습니다. `doctor`가 이 상태를 경고합니다.
-
-Hosted `WebSearch`와 같이 로컬 Function Tool Hook 경로를 사용하지 않는 Tool은 Tool Span으로 기록되지 않습니다. 자세한 내용은 공식 [Codex Hooks 문서](https://learn.chatgpt.com/docs/hooks)와 [Codex OTel 설정 문서](https://learn.chatgpt.com/docs/config-file/config-advanced#observability-and-telemetry)를 참고하세요.
-
-## 2차 구현 범위
-
-2차에서는 대규모 운영을 위해 Unity Catalog 기반 Trace 저장소를 선택적으로 지원합니다.
-
-- `aops configure`에서 Trace를 저장할 UC Catalog와 Schema를 명시할 수 있어야 합니다.
-- 지원되는 Workspace에서는 MLflow Experiment를 UC Schema와 연결해야 합니다.
-- 연결 과정에서 `mlflow_experiment_trace_otel_spans`, `mlflow_experiment_trace_otel_logs`, `mlflow_experiment_trace_otel_metrics` 테이블을 생성하고 검증해야 합니다.
-- 설정 전에 UC Trace 저장 기능의 Cloud, Region 및 Preview 지원 여부를 확인해야 합니다.
-- 사용자 또는 Service Principal의 `USE CATALOG`, `USE SCHEMA`, `SELECT`, `MODIFY` 권한을 검증해야 합니다.
-- UC 연결을 사용하지 않는 환경에서는 기존 Workspace 관리형 Trace 저장소를 계속 사용할 수 있어야 합니다.
-- 기존 Experiment를 UC Schema에 연결하면 이전 Workspace 관리형 Trace가 화면에서 숨겨질 수 있음을 설정 전에 안내해야 합니다.
-- 운영 환경에서는 Trace와 LLM Scorer의 샘플링 비율을 분리하여 설정할 수 있어야 합니다.
-- 5,000명 규모를 가정한 동시 업로드, Outbox 적체, Scorer 처리 지연과 비용 부하 테스트를 수행해야 합니다.
-
-## 개인정보와 보안
-
-본문 저장은 기본으로 활성화되며 `configure --no-content`로 비활성화할 수 있습니다. 저장 전 일반적인 Secret, 이메일, 전화번호와 식별번호 패턴을 마스킹하고 각 본문을 15,000자로 제한합니다. 규제 대상 데이터나 고도로 민감한 데이터를 사용하기 전에 조직의 보안 기준에 맞게 정책을 검토하세요.
-
-로컬 설정과 Outbox는 운영체제의 XDG Config 및 Data 디렉터리에 저장됩니다. `CODEX_AGENTOPS_CONFIG_DIR`, `CODEX_AGENTOPS_DATA_DIR` 환경변수로 경로를 변경할 수 있습니다.
-
-## 업데이트와 제거
-
-```bash
-./scripts/update.sh
-./scripts/uninstall.sh
+```text
+설치와 로그인
+  → aops list와 aops load 또는 aops init
+  → codex로 Harness와 Skill 개발
+  → aops validate
+  → aops publish로 불변 UC Skill 게시
+  → aops assemble로 Runtime 검증
+  → aops register로 새 Agent Release 등록
+  → aops deploy로 Databricks Apps MCP 배포
+  → OAuth MCP Client에서 /mcp 연결
+  → MLflow에서 Trace와 Token 확인
 ```
 
-제거 시 CLI, Plugin, Marketplace 등록과 관리되는 OTel 설정 블록을 삭제합니다. 사용자 설정과 전송 대기 중인 로컬 Telemetry 데이터는 보존합니다.
+배포는 선택 단계입니다. 로컬 개발과 Registry 등록은 App 없이도 사용할 수 있습니다.
 
-## 개발 및 테스트
+## 개발 테스트
 
 ```bash
 uv sync --dev

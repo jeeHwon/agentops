@@ -21,12 +21,15 @@ from .databricks import (
     validate_profile,
 )
 from .doctor import run_doctor
+from .deploy import DatabricksAppDeployer, DeployError
 from .hooks import handle_hook, reconcile_session_transcript
-from .manifest import ManifestError, create_agent, validate_agent
+from .manifest import ManifestError, create_agent, find_agent_root, validate_agent
 from .mlflow_exporter import MlflowTurnExporter, export_pending
 from .monitoring import configure_turn_monitoring
 from .outbox import Outbox
 from .paths import outbox_path
+from .registry import RegistryClient, RegistryError, parse_registry
+from .release import AgentReleaseLoader, ReleaseError, UcSkillPublisher
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,7 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{configure,init,validate,doctor,status,flush}",
+        metavar=(
+            "{configure,init,validate,publish,assemble,registry-init,list,register,load,"
+            "deploy,doctor,status,flush}"
+        ),
     )
 
     configure = commands.add_parser("configure", help="Databricks Profile을 선택하고 MLflow를 검증합니다")
@@ -58,6 +64,68 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = commands.add_parser("validate", help="표준 Agent 폴더 구조를 검증합니다")
     validate.add_argument("path", nargs="?", type=Path, default=Path.cwd())
+
+    publish = commands.add_parser(
+        "publish", help="release.yaml에 고정된 Skill 버전을 Unity Catalog에 게시합니다"
+    )
+    publish.add_argument("path", nargs="?", type=Path, default=Path.cwd())
+    publish.add_argument("--profile", required=True, help="명시적으로 선택한 Databricks CLI Profile")
+
+    assemble = commands.add_parser(
+        "assemble", help="UC Skill을 내려받아 hash 검증 후 실행 구조를 생성합니다"
+    )
+    assemble.add_argument("path", nargs="?", type=Path, default=Path.cwd())
+    assemble.add_argument("--profile", required=True, help="명시적으로 선택한 Databricks CLI Profile")
+    assemble.add_argument("--output", type=Path, help="실행 구조 경로 (기본값: <agent>/.runtime)")
+    assemble.add_argument("--force", action="store_true", help="기존 실행 구조를 검증된 새 구조로 교체합니다")
+
+    registry_init = commands.add_parser(
+        "registry-init", help="UC Volume과 Delta Table로 Agent Registry를 준비합니다"
+    )
+    _add_registry_arguments(registry_init)
+
+    registry_list = commands.add_parser("list", help="접근 가능한 Registry Agent를 조회합니다")
+    _add_registry_arguments(registry_list)
+    registry_list.add_argument("--all-versions", action="store_true", help="모든 버전을 표시합니다")
+
+    register = commands.add_parser("register", help="Agent 폴더를 불변 버전으로 등록합니다")
+    register.add_argument("path", nargs="?", type=Path, default=Path.cwd())
+    register.add_argument("--version", required=True, help="새 Agent 버전")
+    _add_registry_arguments(register)
+
+    load = commands.add_parser("load", help="Registry Agent를 로컬 폴더로 내려받습니다")
+    load.add_argument("agent_id", help="내려받을 Agent ID")
+    load.add_argument("--version", help="버전, 생략하면 가장 최근 등록 버전")
+    load.add_argument("--path", type=Path, help="대상 폴더, 기본값은 ./<agent-id>")
+    load.add_argument("--no-assemble", action="store_true", help="Release Runtime 자동 조립을 생략합니다")
+    _add_registry_arguments(load)
+
+    deploy = commands.add_parser(
+        "deploy", help="고정 Agent Release를 Databricks Apps MCP 서버로 배포합니다"
+    )
+    deploy.add_argument("path", nargs="?", type=Path, default=Path.cwd())
+    deploy.add_argument("--profile", required=True, help="명시적으로 선택한 Databricks CLI Profile")
+    deploy.add_argument(
+        "--model-endpoint",
+        required=True,
+        help="OBO로 호출할 READY 상태의 Databricks Model Serving endpoint",
+    )
+    deploy.add_argument("--app-name", help="mcp-로 시작하는 Databricks App 이름")
+    deploy.add_argument(
+        "--experiment",
+        help="MLflow Experiment 절대 경로 (기본값: /Shared/agentops/<agent-id>)",
+    )
+    deploy.add_argument(
+        "--trace-schema",
+        help="UC Trace 저장 위치 <catalog.schema> (기본값: release UC Skills 위치)",
+    )
+    deploy.add_argument("--warehouse-id", help="UC Trace 저장소 준비용 SQL Warehouse ID")
+    deploy.add_argument("--output", type=Path, help="생성된 App 소스 경로")
+    deploy.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Skill 검증과 App 빌드까지만 수행하고 원격 App은 배포하지 않습니다",
+    )
 
     doctor = commands.add_parser("doctor", help="설치, Hook, 인증, MLflow와 Outbox를 진단합니다")
     doctor.add_argument("--write-test-trace", action="store_true")
@@ -92,8 +160,100 @@ def main(argv: list[str] | None = None) -> int:
             print(f"다음 단계: cd {root} && codex")
             return 0
         if args.command == "validate":
-            manifest = validate_agent(args.path)
+            manifest = validate_agent(_agent_root(args.path))
             print(f"OK: {manifest.agent_id} ({manifest.root})")
+            return 0
+        if args.command == "publish":
+            root = _agent_root(args.path)
+            _validate_profile(args.profile)
+            published = UcSkillPublisher(args.profile).publish_release(root)
+            for skill in published:
+                print(
+                    f"UC Skill 게시 완료: {skill.uc_name} "
+                    f"(version={skill.version}, sha256={skill.sha256})"
+                )
+            return 0
+        if args.command == "assemble":
+            root = _agent_root(args.path)
+            _validate_profile(args.profile)
+            result = AgentReleaseLoader(args.profile).assemble(
+                root,
+                destination=args.output,
+                replace=args.force,
+            )
+            print(f"Agent Runtime 조립 완료: {result.runtime_root}")
+            print(f"Runtime Config: {result.config_path}")
+            print(f"로컬 실행: cd {result.runtime_root} && codex")
+            return 0
+        if args.command == "registry-init":
+            registry = _registry_client(args)
+            registry.initialize()
+            print(f"Registry 준비 완료: {registry.location.schema_name}")
+            print(f"Metadata Table: {registry.location.table_name}")
+            print(f"Artifact Volume: {registry.location.volume_root}")
+            return 0
+        if args.command == "list":
+            registry = _registry_client(args)
+            versions = registry.list(all_versions=args.all_versions)
+            if not versions:
+                print("등록된 Agent가 없습니다.")
+            for item in versions:
+                print(
+                    f"{item.agent_id}@{item.version}\t{item.name}\t"
+                    f"skills={','.join(item.skill_names)}\towner={item.registered_by}"
+                )
+            return 0
+        if args.command == "register":
+            registry = _registry_client(args)
+            item = registry.register(_agent_root(args.path), args.version)
+            print(f"Agent 등록 완료: {item.agent_id}@{item.version}")
+            print(f"Artifact: {item.artifact_path}")
+            print(f"SHA-256: {item.artifact_sha256}")
+            return 0
+        if args.command == "load":
+            registry = _registry_client(args)
+            destination = args.path or Path.cwd() / args.agent_id
+            target, item = registry.load(
+                args.agent_id,
+                version=args.version,
+                destination=destination,
+            )
+            print(f"Agent 로드 완료: {item.agent_id}@{item.version}")
+            print(f"Local Path: {target}")
+            if (target / "release.yaml").is_file() and not args.no_assemble:
+                result = AgentReleaseLoader(args.profile).assemble(target)
+                print(f"Release Runtime: {result.runtime_root}")
+            print(f"검증: cd {target} && aops validate")
+            return 0
+        if args.command == "deploy":
+            root = _agent_root(args.path)
+            _validate_profile(args.profile)
+            warehouse_id = args.warehouse_id or get_default_warehouse(args.profile)
+            result = DatabricksAppDeployer(args.profile).deploy(
+                root,
+                model_endpoint=args.model_endpoint,
+                experiment_name=args.experiment,
+                trace_schema=args.trace_schema,
+                warehouse_id=warehouse_id,
+                app_name=args.app_name,
+                output=args.output,
+                build_only=args.build_only,
+            )
+            print(f"MCP App 빌드 완료: {result.build.root}")
+            print(f"Agent Release: {result.build.agent_id}@{result.build.release_version}")
+            print(f"MLflow Experiment: {result.build.experiment_name}")
+            print(
+                "UC Trace: "
+                f"{result.build.trace_catalog}.{result.build.trace_schema} "
+                f"(experiment_id={result.build.experiment_id})"
+            )
+            if result.mcp_url:
+                print(f"Databricks App: {result.app_url}")
+                print(f"MCP URL: {result.mcp_url}")
+            elif args.build_only:
+                print("원격 배포 생략: --build-only")
+            else:
+                print("배포 완료. App URL은 Databricks Apps 화면에서 확인하세요.")
             return 0
         if args.command == "doctor":
             checks = run_doctor(write_test_trace=args.write_test_trace)
@@ -131,10 +291,51 @@ def main(argv: list[str] | None = None) -> int:
             result = _upload_with_usage_wait(100, 2)
             print(f"token_records={inserted} uploaded={result.uploaded} failed={result.failed}")
             return 1 if result.failed else 0
-    except (DatabricksError, ManifestError, RuntimeError, OSError, ValueError) as exc:
+    except (
+        DatabricksError,
+        ManifestError,
+        RegistryError,
+        ReleaseError,
+        DeployError,
+        RuntimeError,
+        OSError,
+        ValueError,
+    ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     return 2
+
+
+def _agent_root(path: Path) -> Path:
+    root = find_agent_root(path)
+    if root is None:
+        raise ManifestError(f"agent.yaml을 찾을 수 없습니다: {path.expanduser().resolve()}")
+    return root
+
+
+def _add_registry_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--profile", required=True, help="명시적으로 선택한 Databricks CLI Profile")
+    parser.add_argument("--registry", required=True, help="Registry 위치: <catalog>.<schema>")
+    parser.add_argument("--warehouse-id", help="Registry Delta Table 조회용 SQL Warehouse ID")
+    parser.add_argument("--volume", default="agent_artifacts", help="Artifact Volume 이름")
+    parser.add_argument("--table", default="agent_versions", help="Metadata Delta Table 이름")
+
+
+def _registry_client(args: argparse.Namespace) -> RegistryClient:
+    profile = get_profile(args.profile, list_profiles())
+    validate_profile(profile)
+    warehouse_id = args.warehouse_id or get_default_warehouse(profile.name)
+    location = parse_registry(args.registry, volume=args.volume, table=args.table)
+    return RegistryClient(
+        profile=profile.name,
+        warehouse_id=warehouse_id,
+        location=location,
+    )
+
+
+def _validate_profile(profile_name: str) -> None:
+    profile = get_profile(profile_name, list_profiles())
+    validate_profile(profile)
 
 
 def _configure(args: argparse.Namespace) -> int:

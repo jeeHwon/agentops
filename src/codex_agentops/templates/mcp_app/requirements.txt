@@ -1,0 +1,8 @@
+fastapi>=0.115.12,<1
+fastmcp>=2.12.5,<3
+mcp[cli]>=1.14,<2
+uvicorn>=0.34.2,<1
+databricks-openai>=0.13,<1
+databricks-sdk>=0.60,<1
+mlflow>=3.16.1,<4
+PyYAML>=6,<7

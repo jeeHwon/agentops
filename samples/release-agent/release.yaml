@@ -1,0 +1,26 @@
+schema_version: 1
+agent_id: release-sample-agent
+release_version: 1.0.0
+
+profiles:
+  model: standard-v1
+  harness: omnigent-v1
+  mcp_tools: readonly-v1
+
+skills:
+  - alias: release-summary
+    uc_name: poc_catalog.agentops_test.release-summary-v1-0-0
+    version: 1.0.0
+    sha256: 5c893d76b98cd9fbfb82060de5cf30cc44b1d52896317d94dcdccb26916ed8eb
+    source: .agents/skills/release-summary-v1-0-0
+  - alias: release-validation
+    uc_name: poc_catalog.agentops_test.release-validation-v1-0-0
+    version: 1.0.0
+    sha256: b45fb39f734acb7af5172f6a3702e52bebe1caf06e31a86fe7c09432b4a67f6f
+    source: .agents/skills/release-validation-v1-0-0
+
+subagents:
+  - id: validator
+    instructions: subagents/validator.md
+    skills:
+      - release-validation

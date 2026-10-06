@@ -1,3 +1,3 @@
-"""Codex AgentOps runtime."""
+"""Version-pinned UC Skills, Agent Registry, and MLflow observability."""
 
-__version__ = "0.1.1"
+__version__ = "0.4.0"
