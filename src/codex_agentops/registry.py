@@ -375,8 +375,9 @@ def build_agent_archive(root: str | Path) -> AgentArchive:
     if release_path.is_file():
         files.append(release_path)
     skill_entries = sorted((manifest.root / ".agents" / "skills").rglob("*"))
+    codex_entries = sorted((manifest.root / ".codex").rglob("*"))
     subagent_entries = sorted((manifest.root / "subagents").rglob("*"))
-    artifact_entries = skill_entries + subagent_entries
+    artifact_entries = skill_entries + codex_entries + subagent_entries
     symbolic_link = next((path for path in artifact_entries if path.is_symlink()), None)
     if symbolic_link is not None:
         raise RegistryError(f"Symbolic links are not allowed in Agent artifacts: {symbolic_link}")

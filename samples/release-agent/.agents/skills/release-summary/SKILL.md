@@ -1,5 +1,5 @@
 ---
-name: release-summary-v1-0-0
+name: release-summary
 description: 문서의 핵심 내용, 결정 사항과 후속 행동을 근거에 맞게 요약할 때 사용합니다.
 ---
 

@@ -25,6 +25,8 @@ def test_create_agent_contains_only_harness_definition(tmp_path):
     assert (root / "CLAUDE.md").is_file()
     skill_path = root / ".agents/skills/example-skill/SKILL.md"
     assert skill_path.is_file()
+    assert (root / ".codex/config.toml").is_file()
+    assert (root / ".codex/agents/validator.toml").is_file()
     assert find_agent_root(root / ".agents" / "skills") == root
     assert not (root / "package.json").exists()
     assert not (root / "server").exists()
@@ -104,4 +106,14 @@ def test_validate_agent_requires_all_harness_files(tmp_path):
     root = create_agent("claims-helper", tmp_path / "claims-helper")
     (root / "spec.md").unlink()
     with pytest.raises(ManifestError, match="Missing or empty"):
+        validate_agent(root)
+
+
+def test_validate_agent_rejects_invalid_codex_custom_agent(tmp_path):
+    root = create_agent("claims-helper", tmp_path / "claims-helper")
+    (root / ".codex/agents/validator.toml").write_text(
+        'name = "validator"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(ManifestError, match="requires non-empty description"):
         validate_agent(root)

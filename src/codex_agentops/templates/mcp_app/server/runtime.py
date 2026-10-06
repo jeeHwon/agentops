@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +55,9 @@ def load_runtime() -> AgentRuntime:
     for subagent in raw.get("subagents", []):
         path = RUNTIME_ROOT / str(subagent["instructions"])
         body = path.read_text(encoding="utf-8")
+        if path.suffix == ".toml":
+            config = tomllib.loads(body)
+            body = str(config.get("developer_instructions", "")).strip()
         sections.append(
             f"# Subagent Definition: {subagent['id']}\n\n"
             f"Assigned skills: {', '.join(subagent.get('skills', [])) or 'none'}\n\n{body}"

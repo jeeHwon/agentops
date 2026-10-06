@@ -26,7 +26,7 @@ def _result(command, returncode=0, stdout="", stderr=""):
 def test_sample_release_pins_two_uc_skills_and_subagent():
     release = load_release(SAMPLE, expected_agent_id="release-sample-agent")
 
-    assert release.release_version == "1.0.0"
+    assert release.release_version == "2.0.0"
     assert release.harness_profile == "omnigent-v1"
     assert [skill.alias for skill in release.skills] == [
         "release-summary",
@@ -75,8 +75,8 @@ def test_publish_rejects_existing_skill_before_writing():
 
 def test_assemble_downloads_hash_verifies_and_generates_runtime(tmp_path):
     source_by_leaf = {
-        "release-summary-v1-0-0": SAMPLE / ".agents/skills/release-summary-v1-0-0",
-        "release-validation-v1-0-0": SAMPLE / ".agents/skills/release-validation-v1-0-0",
+        "release-summary-v2-0-0": SAMPLE / ".agents/skills/release-summary",
+        "release-validation-v2-0-0": SAMPLE / ".agents/skills/release-validation",
     }
 
     def runner(command):
@@ -96,9 +96,10 @@ def test_assemble_downloads_hash_verifies_and_generates_runtime(tmp_path):
     assert (target / "AGENTS.md").is_file()
     assert (target / "skills/release-summary/SKILL.md").is_file()
     assert (target / ".agents/skills/release-validation/SKILL.md").is_file()
-    assert (target / "subagents/validator.md").is_file()
+    assert (target / ".codex/config.toml").is_file()
+    assert (target / ".codex/agents/validator.toml").is_file()
     config = yaml.safe_load((target / "config.yaml").read_text(encoding="utf-8"))
-    assert config["release_version"] == "1.0.0"
+    assert config["release_version"] == "2.0.0"
     assert config["profiles"] == {
         "model": "standard-v1",
         "harness": "omnigent-v1",
@@ -106,13 +107,14 @@ def test_assemble_downloads_hash_verifies_and_generates_runtime(tmp_path):
     }
     assert config["skills"][0]["markdown"] == "skills/release-summary/SKILL.md"
     assert config["subagents"][0]["skills"] == ["release-validation"]
+    assert config["subagents"][0]["instructions"] == ".codex/agents/validator.toml"
 
 
 def test_assemble_does_not_publish_runtime_on_hash_mismatch(tmp_path):
     def runner(command):
         command = list(command)
         destination = Path(command[4])
-        shutil.copytree(SAMPLE / ".agents/skills/release-summary-v1-0-0", destination)
+        shutil.copytree(SAMPLE / ".agents/skills/release-summary", destination)
         (destination / "SKILL.md").write_text("tampered", encoding="utf-8")
         return _result(command)
 

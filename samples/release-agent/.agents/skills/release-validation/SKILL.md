@@ -1,5 +1,5 @@
 ---
-name: release-validation-v1-0-0
+name: release-validation
 description: 작성된 요약이 원문에 근거하고 핵심 내용을 빠뜨리지 않았는지 검증할 때 사용합니다.
 ---
 

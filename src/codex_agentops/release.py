@@ -13,6 +13,8 @@ from urllib.parse import quote
 
 import yaml
 
+from .manifest import ManifestError, validate_codex_agent_config
+
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 VERSION_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$")
@@ -157,6 +159,11 @@ def load_release(root: str | Path, *, expected_agent_id: str | None = None) -> A
         instruction_path = _safe_relative_path(agent_root, instructions, context)
         if not instruction_path.is_file():
             raise ReleaseError(f"Subagent instructions do not exist: {instruction_path}")
+        if instruction_path.suffix == ".toml":
+            try:
+                validate_codex_agent_config(instruction_path, expected_name=subagent_id)
+            except ManifestError as exc:
+                raise ReleaseError(str(exc)) from exc
         raw_aliases = item.get("skills", [])
         if not isinstance(raw_aliases, list) or not all(isinstance(value, str) for value in raw_aliases):
             raise ReleaseError(f"{context} skills must be a list of Skill aliases.")
@@ -373,16 +380,26 @@ class AgentReleaseLoader:
                 source = release.root / name
                 if source.is_file():
                     shutil.copy2(source, staging / name)
+            codex_config = release.root / ".codex" / "config.toml"
+            if codex_config.is_file():
+                destination_path = staging / ".codex" / "config.toml"
+                destination_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(codex_config, destination_path)
 
-            subagent_paths: dict[str, Path] = {}
+            subagent_paths: dict[str, str] = {}
             for subagent in release.subagents:
                 source = _safe_relative_path(
                     release.root, subagent.instructions, f"Subagent {subagent.id}"
                 )
-                destination_path = staging / "subagents" / f"{subagent.id}.md"
+                source_relative = Path(subagent.instructions)
+                if source_relative.parts[:2] == (".codex", "agents"):
+                    runtime_relative = Path(".codex") / "agents" / f"{subagent.id}.toml"
+                else:
+                    runtime_relative = Path("subagents") / f"{subagent.id}{source.suffix}"
+                destination_path = staging / runtime_relative
                 destination_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, destination_path)
-                subagent_paths[subagent.id] = destination_path
+                subagent_paths[subagent.id] = runtime_relative.as_posix()
 
             config = {
                 "schema_version": 1,
@@ -410,7 +427,7 @@ class AgentReleaseLoader:
                 "subagents": [
                     {
                         "id": subagent.id,
-                        "instructions": f"subagents/{subagent.id}.md",
+                        "instructions": subagent_paths[subagent.id],
                         "skills": list(subagent.skills),
                     }
                     for subagent in release.subagents

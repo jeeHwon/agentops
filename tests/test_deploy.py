@@ -25,7 +25,7 @@ def _runtime(tmp_path: Path) -> Path:
     runtime = tmp_path / "runtime"
     (runtime / "skills" / "release-summary").mkdir(parents=True)
     (runtime / "skills" / "release-validation").mkdir(parents=True)
-    (runtime / "subagents").mkdir()
+    (runtime / ".codex/agents").mkdir(parents=True)
     (runtime / "AGENTS.md").write_text("# Harness\n", encoding="utf-8")
     (runtime / "spec.md").write_text("# Specification\n", encoding="utf-8")
     (runtime / "skills/release-summary/SKILL.md").write_text(
@@ -34,7 +34,12 @@ def _runtime(tmp_path: Path) -> Path:
     (runtime / "skills/release-validation/SKILL.md").write_text(
         "# Release Validation\n", encoding="utf-8"
     )
-    (runtime / "subagents/validator.md").write_text("# Validator\n", encoding="utf-8")
+    (runtime / ".codex/agents/validator.toml").write_text(
+        'name = "validator"\n'
+        'description = "Validates output."\n'
+        'developer_instructions = "Validate the output."\n',
+        encoding="utf-8",
+    )
     release = load_release(SAMPLE)
     config = {
         "schema_version": 1,
@@ -58,7 +63,7 @@ def _runtime(tmp_path: Path) -> Path:
         "subagents": [
             {
                 "id": "validator",
-                "instructions": "subagents/validator.md",
+                "instructions": ".codex/agents/validator.toml",
                 "skills": ["release-validation"],
             }
         ],
@@ -104,7 +109,7 @@ def test_builder_preserves_runtime_files_and_wires_app_resources(tmp_path):
     assert (output / "runtime/AGENTS.md").is_file()
     assert (output / "runtime/spec.md").is_file()
     assert (output / "runtime/skills/release-summary/SKILL.md").is_file()
-    assert (output / "runtime/subagents/validator.md").is_file()
+    assert (output / "runtime/.codex/agents/validator.toml").is_file()
     assert not (output / "runtime/agent.md").exists()
     assert (output / "server/app.py").is_file()
     assert (output / "server/tracing.py").is_file()

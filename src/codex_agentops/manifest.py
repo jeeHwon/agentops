@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import textwrap
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,6 +47,26 @@ description: 사용자 요청을 한 문장으로 요약하고 핵심 확인 사
 - 제공되지 않은 사실은 추측하지 않습니다.
 - 민감정보와 인증정보를 답변에 노출하지 않습니다.
 """
+
+
+CODEX_PROJECT_CONFIG = """\
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4
+"""
+
+
+EXAMPLE_SUBAGENT = '''\
+name = "validator"
+description = "결과가 spec.md의 범위와 성공 기준을 충족하는지 독립적으로 검증할 때 사용합니다."
+sandbox_mode = "read-only"
+developer_instructions = """
+`spec.md`의 범위와 성공 기준을 먼저 읽습니다.
+결과의 사실성, 누락과 요구사항 충족 여부를 검증합니다.
+문제를 발견하면 근거와 수정 방향을 간단히 반환합니다.
+파일을 수정하지 않습니다.
+"""
+'''
 
 
 class ManifestError(RuntimeError):
@@ -120,6 +141,13 @@ def validate_agent(root: str | Path) -> AgentManifest:
         if not skill_file.is_file():
             raise ManifestError(f"Missing Skill entrypoint: {skill_file}")
         _validate_skill(skill_file)
+
+    codex_config = manifest.root / ".codex" / "config.toml"
+    if codex_config.is_file():
+        _load_toml(codex_config)
+    custom_agents = manifest.root / ".codex" / "agents"
+    for agent_file in sorted(custom_agents.glob("*.toml")):
+        validate_codex_agent_config(agent_file)
     release_path = manifest.root / "release.yaml"
     if release_path.exists():
         from .release import ReleaseError, load_release
@@ -141,6 +169,8 @@ def create_agent(agent_id: str, destination: str | Path | None = None) -> Path:
     name = agent_id.replace("-", " ").title()
     skill_dir = root / ".agents" / "skills" / "example-skill"
     skill_dir.mkdir(parents=True, exist_ok=True)
+    codex_agents_dir = root / ".codex" / "agents"
+    codex_agents_dir.mkdir(parents=True, exist_ok=True)
     files: dict[Path, str] = {
         root / "agent.yaml": (
             "schema_version: 1\n"
@@ -159,13 +189,17 @@ def create_agent(agent_id: str, destination: str | Path | None = None) -> Path:
             "- 필요한 경우에만 추가 정보를 질문합니다.\n\n"
             "## Skill 사용\n\n"
             "- 요청과 description이 일치하는 Skill만 사용합니다.\n"
-            "- 여러 Skill이 관련되면 필요한 Skill만 순서대로 사용합니다.\n"
+            "- 여러 Skill이 관련되면 필요한 Skill만 순서대로 사용합니다.\n\n"
+            "## Sub-agent 사용\n\n"
+            "- 독립적인 결과 검증이 필요하면 `validator` Sub-agent에게 맡깁니다.\n"
         ),
         root / "CLAUDE.md": (
             "# Compatibility Instructions\n\n"
             "이 파일은 다른 Harness Runtime과의 호환 지침이 필요한 경우 사용합니다.\n"
         ),
         skill_dir / "SKILL.md": EXAMPLE_SKILL,
+        root / ".codex" / "config.toml": CODEX_PROJECT_CONFIG,
+        codex_agents_dir / "validator.toml": EXAMPLE_SUBAGENT,
     }
     for path, content in files.items():
         path.write_text(content, encoding="utf-8")
@@ -189,6 +223,8 @@ def _agent_readme(agent_id: str) -> str:
         | `spec.md` | 목적, 범위, 입출력, 데이터 등급과 성공 기준 |
         | `AGENTS.md` | 모든 요청에 적용되는 공통 행동과 Skill 선택 원칙 |
         | `.agents/skills/*/SKILL.md` | 업무별 절차, 입력, 출력과 제약사항 |
+        | `.codex/config.toml` | 프로젝트의 Codex Sub-agent 실행 설정 |
+        | `.codex/agents/*.toml` | Codex가 자동 등록하는 Sub-agent 역할과 지침 |
         | `README.md` | 사용 예시와 운영 메모 |
         | `CLAUDE.md` | 선택적인 다른 Harness 호환 지침 |
 
@@ -198,6 +234,11 @@ def _agent_readme(agent_id: str) -> str:
         codex
         aops validate
         ```
+
+        Codex는 `AGENTS.md`, `.agents/skills/*/SKILL.md`, `.codex/agents/*.toml`을
+        공식 위치에서 발견합니다. `spec.md`는 `AGENTS.md` 지침에 따라 작업 시작 시
+        읽습니다. 숨김 폴더는 `ls -la`로 확인하고 Skill 목록은 Codex의 `/skills`에서
+        확인합니다.
 
         새 Skill은 예제 폴더를 복사해 만듭니다. 폴더명과 `SKILL.md` frontmatter의
         `name`은 같은 kebab-case여야 합니다.
@@ -315,6 +356,29 @@ def _validate_skill(path: Path) -> None:
         raise ManifestError(f"Skill instructions are required after frontmatter: {path}")
 
 
+def validate_codex_agent_config(path: str | Path, *, expected_name: str | None = None) -> dict:
+    target = Path(path)
+    values = _load_toml(target)
+    for key in ("name", "description", "developer_instructions"):
+        if not isinstance(values.get(key), str) or not values[key].strip():
+            raise ManifestError(f"Codex custom agent requires non-empty {key}: {target}")
+    if expected_name and values["name"] != expected_name:
+        raise ManifestError(
+            f"Codex custom agent name must match release id '{expected_name}': {target}"
+        )
+    return values
+
+
+def _load_toml(path: Path) -> dict:
+    try:
+        values = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ManifestError(f"Invalid Codex TOML {path}: {exc}") from exc
+    if not isinstance(values, dict):
+        raise ManifestError(f"Codex TOML must contain a table: {path}")
+    return values
+
+
 def calculate_definition_checksums(root: str | Path) -> DefinitionChecksums:
     agent_root = Path(root).expanduser().resolve()
     harness_files = ["agent.yaml", "README.md", "spec.md", "AGENTS.md", "CLAUDE.md"]
@@ -324,6 +388,9 @@ def calculate_definition_checksums(root: str | Path) -> DefinitionChecksums:
     subagents_root = agent_root / "subagents"
     if subagents_root.is_dir():
         harness_paths.extend(sorted(path for path in subagents_root.rglob("*") if path.is_file()))
+    codex_root = agent_root / ".codex"
+    if codex_root.is_dir():
+        harness_paths.extend(sorted(path for path in codex_root.rglob("*") if path.is_file()))
     harness = _hash_files(agent_root, harness_paths)
     skill_files = sorted(
         path for path in (agent_root / ".agents" / "skills").rglob("*") if path.is_file()

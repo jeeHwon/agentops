@@ -9,7 +9,7 @@ Agent Release Manifest
         ↓
 UC Skills 다운로드 및 SHA-256 검증
         ↓
-AGENTS.md / skills / subagents / config.yaml 생성
+AGENTS.md / .agents/skills / .codex/agents / config.yaml 생성
         ↓
 로컬 Harness에서 개발하거나 Databricks Apps MCP로 배포
 ```
@@ -87,9 +87,17 @@ codex
 | `spec.md` | 목적, 범위, 입력·출력과 성공 기준 |
 | `AGENTS.md` | 항상 적용할 역할과 행동 원칙 |
 | `.agents/skills/*/SKILL.md` | 업무별 절차와 출력 형식 |
-| `subagents/*.md` | 하위 Agent별 역할과 검증 절차 |
+| `.codex/config.toml` | 프로젝트의 Codex Sub-agent 실행 설정 |
+| `.codex/agents/*.toml` | Codex가 자동 등록하는 Sub-agent 역할과 지침 |
 | `release.yaml` | Agent Release와 UC Skill 버전·해시 고정 |
 | `CLAUDE.md` | 다른 Harness와의 선택적 호환 지침 |
+
+Codex는 시작할 때 `AGENTS.md`를 자동으로 읽고 `.agents/skills`의 Skill 이름과 설명을
+발견합니다. 선택된 Skill의 전체 `SKILL.md`는 필요한 시점에 읽습니다.
+`.codex/agents/*.toml`은 프로젝트 전용 Sub-agent로 등록됩니다. `spec.md`, `agent.yaml`,
+`release.yaml`, `README.md`, `CLAUDE.md`는 Codex가 자동으로 지침에 넣지 않으므로,
+`AGENTS.md`에서 필요한 파일을 읽도록 명시합니다. 숨김 폴더는 `ls -la`로 확인할 수
+있고 Codex에서는 `/skills`로 발견된 Skill을 확인할 수 있습니다.
 
 새 Skill은 예제 폴더를 복사합니다. 폴더명과 `SKILL.md` frontmatter의 `name`은 같아야
 합니다.
@@ -124,11 +132,11 @@ skills:
     uc_name: poc_catalog.agentops_test.release-summary-v1-0-0
     version: 1.0.0
     sha256: <Skill 폴더 전체의 SHA-256>
-    source: .agents/skills/release-summary-v1-0-0
+    source: .agents/skills/release-summary
 
 subagents:
   - id: validator
-    instructions: subagents/validator.md
+    instructions: .codex/agents/validator.toml
     skills: [release-validation]
 ```
 
@@ -160,8 +168,9 @@ aops assemble .
 ├── CLAUDE.md
 ├── config.yaml
 ├── skills/<alias>/SKILL.md
-├── subagents/<id>.md
-└── .agents/skills/<alias>/SKILL.md
+├── .agents/skills/<alias>/SKILL.md
+├── .codex/config.toml
+└── .codex/agents/<id>.toml
 ```
 
 각 UC Skill은 다운로드 직후 SHA-256을 검증합니다. 하나라도 다르면 기존 Runtime을
@@ -229,7 +238,7 @@ aops deploy . \
 
 1. `release.yaml`을 읽고 UC Skills를 다시 다운로드합니다.
 2. 각 Skill의 SHA-256을 고정된 값과 비교합니다.
-3. `AGENTS.md`, `spec.md`, 개별 `SKILL.md`, subagent Markdown을 분리된 파일로 유지한 Runtime을 만듭니다.
+3. `AGENTS.md`, `spec.md`, 개별 `SKILL.md`, Codex Sub-agent TOML을 분리된 파일로 유지한 Runtime을 만듭니다.
 4. FastAPI와 FastMCP 기반의 stateless Streamable HTTP 서버를 생성합니다.
 5. Model Serving endpoint와 MLflow Experiment를 App 리소스로 연결합니다.
 6. Databricks Bundle을 검증하고 App을 배포·시작합니다.

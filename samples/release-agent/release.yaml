@@ -1,6 +1,6 @@
 schema_version: 1
 agent_id: release-sample-agent
-release_version: 1.0.0
+release_version: 2.0.0
 
 profiles:
   model: standard-v1
@@ -9,18 +9,18 @@ profiles:
 
 skills:
   - alias: release-summary
-    uc_name: poc_catalog.agentops_test.release-summary-v1-0-0
-    version: 1.0.0
-    sha256: 5c893d76b98cd9fbfb82060de5cf30cc44b1d52896317d94dcdccb26916ed8eb
-    source: .agents/skills/release-summary-v1-0-0
+    uc_name: poc_catalog.agentops_test.release-summary-v2-0-0
+    version: 2.0.0
+    sha256: 98245bd027feb4957d0044f68f0b338a040c7b91827770f75255cbbfb2520ef2
+    source: .agents/skills/release-summary
   - alias: release-validation
-    uc_name: poc_catalog.agentops_test.release-validation-v1-0-0
-    version: 1.0.0
-    sha256: b45fb39f734acb7af5172f6a3702e52bebe1caf06e31a86fe7c09432b4a67f6f
-    source: .agents/skills/release-validation-v1-0-0
+    uc_name: poc_catalog.agentops_test.release-validation-v2-0-0
+    version: 2.0.0
+    sha256: 65815f827ec7981ca3423e4160f19c3af33494da2e0e54a6d02a04a62acd2d94
+    source: .agents/skills/release-validation
 
 subagents:
   - id: validator
-    instructions: subagents/validator.md
+    instructions: .codex/agents/validator.toml
     skills:
       - release-validation
