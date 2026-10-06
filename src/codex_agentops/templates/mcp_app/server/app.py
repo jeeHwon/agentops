@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request
 from fastmcp import FastMCP
+from starlette.routing import Mount
 
 from .context import request_headers
 from .runtime import runtime
@@ -27,7 +28,14 @@ async def index() -> dict:
 
 app = FastAPI(
     title=f"{runtime.agent_id} MCP",
-    routes=[*mcp_app.routes, *api.routes],
+    routes=[
+        *mcp_app.routes,
+        # Unity Gateway Playground currently appends the standard `/mcp`
+        # suffix to the endpoint already discovered as `<app-url>/mcp`.
+        # Keep the canonical route and accept that proxied `/mcp/mcp` form.
+        Mount("/mcp", app=mcp_app, name="unity-gateway-mcp"),
+        *api.routes,
+    ],
     lifespan=mcp_app.lifespan,
 )
 

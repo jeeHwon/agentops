@@ -115,6 +115,8 @@ def test_builder_preserves_runtime_files_and_wires_app_resources(tmp_path):
     assert not (output / "runtime/agent.md").exists()
     assert (output / "server/app.py").is_file()
     assert (output / "server/tracing.py").is_file()
+    app_source = (output / "server/app.py").read_text(encoding="utf-8")
+    assert 'Mount("/mcp", app=mcp_app' in app_source
     tracing = (output / "server/tracing.py").read_text(encoding="utf-8")
     assert '"agent.skill_versions"' not in tracing
     assert 'metadata[f"{prefix}.sha256"] = skill["sha256"]' in tracing
