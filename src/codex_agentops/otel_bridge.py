@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from threading import Lock
 from typing import Any, Iterable
 
 from .config import Settings
@@ -24,6 +25,120 @@ class OtelSpan:
     status: str
     attributes: dict[str, Any]
     resource: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _SubagentLink:
+    parent_trace_id: str
+    parent_session_id: str
+    launch_span_id: str
+    child_session_id: str
+    agent_name: str
+
+
+class OtelTraceAssembler:
+    """Assemble one logical Omnigent turn across incremental OTLP batches.
+
+    Omnigent's BatchSpanProcessors export completed tool spans before the
+    enclosing Agent span ends.  A stateless collector therefore sees tools in
+    earlier HTTP requests and the root in a later request.  The assembler keeps
+    only GenAI spans, deduplicates exporter retries by span id, and joins a
+    completed Sub-agent trace back to the parent turn using the
+    ``sys_session_send`` conversation id.
+    """
+
+    def __init__(self) -> None:
+        self._spans: dict[str, dict[str, OtelSpan]] = defaultdict(dict)
+        self._session_trace: dict[str, str] = {}
+        self._subagents: dict[str, _SubagentLink] = {}
+        self._emitted: set[str] = set()
+        self._lock = Lock()
+
+    def ingest(self, spans: Iterable[OtelSpan]) -> tuple[tuple[OtelSpan, ...], ...]:
+        with self._lock:
+            for span in spans:
+                if span.trace_id in self._emitted or not _is_genai_span(span):
+                    continue
+                self._spans[span.trace_id][span.span_id] = span
+                if _span_kind(span) == "AGENT":
+                    session_id = str(span.attributes.get("session.id") or "")
+                    if session_id:
+                        self._session_trace[session_id] = span.trace_id
+                link = _subagent_link(span)
+                if link is not None:
+                    self._subagents[link.child_session_id] = link
+
+            ready: list[tuple[OtelSpan, ...]] = []
+            # Root Agent spans end after the tools in their turn, so their
+            # presence is the completion signal for a buffered trace.
+            for trace_id in list(self._spans):
+                root = _root_agent_span(self._spans[trace_id].values())
+                if root is None:
+                    continue
+                agent_name = str(
+                    root.attributes.get("agent.name")
+                    or root.attributes.get("gen_ai.agent.name")
+                    or ""
+                )
+                if agent_name == "session-title":
+                    self._drop((trace_id,))
+                    continue
+                session_id = str(root.attributes.get("session.id") or "")
+                if session_id in self._subagents:
+                    # Parent turn has not ended yet. Hold the child so the
+                    # resulting MLflow trace contains the full Agent tree.
+                    continue
+                combined, consumed = self._assemble(trace_id)
+                ready.append(tuple(combined))
+                self._drop(consumed)
+            return tuple(ready)
+
+    def _assemble(self, trace_id: str) -> tuple[list[OtelSpan], tuple[str, ...]]:
+        root = _root_agent_span(self._spans[trace_id].values())
+        if root is None:
+            return [], ()
+        combined = list(self._spans[trace_id].values())
+        consumed = [trace_id]
+        for link in tuple(self._subagents.values()):
+            if link.parent_trace_id != trace_id:
+                continue
+            child_trace_id = self._session_trace.get(link.child_session_id)
+            if not child_trace_id or child_trace_id not in self._spans:
+                continue
+            child_root = _root_agent_span(self._spans[child_trace_id].values())
+            if child_root is None:
+                continue
+            for span in self._spans[child_trace_id].values():
+                if span.span_id == child_root.span_id:
+                    attrs = {
+                        **span.attributes,
+                        "agent.name": link.agent_name,
+                        "gen_ai.agent.name": link.agent_name,
+                        "agentops.subagent": True,
+                        "agentops.parent_session_id": link.parent_session_id,
+                        "agentops.original_otel_trace_id": span.trace_id,
+                    }
+                    span = replace(span, parent_span_id=root.span_id, attributes=attrs)
+                combined.append(span)
+            consumed.append(child_trace_id)
+        return combined, tuple(consumed)
+
+    def _drop(self, trace_ids: Iterable[str]) -> None:
+        for trace_id in trace_ids:
+            self._emitted.add(trace_id)
+            group = self._spans.pop(trace_id, {})
+            for span in group.values():
+                session_id = str(span.attributes.get("session.id") or "")
+                if self._session_trace.get(session_id) == trace_id:
+                    self._session_trace.pop(session_id, None)
+        for child_session_id, link in list(self._subagents.items()):
+            # Keep a launch link even when the child Agent span has not arrived
+            # yet. Omnigent may finish an unrelated session-title trace between
+            # ``sys_session_send`` and the first child batch. Removing the link
+            # here would export the child as a second top-level turn instead of
+            # joining it to its parent.
+            if link.parent_trace_id in self._emitted:
+                self._subagents.pop(child_session_id, None)
 
 
 def parse_otlp_traces(content: bytes) -> tuple[OtelSpan, ...]:
@@ -63,15 +178,20 @@ def export_otlp_traces(
     settings: Settings,
     *,
     exporter: "OtelMlflowExporter | None" = None,
+    assembler: OtelTraceAssembler | None = None,
 ) -> tuple[str, ...]:
     spans = parse_otlp_traces(content)
-    grouped: dict[str, list[OtelSpan]] = defaultdict(list)
-    for span in spans:
-        grouped[span.trace_id].append(span)
+    if assembler is not None:
+        groups = assembler.ingest(spans)
+    else:
+        grouped: dict[str, list[OtelSpan]] = defaultdict(list)
+        for span in spans:
+            grouped[span.trace_id].append(span)
+        groups = tuple(tuple(group) for group in grouped.values())
     active = exporter or OtelMlflowExporter(settings)
     trace_ids: list[str] = []
-    for group in grouped.values():
-        if any(_span_kind(span) == "AGENT" for span in group):
+    for group in groups:
+        if _root_agent_span(group) is not None:
             trace_ids.append(active.export(group))
     return tuple(trace_ids)
 
@@ -119,6 +239,8 @@ class OtelMlflowExporter:
             "agentops.session_id": session_id or "unknown",
             "agentops.status": root.status.lower(),
             "agentops.telemetry_source": "omnigent-native-otel",
+            "agentops.otel.trace_id": root.trace_id,
+            "agentops.otel.span_id": root.span_id,
             "agentops.tool_count": sum(_span_kind(span) == "TOOL" for span in items),
             "agentops.subagent_count": max(0, len(agent_spans) - 1),
             **usage,
@@ -138,6 +260,7 @@ class OtelMlflowExporter:
             "agentops.session_id": session_id or "unknown",
             "agentops.status": root.status.lower(),
             "agentops.telemetry_source": "omnigent-native-otel",
+            "agentops.otel.trace_id": root.trace_id,
             "mlflow.trace.session": session_id or "unknown",
         }
         mlflow_root = client.start_trace(
@@ -284,12 +407,16 @@ def _span_outputs(span: OtelSpan) -> Any:
 
 def _normalized_attributes(span: OtelSpan) -> dict[str, Any]:
     excluded = {"input.value", "output.value"}
-    return {
+    attributes = {
         "agentops.runtime": "omnigent",
         "agentops.otel.trace_id": span.trace_id,
         "agentops.otel.span_id": span.span_id,
         **{key: value for key, value in span.attributes.items() if key not in excluded},
     }
+    usage = _aggregate_usage((span,))
+    if usage["agentops.token_usage.available"]:
+        attributes.update(usage)
+    return attributes
 
 
 def _aggregate_usage(spans: Iterable[OtelSpan]) -> dict[str, Any]:
@@ -300,13 +427,25 @@ def _aggregate_usage(spans: Iterable[OtelSpan]) -> dict[str, Any]:
         "gen_ai.usage.cache_creation_input_tokens": "cache_creation_input_tokens",
     }
     totals = {target: 0 for target in keys.values()}
+    reported_total = 0
+    reported_total_available = False
     available = False
     for span in spans:
         for source, target in keys.items():
             if source in span.attributes:
                 available = True
                 totals[target] += int(span.attributes[source] or 0)
-    total = totals["input_tokens"] + totals["output_tokens"]
+        if "gen_ai.usage.total_tokens" in span.attributes:
+            reported_total_available = True
+            reported_total += int(span.attributes["gen_ai.usage.total_tokens"] or 0)
+    total = (
+        reported_total
+        if reported_total_available
+        else totals["input_tokens"]
+        + totals["output_tokens"]
+        + totals["cache_read_input_tokens"]
+        + totals["cache_creation_input_tokens"]
+    )
     return {
         "agentops.token_usage.available": available,
         "agentops.token_usage.source": "omnigent-native-otel",
@@ -318,3 +457,47 @@ def _aggregate_usage(spans: Iterable[OtelSpan]) -> dict[str, Any]:
         "agentops.tokens.total": total,
         "mlflow.chat.tokenUsage": {**totals, "total_tokens": total},
     }
+
+
+def _is_genai_span(span: OtelSpan) -> bool:
+    return _span_kind(span) in {"AGENT", "TOOL", "GUARDRAIL", "LLM", "RETRIEVER"}
+
+
+def _root_agent_span(spans: Iterable[OtelSpan]) -> OtelSpan | None:
+    items = tuple(spans)
+    agent_spans = [span for span in items if _span_kind(span) == "AGENT"]
+    if not agent_spans:
+        return None
+    ids = {span.span_id for span in items}
+    return next(
+        (
+            span
+            for span in sorted(agent_spans, key=lambda item: (item.start_ns, item.span_id))
+            if span.parent_span_id is None or span.parent_span_id not in ids
+        ),
+        agent_spans[0],
+    )
+
+
+def _subagent_link(span: OtelSpan) -> _SubagentLink | None:
+    if _span_kind(span) != "TOOL":
+        return None
+    tool_name = str(
+        span.attributes.get("tool.name") or span.attributes.get("gen_ai.tool.name") or ""
+    )
+    if tool_name != "sys_session_send":
+        return None
+    output = _content(span.attributes.get("output.value"))
+    inputs = _content(span.attributes.get("input.value"))
+    if not isinstance(output, dict) or not isinstance(inputs, dict):
+        return None
+    child_session_id = str(output.get("conversation_id") or output.get("task_id") or "")
+    if not child_session_id or str(output.get("kind") or "") != "sub_agent":
+        return None
+    return _SubagentLink(
+        parent_trace_id=span.trace_id,
+        parent_session_id=str(span.attributes.get("session.id") or ""),
+        launch_span_id=span.span_id,
+        child_session_id=child_session_id,
+        agent_name=str(inputs.get("agent") or "subagent"),
+    )

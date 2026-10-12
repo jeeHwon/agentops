@@ -9,7 +9,7 @@ data_sensitivity: internal
 security_access_level: standard
 required_uc_permissions: []
 use_flagship_model: false
-model: system.ai.gpt-5-6-luna
+model: system.ai.gpt-5-6-sol
 ---
 
 # Agent Specification

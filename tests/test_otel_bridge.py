@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from codex_agentops.config import Settings
 from codex_agentops.mlflow_exporter import MlflowTurnExporter
-from codex_agentops.otel_bridge import export_otlp_traces, parse_otlp_traces
+from dataclasses import replace
+
+from codex_agentops.otel_bridge import (
+    OtelSpan,
+    OtelTraceAssembler,
+    _normalized_attributes,
+    export_otlp_traces,
+    parse_otlp_traces,
+)
 
 
 def _payload() -> bytes:
@@ -39,6 +47,8 @@ def _payload() -> bytes:
         "output.value": "done",
         "gen_ai.usage.input_tokens": 10,
         "gen_ai.usage.output_tokens": 4,
+        "gen_ai.usage.cache_read_input_tokens": 6,
+        "gen_ai.usage.total_tokens": 20,
     }
     for key, value in root_attrs.items():
         attribute = root.attributes.add()
@@ -103,4 +113,130 @@ def test_omnigent_otlp_is_normalized_to_agent_turn(tmp_path, monkeypatch):
     assert tool.inputs == {"query": "x"}
     assert tool.outputs == {"count": 1}
     assert trace.info.tags["agentops.runtime"] == "omnigent"
-    assert trace.info.token_usage["total_tokens"] == 14
+    assert trace.info.token_usage["total_tokens"] == 20
+
+
+def test_trace_assembler_buffers_batches_deduplicates_and_joins_subagent():
+    root, _ = parse_otlp_traces(_payload())
+    launch = OtelSpan(
+        trace_id=root.trace_id,
+        span_id="44" * 8,
+        parent_span_id=root.span_id,
+        name="tool:sys_session_send",
+        start_ns=root.start_ns + 10,
+        end_ns=root.start_ns + 20,
+        status="OK",
+        attributes={
+            "openinference.span.kind": "TOOL",
+            "tool.name": "sys_session_send",
+            "session.id": "conv-1",
+            "input.value": '{"agent":"validator"}',
+            "output.value": (
+                '{"kind":"sub_agent","conversation_id":"child-1",'
+                '"task_id":"child-1"}'
+            ),
+        },
+        resource=root.resource,
+    )
+    child = replace(
+        root,
+        trace_id="55" * 16,
+        span_id="66" * 8,
+        start_ns=root.start_ns + 30,
+        end_ns=root.end_ns - 10,
+        attributes={
+            **root.attributes,
+            "session.id": "child-1",
+            "input.value": "validate",
+            "output.value": "passed",
+        },
+    )
+    assembler = OtelTraceAssembler()
+
+    assert assembler.ingest([launch, launch]) == ()
+    assert assembler.ingest([child, child]) == ()
+    groups = assembler.ingest([root, root])
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 3
+    child_result = next(span for span in groups[0] if span.span_id == child.span_id)
+    assert child_result.parent_span_id == root.span_id
+    assert child_result.attributes["agent.name"] == "validator"
+    assert child_result.attributes["agentops.subagent"] is True
+    assert assembler.ingest([root, launch, child]) == ()
+
+
+def test_trace_assembler_keeps_pending_subagent_link_across_unrelated_trace():
+    root, _ = parse_otlp_traces(_payload())
+    launch = OtelSpan(
+        trace_id=root.trace_id,
+        span_id="77" * 8,
+        parent_span_id=root.span_id,
+        name="tool:sys_session_send",
+        start_ns=root.start_ns + 10,
+        end_ns=root.start_ns + 20,
+        status="OK",
+        attributes={
+            "openinference.span.kind": "TOOL",
+            "tool.name": "sys_session_send",
+            "session.id": "parent-session",
+            "input.value": '{"agent":"validator"}',
+            "output.value": (
+                '{"kind":"sub_agent","conversation_id":"child-session",'
+                '"task_id":"child-session"}'
+            ),
+        },
+        resource=root.resource,
+    )
+    session_title = replace(
+        root,
+        trace_id="88" * 16,
+        span_id="99" * 8,
+        attributes={
+            **root.attributes,
+            "agent.name": "session-title",
+            "session.id": "title-session",
+        },
+    )
+    child = replace(
+        root,
+        trace_id="aa" * 16,
+        span_id="bb" * 8,
+        attributes={
+            **root.attributes,
+            "session.id": "child-session",
+            "input.value": "validate",
+            "output.value": "passed",
+        },
+    )
+    assembler = OtelTraceAssembler()
+
+    assert assembler.ingest([launch]) == ()
+    assert assembler.ingest([session_title]) == ()
+    assert assembler.ingest([child]) == ()
+    groups = assembler.ingest([root])
+
+    assert len(groups) == 1
+    assert {span.span_id for span in groups[0]} == {
+        root.span_id,
+        launch.span_id,
+        child.span_id,
+    }
+    child_result = next(span for span in groups[0] if span.span_id == child.span_id)
+    assert child_result.parent_span_id == root.span_id
+    assert child_result.attributes["agent.name"] == "validator"
+
+
+def test_agent_span_preserves_exact_token_usage_for_subagent_view():
+    root, _ = parse_otlp_traces(_payload())
+
+    attributes = _normalized_attributes(root)
+
+    assert attributes["agentops.token_usage.exact"] is True
+    assert attributes["mlflow.chat.tokenUsage"] == {
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "cache_read_input_tokens": 6,
+        "cache_creation_input_tokens": 0,
+        "total_tokens": 20,
+    }

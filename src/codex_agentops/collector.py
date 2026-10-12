@@ -8,6 +8,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,7 +20,12 @@ from .config import Settings, load_settings
 from .outbox import Outbox
 from .paths import collector_log_path, collector_pid_path, otel_heartbeat_path, outbox_path
 from .usage import TokenUsage
-from .otel_bridge import OtelBridgeError, export_otlp_traces
+from .otel_bridge import (
+    OtelBridgeError,
+    OtelMlflowExporter,
+    OtelTraceAssembler,
+    parse_otlp_traces,
+)
 
 
 MAX_REQUEST_BYTES = 10 * 1024 * 1024
@@ -81,11 +87,21 @@ def serve_collector(settings: Settings | None = None) -> None:
     target = collector_pid_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(f"{os.getpid()}\n", encoding="utf-8")
-    server = ThreadingHTTPServer(("127.0.0.1", active.otel_port), _handler(active))
+    trace_assembler = OtelTraceAssembler()
+    # MLflow writes are slower than the OTLP exporter's acknowledgement
+    # timeout. A single background worker acknowledges OTLP immediately,
+    # preserves turn ordering and prevents the exporter from retrying the same
+    # completed spans while a Databricks write is still in flight.
+    trace_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aops-otel-mlflow")
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", active.otel_port),
+        _handler(active, trace_assembler=trace_assembler, trace_executor=trace_executor),
+    )
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
         server.server_close()
+        trace_executor.shutdown(wait=True, cancel_futures=False)
         try:
             target.unlink()
         except FileNotFoundError:
@@ -211,8 +227,14 @@ def ingest_otlp_logs(payload: dict[str, Any], outbox: Outbox) -> int:
     return inserted
 
 
-def _handler(settings: Settings):
+def _handler(
+    settings: Settings,
+    *,
+    trace_assembler: OtelTraceAssembler | None = None,
+    trace_executor: ThreadPoolExecutor | None = None,
+):
     outbox = Outbox(outbox_path())
+    assembler = trace_assembler or OtelTraceAssembler()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -235,9 +257,13 @@ def _handler(settings: Settings):
                     if "protobuf" not in self.headers.get("content-type", "").lower():
                         self._send(415, {"error": "protobuf_required"})
                         return
-                    trace_ids = export_otlp_traces(raw, settings)
-                    _write_heartbeat("traces", len(trace_ids))
+                    groups = assembler.ingest(parse_otlp_traces(raw))
+                    _write_heartbeat("traces", len(groups))
                     self._send_protobuf(200, b"")
+                    if trace_executor is None:
+                        _export_otel_groups(groups, settings)
+                    else:
+                        trace_executor.submit(_export_otel_groups, groups, settings)
                     return
                 if "json" not in self.headers.get("content-type", "").lower():
                     self._send(415, {"error": "json_required"})
@@ -276,6 +302,23 @@ def _handler(settings: Settings):
             return
 
     return Handler
+
+
+def _export_otel_groups(
+    groups: tuple[tuple[Any, ...], ...],
+    settings: Settings,
+) -> None:
+    if not groups:
+        return
+    exporter = OtelMlflowExporter(settings)
+    for group in groups:
+        try:
+            exporter.export(group)
+        except Exception as exc:
+            # Collector stdout/stderr is already redirected to collector.log.
+            # Keep OTLP ingestion available even if a single MLflow write
+            # fails; a later turn can still be observed.
+            print(f"ERROR: failed to export assembled OTel trace: {exc}", file=sys.stderr)
 
 
 def _attributes(items: Any) -> dict[str, Any]:
