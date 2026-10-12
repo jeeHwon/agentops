@@ -355,12 +355,13 @@ wheels = [
 
 [[package]]
 name = "codex-agentops"
-version = "0.8.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "databricks-agents" },
     { name = "databricks-sdk" },
     { name = "mlflow-skinny" },
+    { name = "opentelemetry-proto" },
     { name = "pyyaml" },
 ]
 
@@ -375,6 +376,7 @@ requires-dist = [
     { name = "databricks-agents", specifier = ">=1,<2" },
     { name = "databricks-sdk", specifier = ">=0.63,<1" },
     { name = "mlflow-skinny", specifier = ">=3.16.1,<4" },
+    { name = "opentelemetry-proto", specifier = ">=1.30,<2" },
     { name = "pyyaml", specifier = ">=6,<7" },
 ]
 

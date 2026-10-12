@@ -28,8 +28,7 @@ Codex AgentOps 설치가 완료되었습니다.
 2. Agent 생성: aops init my-agent
 3. Agent 폴더에서 Codex를 실행하고 /hooks에서 Plugin Hook을 검토하고 신뢰합니다.
 4. Harness와 Skill 개발: 일반 `codex` 명령을 그대로 사용합니다.
-5. UC Skill 게시: aops publish .
-6. Runtime 검증: aops assemble .
-7. Registry 등록: aops register . --version <version>
-8. MCP App 배포: aops deploy . --model-endpoint <endpoint>
+5. 구조 검증: aops validate
+6. UC Skill과 Release 등록: aops register . --version <version>
+7. Registry 조회와 로드: aops list / aops load <agent-id> --version <version>
 EOF

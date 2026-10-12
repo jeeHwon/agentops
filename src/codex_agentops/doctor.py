@@ -50,11 +50,19 @@ def run_doctor(*, write_test_trace: bool = False) -> list[Check]:
     else:
         checks.append(
             Check(
-                "WARN",
+                "OK",
                 "codex-otel-config",
-                "existing exporter preserved; exact Tool duration requires routing codex.tool_result to Codex AgentOps",
+                "existing global exporter preserved; Agent project config routes OTel locally",
             )
         )
+        checks.append(
+            Check(
+                "OK" if collector_health(settings.otel_port) else "FAIL",
+                "otel-collector",
+                f"127.0.0.1:{settings.otel_port}",
+            )
+        )
+        checks.append(_otel_signal_check())
     try:
         identity = validate_profile(Profile(settings.profile, settings.host))
         checks.append(Check("OK", "databricks-auth", identity))
@@ -104,6 +112,12 @@ def _plugin_check() -> Check:
         if not match.get("enabled", False):
             return Check("FAIL", "codex-plugin", "codex-agentops is installed but disabled")
         return Check("OK", "codex-plugin", str(match.get("pluginId", "codex-agentops")))
+    except subprocess.TimeoutExpired:
+        return Check(
+            "WARN",
+            "codex-plugin",
+            "Codex plugin 조회가 30초 안에 끝나지 않았습니다. `codex plugin list`로 확인하세요.",
+        )
     except Exception as exc:
         return Check("FAIL", "codex-plugin", str(exc))
 

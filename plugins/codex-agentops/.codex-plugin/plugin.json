@@ -1,7 +1,7 @@
 {
   "name": "codex-agentops",
-  "version": "0.8.0",
-  "description": "UC Skill 버전을 고정하는 Harness Agent Registry, MCP 배포와 MLflow 모니터링",
+  "version": "1.0.0",
+  "description": "Markdown Harness Agent Registry, UC Skills와 MLflow 모니터링",
   "author": {
     "name": "Contributors"
   },
@@ -9,11 +9,11 @@
   "keywords": ["agentops", "codex", "databricks", "mlflow"],
   "interface": {
     "displayName": "Codex AgentOps",
-    "shortDescription": "UC Skill을 고정한 Agent Release를 관리하고 MCP App으로 배포합니다.",
-    "longDescription": "Markdown Harness Agent와 UC Skill 버전·해시를 검증해 불변 Agent Release로 등록하고, Databricks Apps MCP 서버로 배포하며 MLflow Trace로 모니터링합니다.",
+    "shortDescription": "UC Skill을 고정한 Harness Agent Release를 관리합니다.",
+    "longDescription": "Markdown Harness Agent와 UC Skill 스냅샷을 불변 Release로 등록하고 Codex Turn을 MLflow Trace로 모니터링합니다.",
     "developerName": "Contributors",
     "category": "Developer Tools",
-    "capabilities": ["Observability", "Agent Registry", "UC Skills", "MCP Deployment"],
+    "capabilities": ["Observability", "Agent Registry", "UC Skills"],
     "defaultPrompt": [
       "이 Agent 폴더의 Harness와 Skill을 확인하고 테스트해 주세요."
     ]

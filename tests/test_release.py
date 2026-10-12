@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
-import yaml
-
 from codex_agentops.release import (
-    AgentReleaseLoader,
-    ReleaseError,
+    CodexRuntimeBuilder,
     UcSkillPublisher,
+    build_release,
     hash_skill_directory,
     load_release,
+    write_release_metadata,
 )
-from codex_agentops.registry import build_agent_archive, extract_agent_archive
 
 
 SAMPLE = Path(__file__).parents[1] / "samples" / "release-agent"
@@ -24,22 +20,35 @@ def _result(command, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(command, returncode, stdout, stderr)
 
 
-def test_sample_release_pins_two_uc_skills_and_subagent():
-    release = load_release(SAMPLE, expected_agent_id="release-sample-agent")
-
-    assert release.release_version == "3.1.0"
-    assert release.harness_profile == "codex-v1"
+def test_release_pins_two_skill_snapshots_and_subagent(tmp_path):
+    release = build_release(SAMPLE, "1.0.0", "poc_catalog.agentops_test")
+    assert release.release_version == "1.0.0"
+    assert release.harness_profile == "codex"
     assert [skill.alias for skill in release.skills] == [
         "release-summary",
         "release-validation",
     ]
     assert release.subagents[0].skills == ("release-validation",)
     for skill in release.skills:
-        source = SAMPLE / str(skill.source)
-        assert hash_skill_directory(source) == skill.sha256
+        assert skill.uc_name == f"poc_catalog.agentops_test.{skill.alias}"
+        assert hash_skill_directory(SAMPLE / skill.source) == skill.sha256
+
+    root = tmp_path / "copy"
+    root.mkdir()
+    for name in ("AGENTS.md", "README.md", "spec.md"):
+        (root / name).write_bytes((SAMPLE / name).read_bytes())
+    import shutil
+
+    shutil.copytree(SAMPLE / "skills", root / "skills")
+    shutil.copytree(SAMPLE / "agents", root / "agents")
+    rebuilt = build_release(root, "1.0.0", "poc_catalog.agentops_test")
+    write_release_metadata(rebuilt)
+    loaded = load_release(root, expected_agent_id="release-sample-agent")
+    assert loaded.release_version == "1.0.0"
+    assert loaded.skills == rebuilt.skills
 
 
-def test_publish_is_create_only_and_uses_explicit_profile():
+def test_publish_creates_missing_uc_skills_with_explicit_profile():
     commands: list[list[str]] = []
 
     def runner(command):
@@ -49,17 +58,17 @@ def test_publish_is_create_only_and_uses_explicit_profile():
             return _result(command, 1, stderr="RESOURCE_DOES_NOT_EXIST")
         return _result(command)
 
-    published = UcSkillPublisher("test-profile", runner=runner).publish_release(SAMPLE)
+    release = build_release(SAMPLE, "1.0.0", "poc_catalog.agentops_test")
+    published = UcSkillPublisher("test-profile", runner=runner).publish(release)
 
-    assert len(published) == 2
+    assert [item.action for item in published] == ["created", "created"]
     assert sum(command[1:3] == ["api", "get"] for command in commands) == 2
-    assert sum(command[1:3] == ["api", "post"] for command in commands) == 4
+    assert sum("/finalize" in " ".join(command) for command in commands) == 2
     assert sum(command[1:3] == ["fs", "cp"] for command in commands) == 2
     assert all("test-profile" in command for command in commands)
-    assert not any("update" in " ".join(command) for command in commands)
 
 
-def test_publish_rejects_existing_skill_before_writing():
+def test_publish_updates_existing_uc_skill_but_release_keeps_snapshot_hash():
     commands: list[list[str]] = []
 
     def runner(command):
@@ -67,91 +76,25 @@ def test_publish_rejects_existing_skill_before_writing():
         commands.append(command)
         return _result(command, 0, stdout="{}")
 
-    with pytest.raises(ReleaseError, match="will not be overwritten"):
-        UcSkillPublisher("test-profile", runner=runner).publish_release(SAMPLE)
+    release = build_release(SAMPLE, "1.0.1", "poc_catalog.agentops_test")
+    published = UcSkillPublisher("test-profile", runner=runner).publish(release)
 
-    assert len(commands) == 1
-    assert commands[0][1:3] == ["api", "get"]
-
-
-def test_assemble_downloads_hash_verifies_and_generates_runtime(tmp_path):
-    source_by_leaf = {
-        "release-summary-v3-0-0": SAMPLE / ".agents/skills/release-summary",
-        "release-validation-v3-0-0": SAMPLE / ".agents/skills/release-validation",
-    }
-
-    def runner(command):
-        command = list(command)
-        remote = command[3]
-        destination = Path(command[4])
-        leaf = remote.rstrip("/").split("/")[-1]
-        shutil.copytree(source_by_leaf[leaf], destination)
-        return _result(command)
-
-    target = tmp_path / "runtime"
-    result = AgentReleaseLoader("test-profile", runner=runner).assemble(
-        SAMPLE, destination=target
-    )
-
-    assert result.runtime_root == target
-    assert (target / "AGENTS.md").is_file()
-    assert (target / "skills/release-summary/SKILL.md").is_file()
-    assert (target / ".agents/skills/release-validation/SKILL.md").is_file()
-    assert (target / ".codex/config.toml").is_file()
-    assert (target / ".codex/agents/validator.toml").is_file()
-    assert not (target / "spec.md").exists()
-    assert not (target / "CLAUDE.md").exists()
-    assert not (target / "release.yaml").exists()
-    config = yaml.safe_load((target / "config.yaml").read_text(encoding="utf-8"))
-    assert config["release_version"] == "3.1.0"
-    assert config["profiles"] == {
-        "model": "standard-v1",
-        "harness": "codex-v1",
-        "mcp_tools": "readonly-v1",
-    }
-    assert config["skills"][0]["markdown"] == "skills/release-summary/SKILL.md"
-    assert config["subagents"][0]["skills"] == ["release-validation"]
-    assert config["subagents"][0]["instructions"] == ".codex/agents/validator.toml"
+    assert [item.action for item in published] == ["updated", "updated"]
+    assert not any("skills?parent=" in " ".join(command) for command in commands)
+    assert all(item.sha256 in {skill.sha256 for skill in release.skills} for item in published)
 
 
-def test_assemble_does_not_publish_runtime_on_hash_mismatch(tmp_path):
-    def runner(command):
-        command = list(command)
-        destination = Path(command[4])
-        shutil.copytree(SAMPLE / ".agents/skills/release-summary", destination)
-        (destination / "SKILL.md").write_text("tampered", encoding="utf-8")
-        return _result(command)
+def test_codex_runtime_is_generated_from_source_without_mutating_source(tmp_path):
+    import shutil
 
-    target = tmp_path / "runtime"
-    with pytest.raises(ReleaseError, match="hash mismatch"):
-        AgentReleaseLoader("test-profile", runner=runner).assemble(SAMPLE, destination=target)
-
-    assert not target.exists()
-
-
-def test_sync_skills_replaces_agent_skills_only_after_all_hashes_pass(tmp_path):
     root = tmp_path / "agent"
-    extract_agent_archive(build_agent_archive(SAMPLE).content, root)
-    assert not (root / ".agents/skills").exists()
-    old_skill = root / ".agents/skills/old-skill"
-    old_skill.mkdir(parents=True)
-    (old_skill / "SKILL.md").write_text("old", encoding="utf-8")
-    source_by_leaf = {
-        "release-summary-v3-0-0": SAMPLE / ".agents/skills/release-summary",
-        "release-validation-v3-0-0": SAMPLE / ".agents/skills/release-validation",
-    }
+    shutil.copytree(SAMPLE, root)
+    before = hash_skill_directory(root / "skills/release-summary")
+    result = CodexRuntimeBuilder().prepare(root)
 
-    def runner(command):
-        command = list(command)
-        remote = command[3]
-        destination = Path(command[4])
-        leaf = remote.rstrip("/").split("/")[-1]
-        shutil.copytree(source_by_leaf[leaf], destination)
-        return _result(command)
-
-    paths = AgentReleaseLoader("test-profile", runner=runner).sync_skills(root)
-
-    assert set(paths) == {"release-summary", "release-validation"}
-    assert not old_skill.exists()
+    assert result.runtime_root == root
     assert (root / ".agents/skills/release-summary/SKILL.md").is_file()
     assert (root / ".agents/skills/release-validation/SKILL.md").is_file()
+    assert (root / ".codex/agents/validator.toml").is_file()
+    assert (root / ".aops/runtime.json").is_file()
+    assert hash_skill_directory(root / "skills/release-summary") == before

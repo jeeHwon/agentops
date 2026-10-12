@@ -38,7 +38,7 @@ def handle_hook(raw: dict[str, Any], *, launch_uploader: bool = True) -> dict[st
                 model=str(raw.get("model") or "") or None,
                 ended=event_name == "SessionEnd",
             )
-            if event_name == "SessionStart" and settings.otel_mode == "local":
+            if event_name == "SessionStart":
                 ensure_collector(settings)
             elif event_name == "SessionEnd":
                 transcript_path = raw.get("transcript_path")

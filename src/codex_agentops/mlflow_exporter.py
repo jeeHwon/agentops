@@ -109,6 +109,8 @@ class MlflowTurnExporter:
         harness_checksum = _first_present(turn.events, "harness_checksum") or "unknown"
         skills_checksum = _first_present(turn.events, "skills_checksum") or "unknown"
         skill_checksums = _first_present(turn.events, "skill_checksums") or {}
+        release_version = _first_present(turn.events, "release_version") or "working"
+        runtime = _first_present(turn.events, "runtime") or "codex"
         matched_observations = tuple(
             observation
             for event in tool_events
@@ -129,7 +131,9 @@ class MlflowTurnExporter:
             inputs={"prompt": prompt},
             attributes={
                 "agentops.agent_id": turn.agent_id,
-                "agentops.agent_revision": "working",
+                "agentops.agent_revision": release_version,
+                "agentops.agent_type": _first_present(turn.events, "agent_type") or "harness",
+                "agentops.runtime": runtime,
                 "agentops.session_id": turn.session_id,
                 "agentops.turn_id": turn.turn_id,
                 "agentops.model": model or "unknown",
@@ -144,11 +148,25 @@ class MlflowTurnExporter:
                 "agentops.harness_checksum": harness_checksum,
                 "agentops.skills_checksum": skills_checksum,
                 "agentops.skill_checksums": json.dumps(skill_checksums, sort_keys=True),
+                "agentops.service_criticality": _first_present(
+                    turn.events, "service_criticality"
+                )
+                or "unknown",
+                "agentops.data_sensitivity": _first_present(
+                    turn.events, "data_sensitivity"
+                )
+                or "unknown",
+                "agentops.security_access_level": _first_present(
+                    turn.events, "security_access_level"
+                )
+                or "unknown",
                 "mlflow.llm.model": model or "unknown",
                 **token_attributes,
             },
             tags={
                 "agentops.agent_id": turn.agent_id,
+                "agentops.agent_revision": release_version,
+                "agentops.runtime": runtime,
                 "agentops.session_id": turn.session_id,
                 "agentops.turn_id": turn.turn_id,
                 "agentops.turn_key": turn.turn_key,

@@ -28,7 +28,6 @@ from .databricks import (
     validate_profile,
 )
 from .doctor import run_doctor
-from .deploy import DatabricksAppDeployer, DeployError
 from .hooks import handle_hook, reconcile_session_transcript
 from .manifest import ManifestError, create_agent, find_agent_root, validate_agent
 from .mlflow_exporter import MlflowTurnExporter, export_pending
@@ -36,7 +35,7 @@ from .monitoring import configure_turn_monitoring
 from .outbox import Outbox
 from .paths import outbox_path
 from .registry import RegistryClient, RegistryError, parse_registry
-from .release import AgentReleaseLoader, ReleaseError, UcSkillPublisher, has_release_contract
+from .release import CodexRuntimeBuilder, ReleaseError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,8 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command",
         required=True,
         metavar=(
-            "{configure,init,validate,publish,assemble,registry-init,list,register,load,"
-            "deploy,doctor,status,flush}"
+            "{configure,init,validate,registry-init,list,register,load,doctor,status,flush}"
         ),
     )
 
@@ -79,20 +77,6 @@ def build_parser() -> argparse.ArgumentParser:
     validate = commands.add_parser("validate", help="표준 Agent 폴더 구조를 검증합니다")
     validate.add_argument("path", nargs="?", type=Path, default=Path.cwd())
 
-    publish = commands.add_parser(
-        "publish", help="agent.yaml에 고정된 Skill 버전을 Unity Catalog에 게시합니다"
-    )
-    publish.add_argument("path", nargs="?", type=Path, default=Path.cwd())
-    publish.add_argument("--profile", help="configure에 저장된 Profile 대신 사용할 값")
-
-    assemble = commands.add_parser(
-        "assemble", help="UC Skill을 검증해 배포용 Runtime을 생성합니다"
-    )
-    assemble.add_argument("path", nargs="?", type=Path, default=Path.cwd())
-    assemble.add_argument("--profile", help="configure에 저장된 Profile 대신 사용할 값")
-    assemble.add_argument("--output", type=Path, help="배포용 Runtime 경로 (기본값: <agent>/.aops/runtime)")
-    assemble.add_argument("--force", action="store_true", help="기존 실행 구조를 검증된 새 구조로 교체합니다")
-
     registry_init = commands.add_parser(
         "registry-init", help="UC Volume과 Delta Table로 Agent Registry를 준비합니다"
     )
@@ -111,41 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     load.add_argument("agent_id", help="내려받을 Agent ID")
     load.add_argument("--version", help="버전, 생략하면 가장 최근 등록 버전")
     load.add_argument("--path", type=Path, help="대상 폴더, 기본값은 ./<agent-id>")
-    load.add_argument(
-        "--no-sync",
-        "--no-assemble",
-        dest="no_sync",
-        action="store_true",
-        help="UC Skill 자동 검증·동기화를 생략합니다",
-    )
     _add_registry_arguments(load)
-
-    deploy = commands.add_parser(
-        "deploy", help="고정 Agent Release를 Databricks Apps MCP 서버로 배포합니다"
-    )
-    deploy.add_argument("path", nargs="?", type=Path, default=Path.cwd())
-    deploy.add_argument("--profile", help="configure에 저장된 Profile 대신 사용할 값")
-    deploy.add_argument(
-        "--model-endpoint",
-        required=True,
-        help="OBO로 호출할 READY 상태의 Databricks Model Serving endpoint",
-    )
-    deploy.add_argument("--app-name", help="mcp-로 시작하는 Databricks App 이름")
-    deploy.add_argument(
-        "--experiment",
-        help="MLflow Experiment 절대 경로 (기본값: /Shared/agentops/<agent-id>)",
-    )
-    deploy.add_argument(
-        "--trace-schema",
-        help="UC Trace 저장 위치 <catalog.schema> (기본값: release UC Skills 위치)",
-    )
-    deploy.add_argument("--warehouse-id", help="UC Trace 저장소 준비용 SQL Warehouse ID")
-    deploy.add_argument("--output", type=Path, help="생성된 App 소스 경로")
-    deploy.add_argument(
-        "--build-only",
-        action="store_true",
-        help="Skill 검증과 App 빌드까지만 수행하고 원격 App은 배포하지 않습니다",
-    )
 
     doctor = commands.add_parser("doctor", help="설치, Hook, 인증, MLflow와 Outbox를 진단합니다")
     doctor.add_argument("--write-test-trace", action="store_true")
@@ -174,36 +124,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "init":
             target = args.path or Path.cwd() / args.agent_id
             root = create_agent(args.agent_id, target)
+            _codex_runtime_builder().prepare(root)
             print(f"Agent 생성 완료: {root}")
             print(f"편집 안내: {root / 'README.md'}")
-            print(f"Skill 템플릿: {root / '.agents/skills/example-skill/SKILL.md'}")
+            print(f"Skill 템플릿: {root / 'skills/request-structurer/SKILL.md'}")
             print(f"다음 단계: cd {root} && codex")
             return 0
         if args.command == "validate":
             manifest = validate_agent(_agent_root(args.path))
+            _codex_runtime_builder().prepare(manifest.root)
             print(f"OK: {manifest.agent_id} ({manifest.root})")
-            return 0
-        if args.command == "publish":
-            root = _agent_root(args.path)
-            profile = _resolve_profile(args.profile)
-            published = UcSkillPublisher(profile).publish_release(root)
-            for skill in published:
-                print(
-                    f"UC Skill 게시 완료: {skill.uc_name} "
-                    f"(version={skill.version}, sha256={skill.sha256})"
-                )
-            return 0
-        if args.command == "assemble":
-            root = _agent_root(args.path)
-            profile = _resolve_profile(args.profile)
-            result = AgentReleaseLoader(profile).assemble(
-                root,
-                destination=args.output,
-                replace=args.force,
-            )
-            print(f"배포용 Agent Runtime 검증 완료: {result.runtime_root}")
-            print(f"Runtime Config: {result.config_path}")
-            print(f"로컬 개발: cd {root} && codex")
             return 0
         if args.command == "registry-init":
             registry = _registry_client(args)
@@ -240,43 +170,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"Agent 로드 완료: {item.agent_id}@{item.version}")
             print(f"Local Path: {target}")
-            if has_release_contract(target) and not args.no_sync:
-                skills = AgentReleaseLoader(registry.profile).sync_skills(target)
-                validate_agent(target)
-                print(f"UC Skill 검증 및 동기화 완료: {len(skills)}개")
+            print(f"UC Skill 권한 및 Release 체크섬 검증 완료: {len(item.skill_names)}개")
             print(f"검증: cd {target} && aops validate")
             print(f"실행: cd {target} && codex")
-            return 0
-        if args.command == "deploy":
-            root = _agent_root(args.path)
-            profile = _resolve_profile(args.profile)
-            warehouse_id = _resolve_warehouse(profile, args.warehouse_id)
-            result = DatabricksAppDeployer(profile).deploy(
-                root,
-                model_endpoint=args.model_endpoint,
-                experiment_name=args.experiment,
-                trace_schema=args.trace_schema,
-                warehouse_id=warehouse_id,
-                app_name=args.app_name,
-                output=args.output,
-                build_only=args.build_only,
-            )
-            print(f"MCP App 빌드 완료: {result.build.root}")
-            print(f"Agent Release: {result.build.agent_id}@{result.build.release_version}")
-            print(f"MLflow Experiment: {result.build.experiment_name}")
-            print(
-                "UC Trace: "
-                f"{result.build.trace_catalog}.{result.build.trace_schema} "
-                f"(experiment_id={result.build.experiment_id})"
-            )
-            if result.mcp_url:
-                print(f"Databricks App: {result.app_url}")
-                print(f"MCP URL: {result.mcp_url}")
-                print(f"Unity Gateway MCP: {result.gateway_selector}")
-            elif args.build_only:
-                print("원격 배포 생략: --build-only")
-            else:
-                print("배포 완료. App URL은 Databricks Apps 화면에서 확인하세요.")
             return 0
         if args.command == "doctor":
             checks = run_doctor(write_test_trace=args.write_test_trace)
@@ -319,7 +215,6 @@ def main(argv: list[str] | None = None) -> int:
         ManifestError,
         RegistryError,
         ReleaseError,
-        DeployError,
         RuntimeError,
         OSError,
         ValueError,
@@ -332,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
 def _agent_root(path: Path) -> Path:
     root = find_agent_root(path)
     if root is None:
-        raise ManifestError(f"agent.yaml을 찾을 수 없습니다: {path.expanduser().resolve()}")
+        raise ManifestError(f"spec.md와 AGENTS.md를 찾을 수 없습니다: {path.expanduser().resolve()}")
     return root
 
 
@@ -341,7 +236,7 @@ def _add_registry_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--registry", help="configure에 저장된 Registry 대신 사용할 <catalog>.<schema>")
     parser.add_argument("--warehouse-id", help="configure에 저장된 SQL Warehouse 대신 사용할 ID")
     parser.add_argument("--volume", default="agent_artifacts", help="Artifact Volume 이름")
-    parser.add_argument("--table", default="agent_versions", help="Metadata Delta Table 이름")
+    parser.add_argument("--table", default="agent_releases", help="Metadata Delta Table 이름")
 
 
 def _registry_client(args: argparse.Namespace) -> RegistryClient:
@@ -375,7 +270,16 @@ def _registry_client(args: argparse.Namespace) -> RegistryClient:
         profile=profile.name,
         warehouse_id=warehouse_id,
         location=location,
+        codex_otel_port=(settings.otel_port if settings else DEFAULT_OTEL_PORT),
     )
+
+
+def _codex_runtime_builder() -> CodexRuntimeBuilder:
+    try:
+        port = load_settings().otel_port
+    except ConfigError:
+        port = DEFAULT_OTEL_PORT
+    return CodexRuntimeBuilder(otel_port=port)
 
 
 def _validate_profile(profile_name: str) -> None:
@@ -431,8 +335,7 @@ def _configure(args: argparse.Namespace) -> int:
     settings = replace(settings, otel_mode=otel_mode)
     path = save_settings(settings)
     codex_version = validate_codex_config()
-    if settings.otel_mode == "local":
-        ensure_collector(settings)
+    ensure_collector(settings)
     trace_id = MlflowTurnExporter(settings).write_test_trace()
     scorers = configure_turn_monitoring(settings)
     print(f"설정 완료: {path}")
@@ -443,7 +346,8 @@ def _configure(args: argparse.Namespace) -> int:
     if settings.otel_mode == "local":
         print(f"Codex OTel: {codex_path} -> http://127.0.0.1:{settings.otel_port}")
     else:
-        print(f"Codex OTel: 기존 설정을 보존했습니다: {codex_path}")
+        print(f"Codex OTel: 기존 전역 설정을 보존했습니다: {codex_path}")
+        print(f"Agent 프로젝트 OTel: http://127.0.0.1:{settings.otel_port}")
     print(f"Codex: {codex_version}")
     print(f"Test Trace: {trace_id}")
     print("백그라운드 Turn Scorer:")

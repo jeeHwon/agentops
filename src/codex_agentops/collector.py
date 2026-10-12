@@ -19,6 +19,7 @@ from .config import Settings, load_settings
 from .outbox import Outbox
 from .paths import collector_log_path, collector_pid_path, otel_heartbeat_path, outbox_path
 from .usage import TokenUsage
+from .otel_bridge import OtelBridgeError, export_otlp_traces
 
 
 MAX_REQUEST_BYTES = 10 * 1024 * 1024
@@ -221,18 +222,27 @@ def _handler(settings: Settings):
             self._send(200, {"service": "codex-agentops-otel", "version": __version__})
 
         def do_POST(self) -> None:
-            if self.path not in {"/v1/logs", "/v1/metrics"}:
+            if self.path not in {"/v1/logs", "/v1/metrics", "/v1/traces"}:
                 self._send(404, {"error": "not_found"})
                 return
             length = int(self.headers.get("content-length", "0"))
             if length <= 0 or length > MAX_REQUEST_BYTES:
                 self._send(413, {"error": "invalid_size"})
                 return
-            if "json" not in self.headers.get("content-type", "").lower():
-                self._send(415, {"error": "json_required"})
-                return
             try:
-                payload = json.loads(self.rfile.read(length))
+                raw = self.rfile.read(length)
+                if self.path == "/v1/traces":
+                    if "protobuf" not in self.headers.get("content-type", "").lower():
+                        self._send(415, {"error": "protobuf_required"})
+                        return
+                    trace_ids = export_otlp_traces(raw, settings)
+                    _write_heartbeat("traces", len(trace_ids))
+                    self._send_protobuf(200, b"")
+                    return
+                if "json" not in self.headers.get("content-type", "").lower():
+                    self._send(415, {"error": "json_required"})
+                    return
+                payload = json.loads(raw)
                 if not isinstance(payload, dict):
                     raise ValueError("OTLP payload must be an object")
                 if self.path == "/v1/logs":
@@ -242,13 +252,22 @@ def _handler(settings: Settings):
                 else:
                     _write_heartbeat("metrics", 0)
                 self._send(200, {})
-            except (json.JSONDecodeError, ValueError):
+            except (json.JSONDecodeError, ValueError, OtelBridgeError):
                 self._send(400, {"error": "invalid_json"})
+            except Exception:
+                self._send(503, {"error": "trace_export_failed"})
 
         def _send(self, status: int, payload: dict[str, Any]) -> None:
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_protobuf(self, status: int, body: bytes) -> None:
+            self.send_response(status)
+            self.send_header("content-type", "application/x-protobuf")
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

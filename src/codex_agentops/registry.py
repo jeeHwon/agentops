@@ -18,19 +18,20 @@ from databricks.sdk.errors import ResourceAlreadyExists
 from databricks.sdk.service.catalog import VolumeType
 from databricks.sdk.service.sql import StatementParameterListItem
 
-from .manifest import (
-    AGENT_ID_RE,
-    AgentManifest,
-    calculate_definition_checksums,
-    validate_agent,
+from .manifest import AGENT_ID_RE, VERSION_RE, calculate_definition_checksums, validate_agent
+from .release import (
+    CodexRuntimeBuilder,
+    UcSkillPublisher,
+    build_release,
+    load_release,
+    release_to_dict,
+    write_release_metadata,
 )
-from .release import has_release_contract, load_release
 
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-VERSION_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$")
 DEFAULT_VOLUME = "agent_artifacts"
-DEFAULT_TABLE = "agent_versions"
+DEFAULT_TABLE = "agent_releases"
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
 
 
@@ -64,6 +65,8 @@ class AgentVersion:
     version: str
     name: str
     description: str
+    agent_type: str
+    model: str
     artifact_path: str
     artifact_sha256: str
     artifact_size: int
@@ -72,6 +75,7 @@ class AgentVersion:
     skill_names: tuple[str, ...]
     registered_by: str
     registered_at: str
+    release_manifest: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -81,11 +85,18 @@ class AgentArchive:
     files: dict[str, str]
 
 
-def parse_registry(value: str, *, volume: str = DEFAULT_VOLUME, table: str = DEFAULT_TABLE) -> RegistryLocation:
+def parse_registry(
+    value: str, *, volume: str = DEFAULT_VOLUME, table: str = DEFAULT_TABLE
+) -> RegistryLocation:
     parts = value.split(".")
     if len(parts) != 2:
         raise RegistryError("Registry must use <catalog>.<schema> format.")
-    for label, identifier in (("catalog", parts[0]), ("schema", parts[1]), ("volume", volume), ("table", table)):
+    for label, identifier in (
+        ("catalog", parts[0]),
+        ("schema", parts[1]),
+        ("volume", volume),
+        ("table", table),
+    ):
         if not IDENTIFIER_RE.fullmatch(identifier):
             raise RegistryError(f"Invalid Registry {label}: {identifier}")
     return RegistryLocation(parts[0], parts[1], volume, table)
@@ -99,6 +110,8 @@ class RegistryClient:
         warehouse_id: str,
         location: RegistryLocation,
         workspace: WorkspaceClient | None = None,
+        skill_publisher: UcSkillPublisher | None = None,
+        codex_otel_port: int = 4319,
     ) -> None:
         if not profile.strip():
             raise RegistryError("Databricks profile is required.")
@@ -108,6 +121,8 @@ class RegistryClient:
         self.warehouse_id = warehouse_id
         self.location = location
         self.workspace = workspace or WorkspaceClient(profile=profile)
+        self.skill_publisher = skill_publisher or UcSkillPublisher(profile)
+        self.codex_otel_port = codex_otel_port
 
     def initialize(self) -> None:
         try:
@@ -128,15 +143,15 @@ class RegistryClient:
             )
         except ResourceAlreadyExists:
             pass
-
-        table = _quoted_table(self.location)
         self._execute_sql(
             f"""
-            CREATE TABLE IF NOT EXISTS {table} (
+            CREATE TABLE IF NOT EXISTS {_quoted_table(self.location)} (
               agent_id STRING NOT NULL,
               version STRING NOT NULL,
               name STRING NOT NULL,
               description STRING NOT NULL,
+              agent_type STRING NOT NULL,
+              model STRING NOT NULL,
               artifact_path STRING NOT NULL,
               artifact_sha256 STRING NOT NULL,
               artifact_size BIGINT NOT NULL,
@@ -148,7 +163,7 @@ class RegistryClient:
               manifest_json STRING NOT NULL
             )
             USING DELTA
-            COMMENT 'Immutable Harness Agent versions stored in a Unity Catalog Volume'
+            COMMENT 'Immutable Markdown-first Harness Agent releases'
             """
         )
 
@@ -156,58 +171,33 @@ class RegistryClient:
         if not VERSION_RE.fullmatch(version):
             raise RegistryError("Version must contain only letters, numbers, dot, underscore, or hyphen.")
         manifest = validate_agent(root)
-        has_release = has_release_contract(manifest.root)
-        if manifest.schema_version == 2 and not has_release:
-            raise RegistryError("agent.yaml release 계약이 없어 Agent를 등록할 수 없습니다.")
-        release = (
-            load_release(manifest.root, expected_agent_id=manifest.agent_id)
-            if has_release
-            else None
-        )
-        if release is not None and release.release_version != version:
-            raise RegistryError(
-                f"Agent version '{version}' must match the Agent release version "
-                f"'{release.release_version}'."
-            )
         if self.get(manifest.agent_id, version, allow_missing=True) is not None:
             raise RegistryError(f"Agent version already exists: {manifest.agent_id}@{version}")
 
+        release = build_release(manifest.root, version, self.location.schema_name)
+        try:
+            published = self.skill_publisher.publish(release)
+        except Exception as exc:
+            raise RegistryError(f"Cannot publish Agent Skills: {exc}") from exc
+        write_release_metadata(release)
         archive = build_agent_archive(manifest.root)
         if len(archive.content) > MAX_ARCHIVE_BYTES:
             raise RegistryError(f"Agent archive exceeds {MAX_ARCHIVE_BYTES} bytes.")
         checksums = calculate_definition_checksums(manifest.root)
-        skill_names = (
-            tuple(skill.alias for skill in release.skills)
-            if release is not None
-            else tuple(
-                sorted(
-                    path.name
-                    for path in (manifest.root / ".agents" / "skills").iterdir()
-                    if path.is_dir()
-                )
-            )
-        )
         artifact_directory = f"{self.location.volume_root}/agents/{manifest.agent_id}/{version}"
         artifact_path = f"{artifact_directory}/{archive.sha256}.tar.gz"
-        metadata = {
-            "schema_version": 2,
-            "agent_id": manifest.agent_id,
-            "version": version,
-            "artifact_sha256": archive.sha256,
-            "harness_sha256": checksums.harness,
-            "skills_sha256": checksums.combined_skills,
-            "artifact_contains_skills": release is None,
-            "skills": [
-                {
-                    "alias": skill.alias,
-                    "uc_name": skill.uc_name,
-                    "version": skill.version,
-                    "sha256": skill.sha256,
-                }
-                for skill in (release.skills if release is not None else ())
-            ],
-            "files": archive.files,
-        }
+        release_manifest = release_to_dict(release)
+        release_manifest.update(
+            {
+                "artifact_sha256": archive.sha256,
+                "artifact_contains_skill_snapshots": True,
+                "published_skills": [
+                    {"uc_name": item.uc_name, "sha256": item.sha256, "action": item.action}
+                    for item in published
+                ],
+                "files": archive.files,
+            }
+        )
 
         uploaded = False
         try:
@@ -226,6 +216,8 @@ class RegistryClient:
                   :version,
                   :name,
                   :description,
+                  :agent_type,
+                  :model,
                   :artifact_path,
                   :artifact_sha256,
                   CAST(:artifact_size AS BIGINT),
@@ -241,13 +233,19 @@ class RegistryClient:
                     "version": version,
                     "name": manifest.name,
                     "description": manifest.description,
+                    "agent_type": manifest.agent_type,
+                    "model": manifest.model,
                     "artifact_path": artifact_path,
                     "artifact_sha256": archive.sha256,
                     "artifact_size": str(len(archive.content)),
                     "harness_sha256": checksums.harness,
                     "skills_sha256": checksums.combined_skills,
-                    "skill_names": json.dumps(skill_names, ensure_ascii=False),
-                    "manifest_json": json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                    "skill_names": json.dumps(
+                        [skill.alias for skill in release.skills], ensure_ascii=False
+                    ),
+                    "manifest_json": json.dumps(
+                        release_manifest, ensure_ascii=False, sort_keys=True
+                    ),
                 },
             )
         except Exception as exc:
@@ -271,9 +269,10 @@ class RegistryClient:
         )
         rows = self._execute_sql(
             f"""
-            SELECT agent_id, version, name, description, artifact_path, artifact_sha256,
-                   artifact_size, harness_sha256, skills_sha256, to_json(skill_names),
-                   registered_by, CAST(registered_at AS STRING)
+            SELECT agent_id, version, name, description, agent_type, model,
+                   artifact_path, artifact_sha256, artifact_size, harness_sha256,
+                   skills_sha256, to_json(skill_names), registered_by,
+                   CAST(registered_at AS STRING), manifest_json
             FROM {_quoted_table(self.location)}
             {suffix}
             ORDER BY agent_id, registered_at DESC
@@ -298,9 +297,10 @@ class RegistryClient:
             parameters["version"] = version
         rows = self._execute_sql(
             f"""
-            SELECT agent_id, version, name, description, artifact_path, artifact_sha256,
-                   artifact_size, harness_sha256, skills_sha256, to_json(skill_names),
-                   registered_by, CAST(registered_at AS STRING)
+            SELECT agent_id, version, name, description, agent_type, model,
+                   artifact_path, artifact_sha256, artifact_size, harness_sha256,
+                   skills_sha256, to_json(skill_names), registered_by,
+                   CAST(registered_at AS STRING), manifest_json
             FROM {_quoted_table(self.location)}
             WHERE agent_id = :agent_id{version_filter}
             ORDER BY registered_at DESC
@@ -321,6 +321,7 @@ class RegistryClient:
         *,
         version: str | None = None,
         destination: str | Path | None = None,
+        prepare_codex: bool = True,
     ) -> tuple[Path, AgentVersion]:
         registered = self.get(agent_id, version)
         if registered is None:
@@ -334,24 +335,29 @@ class RegistryClient:
             )
 
         target = Path(destination or agent_id).expanduser().resolve()
-        if target.exists():
-            if not target.is_dir() or any(target.iterdir()):
-                raise RegistryError(f"Destination is not an empty directory: {target}")
+        if target.exists() and (not target.is_dir() or any(target.iterdir())):
+            raise RegistryError(f"Destination is not an empty directory: {target}")
         target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="aops-load-", dir=target.parent) as temporary:
             temporary_root = Path(temporary) / "agent"
             temporary_root.mkdir()
             extract_agent_archive(content, temporary_root)
-            release_artifact = has_release_contract(temporary_root)
-            manifest = validate_agent(
-                temporary_root,
-                require_local_skills=not release_artifact,
-            )
+            _verify_file_checksums(temporary_root, registered.release_manifest.get("files", {}))
+            manifest = validate_agent(temporary_root)
             if manifest.agent_id != registered.agent_id:
                 raise RegistryError("Downloaded artifact agent_id does not match Registry metadata.")
+            release = load_release(temporary_root, expected_agent_id=registered.agent_id)
+            if release.release_version != registered.version:
+                raise RegistryError("Downloaded artifact version does not match Registry metadata.")
+            try:
+                self.skill_publisher.verify_access(release)
+            except Exception as exc:
+                raise RegistryError(f"Cannot authorize Agent UC Skills: {exc}") from exc
             if target.exists():
                 target.rmdir()
             shutil.move(str(temporary_root), str(target))
+        if prepare_codex:
+            CodexRuntimeBuilder(otel_port=self.codex_otel_port).prepare(target)
         return target, registered
 
     def _execute_sql(
@@ -389,37 +395,27 @@ class RegistryClient:
 
 def build_agent_archive(root: str | Path) -> AgentArchive:
     manifest = validate_agent(root)
-    files = [manifest.root / name for name in ("agent.yaml", "README.md", "AGENTS.md")]
-    files.extend(
-        manifest.root / name
-        for name in ("spec.md", "CLAUDE.md")
-        if (manifest.root / name).is_file()
-    )
-    release_path = manifest.root / "release.yaml"
-    if release_path.is_file():
-        files.append(release_path)
-    # A registered Release stores only the Harness and the version-pinned UC Skill
-    # references in agent.yaml. Skill content remains in UC Skills so access cannot
-    # be bypassed through the Artifact Volume.
-    skill_entries = (
-        []
-        if has_release_contract(manifest.root)
-        else sorted((manifest.root / ".agents" / "skills").rglob("*"))
-    )
-    codex_entries = sorted((manifest.root / ".codex").rglob("*"))
-    subagent_entries = sorted((manifest.root / "subagents").rglob("*"))
-    artifact_entries = skill_entries + codex_entries + subagent_entries
-    symbolic_link = next((path for path in artifact_entries if path.is_symlink()), None)
+    release = load_release(manifest.root, expected_agent_id=manifest.agent_id)
+    files = [
+        manifest.root / "AGENTS.md",
+        manifest.root / "README.md",
+        manifest.root / "spec.md",
+        manifest.root / ".aops" / "release.json",
+    ]
+    for directory in (manifest.root / "skills", manifest.root / "agents"):
+        files.extend(sorted(path for path in directory.rglob("*") if path.is_file()))
+    entries = [*files]
+    symbolic_link = next((path for path in entries if path.is_symlink()), None)
     if symbolic_link is not None:
         raise RegistryError(f"Symbolic links are not allowed in Agent artifacts: {symbolic_link}")
-    files.extend(path for path in artifact_entries if path.is_file())
+    if release.release_version == "working":
+        raise RegistryError("A working Agent cannot be registered without an explicit version.")
+
     checksums: dict[str, str] = {}
     output = io.BytesIO()
     with gzip.GzipFile(fileobj=output, mode="wb", filename="", mtime=0) as compressed:
         with tarfile.open(fileobj=compressed, mode="w") as archive:
-            for path in files:
-                if path.is_symlink():
-                    raise RegistryError(f"Symbolic links are not allowed in Agent artifacts: {path}")
+            for path in sorted(files):
                 relative = path.relative_to(manifest.root).as_posix()
                 data = path.read_bytes()
                 checksums[relative] = hashlib.sha256(data).hexdigest()
@@ -428,7 +424,7 @@ def build_agent_archive(root: str | Path) -> AgentArchive:
                 info.mtime = 0
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
-                info.mode = 0o755 if path.stat().st_mode & 0o111 else 0o644
+                info.mode = 0o644
                 archive.addfile(info, io.BytesIO(data))
     content = output.getvalue()
     return AgentArchive(content, hashlib.sha256(content).hexdigest(), checksums)
@@ -452,8 +448,22 @@ def extract_agent_archive(content: bytes, destination: str | Path) -> None:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(source.read())
                 target.chmod(member.mode & 0o777)
+    except RegistryError:
+        raise
     except (tarfile.TarError, OSError) as exc:
         raise RegistryError(f"Invalid Agent artifact: {exc}") from exc
+
+
+def _verify_file_checksums(root: Path, expected: Any) -> None:
+    if not isinstance(expected, dict) or not expected:
+        raise RegistryError("Registry manifest does not contain file checksums.")
+    actual: dict[str, str] = {}
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix()
+        actual[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    normalized = {str(key): str(value) for key, value in expected.items()}
+    if actual != normalized:
+        raise RegistryError("Agent artifact file checksums do not match Registry metadata.")
 
 
 def _quoted_table(location: RegistryLocation) -> str:
@@ -466,23 +476,29 @@ def _statement_state(response: Any) -> str:
 
 
 def _row_to_agent_version(row: list[Any]) -> AgentVersion:
-    if len(row) != 12:
+    if len(row) != 15:
         raise RegistryError(f"Unexpected Registry row width: {len(row)}")
     try:
-        skills = tuple(json.loads(row[9] or "[]"))
+        skills = tuple(json.loads(row[11] or "[]"))
+        manifest = json.loads(row[14] or "{}")
     except (TypeError, json.JSONDecodeError) as exc:
-        raise RegistryError(f"Invalid skill_names metadata: {row[9]}") from exc
+        raise RegistryError("Invalid Registry JSON metadata.") from exc
+    if not isinstance(manifest, dict):
+        raise RegistryError("Registry manifest_json must be an object.")
     return AgentVersion(
         agent_id=str(row[0]),
         version=str(row[1]),
         name=str(row[2]),
         description=str(row[3]),
-        artifact_path=str(row[4]),
-        artifact_sha256=str(row[5]),
-        artifact_size=int(row[6]),
-        harness_sha256=str(row[7]),
-        skills_sha256=str(row[8]),
+        agent_type=str(row[4]),
+        model=str(row[5]),
+        artifact_path=str(row[6]),
+        artifact_sha256=str(row[7]),
+        artifact_size=int(row[8]),
+        harness_sha256=str(row[9]),
+        skills_sha256=str(row[10]),
         skill_names=skills,
-        registered_by=str(row[10]),
-        registered_at=str(row[11]),
+        registered_by=str(row[12]),
+        registered_at=str(row[13]),
+        release_manifest=manifest,
     )

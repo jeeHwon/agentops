@@ -8,8 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings
-from .manifest import AgentManifest, calculate_definition_checksums
-from .redaction import redact_json_body, redact_text
+from .manifest import AgentManifest, calculate_definition_checksums, read_release_metadata
 
 
 SUPPORTED_EVENTS = {
@@ -48,9 +47,7 @@ def _stable_hash(*values: str) -> str:
 def _safe_body(value: Any, settings: Settings) -> Any:
     if not settings.capture_content:
         return "[CONTENT_CAPTURE_DISABLED]"
-    if isinstance(value, str):
-        return redact_text(value)
-    return redact_json_body(value)
+    return value
 
 
 def from_hook_payload(
@@ -65,6 +62,7 @@ def from_hook_payload(
         raise ValueError("Hook payload must include session_id and turn_id.")
     created_ns = now_ns or time.time_ns()
     checksums = calculate_definition_checksums(manifest.root)
+    release = read_release_metadata(manifest.root) or {}
     common: dict[str, Any] = {
         "model": str(raw.get("model", "")) or None,
         "permission_mode": str(raw.get("permission_mode", "")) or None,
@@ -74,6 +72,12 @@ def from_hook_payload(
         "harness_checksum": checksums.harness,
         "skill_checksums": checksums.skills,
         "skills_checksum": checksums.combined_skills,
+        "release_version": str(release.get("version") or "working"),
+        "agent_type": manifest.agent_type,
+        "service_criticality": manifest.service_criticality,
+        "data_sensitivity": manifest.data_sensitivity,
+        "security_access_level": manifest.security_access_level,
+        "runtime": "codex",
     }
     runtime_agent_id = str(raw.get("agent_id", "")).strip()
     runtime_agent_type = str(raw.get("agent_type", "")).strip()

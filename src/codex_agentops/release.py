@@ -1,24 +1,26 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 from urllib.parse import quote
 
-import yaml
-
-from .manifest import ManifestError, validate_codex_agent_config
-
-
-NAME_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
-VERSION_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$")
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+from .manifest import (
+    VERSION_RE,
+    ManifestError,
+    calculate_definition_checksums,
+    load_manifest,
+    load_skills,
+    load_subagents,
+    read_release_metadata,
+    validate_agent,
+)
 
 
 class ReleaseError(RuntimeError):
@@ -29,9 +31,13 @@ class ReleaseError(RuntimeError):
 class SkillRelease:
     alias: str
     uc_name: str
-    version: str
     sha256: str
-    source: str | None = None
+    source: str
+
+    @property
+    def version(self) -> str:
+        """Compatibility alias: the immutable version is the content hash."""
+        return self.sha256[:12]
 
     @property
     def uc_parts(self) -> tuple[str, str, str]:
@@ -44,7 +50,7 @@ class SkillRelease:
 @dataclass(frozen=True)
 class SubagentRelease:
     id: str
-    instructions: str
+    source: str
     skills: tuple[str, ...]
 
 
@@ -53,19 +59,24 @@ class AgentRelease:
     root: Path
     agent_id: str
     release_version: str
-    model_profile: str
+    model: str
     harness_profile: str
-    mcp_tool_profile: str
     skills: tuple[SkillRelease, ...]
     subagents: tuple[SubagentRelease, ...]
+    harness_sha256: str
+    skills_sha256: str
 
 
 @dataclass(frozen=True)
 class PublishedSkill:
     alias: str
     uc_name: str
-    version: str
     sha256: str
+    action: str
+
+    @property
+    def version(self) -> str:
+        return self.sha256[:12]
 
 
 @dataclass(frozen=True)
@@ -78,149 +89,143 @@ class AssemblyResult:
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 
+def build_release(root: str | Path, version: str, skill_schema: str) -> AgentRelease:
+    if not VERSION_RE.fullmatch(version):
+        raise ReleaseError("Version must contain only letters, numbers, dot, underscore, or hyphen.")
+    manifest = validate_agent(root)
+    schema_parts = skill_schema.split(".")
+    if len(schema_parts) != 2 or not all(schema_parts):
+        raise ReleaseError("Skill schema must use <catalog>.<schema> format.")
+    skills = load_skills(manifest.root)
+    checksums = calculate_definition_checksums(manifest.root)
+    skill_releases = tuple(
+        SkillRelease(
+            alias=name,
+            uc_name=f"{skill_schema}.{name}",
+            sha256=hash_skill_directory(definition.root),
+            source=f"skills/{name}",
+        )
+        for name, definition in sorted(skills.items())
+    )
+    subagents = load_subagents(manifest.root, set(skills))
+    return AgentRelease(
+        root=manifest.root,
+        agent_id=manifest.agent_id,
+        release_version=version,
+        model=manifest.model,
+        harness_profile="codex",
+        skills=skill_releases,
+        subagents=tuple(
+            SubagentRelease(
+                id=name,
+                source=f"agents/{name}/AGENTS.md",
+                skills=definition.skills,
+            )
+            for name, definition in sorted(subagents.items())
+        ),
+        harness_sha256=checksums.harness,
+        skills_sha256=checksums.combined_skills,
+    )
+
+
+def write_release_metadata(release: AgentRelease) -> Path:
+    target = release.root / ".aops" / "release.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = release_to_dict(release)
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, target)
+    return target
+
+
+def release_to_dict(release: AgentRelease) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "agent_id": release.agent_id,
+        "version": release.release_version,
+        "agent_type": "harness",
+        "model": release.model,
+        "harness": release.harness_profile,
+        "harness_sha256": release.harness_sha256,
+        "skills_sha256": release.skills_sha256,
+        "skills": [
+            {
+                "alias": skill.alias,
+                "uc_name": skill.uc_name,
+                "sha256": skill.sha256,
+                "source": skill.source,
+            }
+            for skill in release.skills
+        ],
+        "subagents": [
+            {"id": item.id, "source": item.source, "skills": list(item.skills)}
+            for item in release.subagents
+        ],
+    }
+
+
 def load_release(root: str | Path, *, expected_agent_id: str | None = None) -> AgentRelease:
     agent_root = Path(root).expanduser().resolve()
-    raw, contract = _read_release_contract(agent_root)
-
-    agent_id = _required_string(raw, "agent_id", contract)
-    if not NAME_RE.fullmatch(agent_id):
-        raise ReleaseError(f"{contract} agent_id must use lower-case kebab-case.")
+    raw = read_release_metadata(agent_root)
+    if raw is None:
+        raise ReleaseError(f"Generated Agent Release metadata is missing: {agent_root / '.aops/release.json'}")
+    if raw.get("schema_version") != 1:
+        raise ReleaseError("Generated Agent Release schema_version must be 1.")
+    agent_id = _required_string(raw, "agent_id", "release.json")
     if expected_agent_id and agent_id != expected_agent_id:
         raise ReleaseError(
-            f"{contract} agent_id '{agent_id}' does not match agent.yaml '{expected_agent_id}'."
+            f"Release agent_id '{agent_id}' does not match expected '{expected_agent_id}'."
         )
-    release_version = _required_string(raw, "release_version", contract)
-    if not VERSION_RE.fullmatch(release_version):
-        raise ReleaseError("release_version contains unsupported characters.")
-
-    profiles = raw.get("profiles")
-    if not isinstance(profiles, dict):
-        raise ReleaseError(f"{contract} profiles must be a YAML object.")
-    model_profile = _required_string(profiles, "model", f"{contract} profiles")
-    harness_profile = _required_string(profiles, "harness", f"{contract} profiles")
-    mcp_tool_profile = _required_string(profiles, "mcp_tools", f"{contract} profiles")
-
+    version = _required_string(raw, "version", "release.json")
+    if not VERSION_RE.fullmatch(version):
+        raise ReleaseError("Release version contains unsupported characters.")
     raw_skills = raw.get("skills")
     if not isinstance(raw_skills, list) or not raw_skills:
-        raise ReleaseError(f"{contract} skills must contain at least one UC Skill.")
+        raise ReleaseError("Release must contain at least one Skill snapshot.")
     skills: list[SkillRelease] = []
-    aliases: set[str] = set()
-    uc_names: set[str] = set()
-    for index, item in enumerate(raw_skills):
-        context = f"{contract} skills[{index}]"
+    for item in raw_skills:
         if not isinstance(item, dict):
-            raise ReleaseError(f"{context} must be a YAML object.")
-        alias = _required_string(item, "alias", context)
-        if not NAME_RE.fullmatch(alias):
-            raise ReleaseError(f"{context} alias must use lower-case kebab-case.")
-        uc_name = _required_string(item, "uc_name", context)
-        _validate_uc_name(uc_name, context)
-        version = _required_string(item, "version", context)
-        if not VERSION_RE.fullmatch(version):
-            raise ReleaseError(f"{context} version contains unsupported characters.")
-        sha256 = _required_string(item, "sha256", context).lower()
-        if not SHA256_RE.fullmatch(sha256):
-            raise ReleaseError(f"{context} sha256 must be 64 lower-case hexadecimal characters.")
-        source_value = item.get("source")
-        source = None if source_value is None else str(source_value).strip()
-        if source_value is not None and not source:
-            raise ReleaseError(f"{context} source must not be empty.")
-        if alias in aliases:
-            raise ReleaseError(f"Duplicate Skill alias: {alias}")
-        if uc_name in uc_names:
-            raise ReleaseError(f"Duplicate UC Skill: {uc_name}")
-        aliases.add(alias)
-        uc_names.add(uc_name)
-        skills.append(SkillRelease(alias, uc_name, version, sha256, source))
-
+            raise ReleaseError("Release Skill metadata must be an object.")
+        skill = SkillRelease(
+            alias=_required_string(item, "alias", "release skill"),
+            uc_name=_required_string(item, "uc_name", "release skill"),
+            sha256=_required_string(item, "sha256", "release skill"),
+            source=_required_string(item, "source", "release skill"),
+        )
+        if len(skill.sha256) != 64:
+            raise ReleaseError(f"Invalid Skill checksum: {skill.alias}")
+        skill.uc_parts
+        skills.append(skill)
     raw_subagents = raw.get("subagents", [])
     if not isinstance(raw_subagents, list):
-        raise ReleaseError(f"{contract} subagents must be a list.")
-    subagents: list[SubagentRelease] = []
-    subagent_ids: set[str] = set()
-    for index, item in enumerate(raw_subagents):
-        context = f"{contract} subagents[{index}]"
-        if not isinstance(item, dict):
-            raise ReleaseError(f"{context} must be a YAML object.")
-        subagent_id = _required_string(item, "id", context)
-        if not NAME_RE.fullmatch(subagent_id):
-            raise ReleaseError(f"{context} id must use lower-case kebab-case.")
-        instructions = _required_string(item, "instructions", context)
-        instruction_path = _safe_relative_path(agent_root, instructions, context)
-        if not instruction_path.is_file():
-            raise ReleaseError(f"Subagent instructions do not exist: {instruction_path}")
-        if instruction_path.suffix == ".toml":
-            try:
-                validate_codex_agent_config(instruction_path, expected_name=subagent_id)
-            except ManifestError as exc:
-                raise ReleaseError(str(exc)) from exc
-        raw_aliases = item.get("skills", [])
-        if not isinstance(raw_aliases, list) or not all(isinstance(value, str) for value in raw_aliases):
-            raise ReleaseError(f"{context} skills must be a list of Skill aliases.")
-        unknown = sorted(set(raw_aliases) - aliases)
-        if unknown:
-            raise ReleaseError(f"{context} references unknown Skills: {', '.join(unknown)}")
-        if subagent_id in subagent_ids:
-            raise ReleaseError(f"Duplicate subagent id: {subagent_id}")
-        subagent_ids.add(subagent_id)
-        subagents.append(SubagentRelease(subagent_id, instructions, tuple(raw_aliases)))
-
+        raise ReleaseError("Release subagents must be a list.")
+    subagents = tuple(
+        SubagentRelease(
+            id=_required_string(item, "id", "release subagent"),
+            source=_required_string(item, "source", "release subagent"),
+            skills=tuple(item.get("skills", [])),
+        )
+        for item in raw_subagents
+        if isinstance(item, dict)
+    )
     return AgentRelease(
         root=agent_root,
         agent_id=agent_id,
-        release_version=release_version,
-        model_profile=model_profile,
-        harness_profile=harness_profile,
-        mcp_tool_profile=mcp_tool_profile,
+        release_version=version,
+        model=_required_string(raw, "model", "release.json"),
+        harness_profile=str(raw.get("harness") or "codex"),
         skills=tuple(skills),
-        subagents=tuple(subagents),
+        subagents=subagents,
+        harness_sha256=_required_string(raw, "harness_sha256", "release.json"),
+        skills_sha256=_required_string(raw, "skills_sha256", "release.json"),
     )
 
 
 def has_release_contract(root: str | Path) -> bool:
-    agent_root = Path(root).expanduser().resolve()
-    if (agent_root / "release.yaml").is_file():
-        return True
-    try:
-        raw = yaml.safe_load((agent_root / "agent.yaml").read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return False
-    return (
-        isinstance(raw, dict)
-        and raw.get("schema_version") == 2
-        and isinstance(raw.get("release"), dict)
-    )
-
-
-def _read_release_contract(agent_root: Path) -> tuple[dict, str]:
-    manifest_path = agent_root / "agent.yaml"
-    try:
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise ReleaseError(f"Invalid Agent manifest {manifest_path}: {exc}") from exc
-    if isinstance(manifest, dict) and manifest.get("schema_version") == 2:
-        agent = manifest.get("agent")
-        release = manifest.get("release")
-        if not isinstance(agent, dict) or not isinstance(release, dict):
-            raise ReleaseError("agent.yaml requires agent and release objects for publishing.")
-        normalized = dict(release)
-        normalized["schema_version"] = 1
-        normalized["agent_id"] = agent.get("id")
-        normalized["release_version"] = release.get("version")
-        return normalized, "agent.yaml release"
-
-    path = agent_root / "release.yaml"
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise ReleaseError(f"Missing Agent Release contract in agent.yaml: {manifest_path}") from exc
-    except (OSError, yaml.YAMLError) as exc:
-        raise ReleaseError(f"Invalid Agent Release Manifest {path}: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise ReleaseError("release.yaml must be a YAML object.")
-    if raw.get("schema_version") != 1:
-        raise ReleaseError("release.yaml schema_version must be 1.")
-    return raw, "release.yaml"
+    return (Path(root).expanduser().resolve() / ".aops" / "release.json").is_file()
 
 
 def hash_skill_directory(path: str | Path) -> str:
@@ -231,11 +236,9 @@ def hash_skill_directory(path: str | Path) -> str:
     symbolic_link = next((entry for entry in entries if entry.is_symlink()), None)
     if symbolic_link is not None:
         raise ReleaseError(f"Symbolic links are not allowed in Skill bundles: {symbolic_link}")
-    files = [entry for entry in entries if entry.is_file()]
     digest = hashlib.sha256()
-    for file in files:
-        relative = file.relative_to(root).as_posix()
-        digest.update(relative.encode("utf-8"))
+    for file in (entry for entry in entries if entry.is_file()):
+        digest.update(file.relative_to(root).as_posix().encode("utf-8"))
         digest.update(b"\0")
         digest.update(file.read_bytes())
         digest.update(b"\0")
@@ -243,18 +246,17 @@ def hash_skill_directory(path: str | Path) -> str:
 
 
 class UcSkillPublisher:
+    """Publish local Agent Skills as governed UC Skills using the public UC Skill API."""
+
     def __init__(self, profile: str, *, runner: CommandRunner | None = None) -> None:
         if not profile.strip():
             raise ReleaseError("Databricks profile is required.")
         self.profile = profile
         self.runner = runner or _run_command
 
-    def publish_release(self, root: str | Path) -> tuple[PublishedSkill, ...]:
-        release = load_release(root)
-        prepared: list[tuple[SkillRelease, Path, str]] = []
+    def publish(self, release: AgentRelease) -> tuple[PublishedSkill, ...]:
+        prepared: list[tuple[SkillRelease, Path, bool]] = []
         for skill in release.skills:
-            if not skill.source:
-                raise ReleaseError(f"Skill source is required for publishing: {skill.alias}")
             source = _safe_relative_path(release.root, skill.source, f"Skill {skill.alias}")
             actual = hash_skill_directory(source)
             if actual != skill.sha256:
@@ -262,33 +264,27 @@ class UcSkillPublisher:
                     f"Skill hash mismatch before publish: {skill.alias}; "
                     f"expected {skill.sha256}, got {actual}"
                 )
-            prepared.append((skill, source, actual))
-
-        for skill, _, _ in prepared:
-            if self._exists(skill.uc_name):
-                raise ReleaseError(
-                    f"UC Skill already exists and will not be overwritten: {skill.uc_name}. "
-                    "Create a new Skill version and Agent release."
-                )
+            prepared.append((skill, source, self._exists(skill.uc_name)))
 
         published: list[PublishedSkill] = []
-        for skill, source, actual in prepared:
+        for skill, source, existed in prepared:
             catalog, schema, leaf = skill.uc_parts
-            parent = quote(f"schemas/{catalog}.{schema}", safe="./")
-            skill_id = quote(leaf, safe="-_")
-            self._checked(
-                [
-                    "databricks",
-                    "api",
-                    "post",
-                    f"/api/2.1/unity-catalog/skills?parent={parent}&skill_id={skill_id}",
-                    "-p",
-                    self.profile,
-                    "--json",
-                    "{}",
-                ],
-                f"create UC Skill {skill.uc_name}",
-            )
+            if not existed:
+                parent = quote(f"schemas/{catalog}.{schema}", safe="./")
+                skill_id = quote(leaf, safe="-_")
+                self._checked(
+                    [
+                        "databricks",
+                        "api",
+                        "post",
+                        f"/api/2.1/unity-catalog/skills?parent={parent}&skill_id={skill_id}",
+                        "-p",
+                        self.profile,
+                        "--json",
+                        "{}",
+                    ],
+                    f"create UC Skill {skill.uc_name}",
+                )
             self._checked(
                 [
                     "databricks",
@@ -314,8 +310,37 @@ class UcSkillPublisher:
                 ],
                 f"finalize UC Skill {skill.uc_name}",
             )
-            published.append(PublishedSkill(skill.alias, skill.uc_name, skill.version, actual))
+            published.append(
+                PublishedSkill(
+                    alias=skill.alias,
+                    uc_name=skill.uc_name,
+                    sha256=skill.sha256,
+                    action="updated" if existed else "created",
+                )
+            )
         return tuple(published)
+
+    def publish_release(
+        self, root: str | Path, *, version: str = "working", skill_schema: str
+    ) -> tuple[PublishedSkill, ...]:
+        return self.publish(build_release(root, version, skill_schema))
+
+    def verify_access(self, release: AgentRelease) -> None:
+        for skill in release.skills:
+            result = self.runner(
+                [
+                    "databricks",
+                    "api",
+                    "get",
+                    f"/api/2.1/unity-catalog/skills/{quote(skill.uc_name, safe='.')}",
+                    "-p",
+                    self.profile,
+                ]
+            )
+            if result.returncode != 0:
+                raise ReleaseError(
+                    f"UC Skill access denied or missing: {skill.uc_name}: {_command_message(result)}"
+                )
 
     def _exists(self, full_name: str) -> bool:
         result = self.runner(
@@ -333,13 +358,7 @@ class UcSkillPublisher:
         message = f"{result.stdout}\n{result.stderr}".upper()
         if any(
             token in message
-            for token in (
-                "RESOURCE_DOES_NOT_EXIST",
-                "NOT_FOUND",
-                "NOT FOUND",
-                "DOES NOT EXIST",
-                "404",
-            )
+            for token in ("RESOURCE_DOES_NOT_EXIST", "NOT_FOUND", "NOT FOUND", "DOES NOT EXIST", "404")
         ):
             return False
         raise ReleaseError(f"Cannot check UC Skill {full_name}: {_command_message(result)}")
@@ -350,38 +369,70 @@ class UcSkillPublisher:
             raise ReleaseError(f"Cannot {action}: {_command_message(result)}")
 
 
+class CodexRuntimeBuilder:
+    def __init__(self, *, otel_port: int = 4319) -> None:
+        self.otel_port = otel_port
+
+    def prepare(self, root: str | Path) -> AssemblyResult:
+        manifest = validate_agent(root)
+        skills = load_skills(manifest.root)
+        subagents = load_subagents(manifest.root, set(skills))
+        generated_agents = manifest.root / ".agents"
+        generated_codex = manifest.root / ".codex"
+        with tempfile.TemporaryDirectory(prefix="aops-runtime-", dir=manifest.root.parent) as temporary:
+            staging = Path(temporary)
+            agents_staging = staging / ".agents"
+            codex_staging = staging / ".codex"
+            for name, skill in skills.items():
+                destination = agents_staging / "skills" / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(skill.root, destination)
+            (codex_staging / "agents").mkdir(parents=True, exist_ok=True)
+            (codex_staging / "config.toml").write_text(
+                _codex_project_config(self.otel_port),
+                encoding="utf-8",
+            )
+            for name, subagent in subagents.items():
+                (codex_staging / "agents" / f"{name}.toml").write_text(
+                    _codex_subagent_toml(subagent), encoding="utf-8"
+                )
+            _replace_directory(agents_staging, generated_agents)
+            _replace_directory(codex_staging, generated_codex)
+
+        runtime_meta = manifest.root / ".aops" / "runtime.json"
+        runtime_meta.parent.mkdir(parents=True, exist_ok=True)
+        release = read_release_metadata(manifest.root)
+        runtime_meta.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "runtime": "codex",
+                    "agent_id": manifest.agent_id,
+                    "release_version": (release or {}).get("version", "working"),
+                    "model": manifest.model,
+                    "skills": sorted(skills),
+                    "subagents": sorted(subagents),
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return AssemblyResult(
+            runtime_root=manifest.root,
+            config_path=generated_codex / "config.toml",
+            skill_paths={name: generated_agents / "skills" / name for name in skills},
+        )
+
+
 class AgentReleaseLoader:
-    def __init__(self, profile: str, *, runner: CommandRunner | None = None) -> None:
-        if not profile.strip():
-            raise ReleaseError("Databricks profile is required.")
-        self.profile = profile
+    """Compatibility facade used by the CLI and platform adapters."""
+
+    def __init__(self, profile: str | None = None, *, runner: CommandRunner | None = None) -> None:
+        self.profile = profile or ""
         self.runner = runner or _run_command
-
-    def sync_skills(self, root: str | Path) -> dict[str, Path]:
-        release = load_release(root)
-        agent_root = release.root
-        target = agent_root / ".agents" / "skills"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="aops-skills-", dir=agent_root.parent) as temporary:
-            temporary_root = Path(temporary)
-            downloads = temporary_root / "downloads"
-            staging = temporary_root / "skills"
-            downloads.mkdir()
-            staging.mkdir()
-            for skill in release.skills:
-                bundle = self._download_skill(skill, downloads / skill.alias)
-                shutil.copytree(bundle, staging / skill.alias)
-
-            backup = temporary_root / "previous-skills"
-            if target.exists():
-                os.replace(target, backup)
-            try:
-                os.replace(staging, target)
-            except Exception:
-                if backup.exists() and not target.exists():
-                    os.replace(backup, target)
-                raise
-        return {skill.alias: target / skill.alias for skill in release.skills}
 
     def assemble(
         self,
@@ -390,127 +441,57 @@ class AgentReleaseLoader:
         destination: str | Path | None = None,
         replace: bool = False,
     ) -> AssemblyResult:
-        release = load_release(root)
-        target = Path(destination or release.root / ".aops" / "runtime").expanduser().resolve()
-        if target.exists() and not replace:
-            raise ReleaseError(f"Runtime destination already exists: {target}; use --force to replace it.")
-        target.parent.mkdir(parents=True, exist_ok=True)
+        if destination is not None and Path(destination).resolve() != Path(root).resolve():
+            raise ReleaseError("Codex runtime is generated inside the Agent source directory.")
+        _ = replace
+        return CodexRuntimeBuilder().prepare(root)
 
-        with tempfile.TemporaryDirectory(prefix="aops-assemble-", dir=target.parent) as temporary:
-            temporary_root = Path(temporary)
-            downloads = temporary_root / "downloads"
-            staging = temporary_root / "runtime"
-            downloads.mkdir()
-            staging.mkdir()
+    def sync_skills(self, root: str | Path) -> dict[str, Path]:
+        return CodexRuntimeBuilder().prepare(root).skill_paths
 
-            skill_paths: dict[str, Path] = {}
-            for skill in release.skills:
-                bundle = self._download_skill(skill, downloads / skill.alias)
-                runtime_skill = staging / "skills" / skill.alias
-                runtime_skill.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(bundle, runtime_skill)
-                codex_skill = staging / ".agents" / "skills" / skill.alias
-                codex_skill.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(bundle, codex_skill)
-                skill_paths[skill.alias] = runtime_skill
 
-            for name in ("AGENTS.md",):
-                source = release.root / name
-                if source.is_file():
-                    shutil.copy2(source, staging / name)
-            codex_config = release.root / ".codex" / "config.toml"
-            if codex_config.is_file():
-                destination_path = staging / ".codex" / "config.toml"
-                destination_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(codex_config, destination_path)
+def _codex_subagent_toml(subagent: Any) -> str:
+    instructions = subagent.instructions
+    if subagent.skills:
+        instructions += "\n\n사용할 Skill: " + ", ".join(f"${name}" for name in subagent.skills)
+    return (
+        f"name = {json.dumps(subagent.name, ensure_ascii=False)}\n"
+        f"description = {json.dumps(subagent.description, ensure_ascii=False)}\n"
+        f"sandbox_mode = {json.dumps(subagent.sandbox_mode, ensure_ascii=False)}\n"
+        f"developer_instructions = {json.dumps(instructions, ensure_ascii=False)}\n"
+    )
 
-            subagent_paths: dict[str, str] = {}
-            for subagent in release.subagents:
-                source = _safe_relative_path(
-                    release.root, subagent.instructions, f"Subagent {subagent.id}"
-                )
-                source_relative = Path(subagent.instructions)
-                if source_relative.parts[:2] == (".codex", "agents"):
-                    runtime_relative = Path(".codex") / "agents" / f"{subagent.id}.toml"
-                else:
-                    runtime_relative = Path("subagents") / f"{subagent.id}{source.suffix}"
-                destination_path = staging / runtime_relative
-                destination_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, destination_path)
-                subagent_paths[subagent.id] = runtime_relative.as_posix()
 
-            config = {
-                "schema_version": 1,
-                "agent_id": release.agent_id,
-                "release_version": release.release_version,
-                "profiles": {
-                    "model": release.model_profile,
-                    "harness": release.harness_profile,
-                    "mcp_tools": release.mcp_tool_profile,
-                },
-                "harness": {
-                    "agents_md": "AGENTS.md",
-                },
-                "skills": [
-                    {
-                        "alias": skill.alias,
-                        "uc_name": skill.uc_name,
-                        "version": skill.version,
-                        "sha256": skill.sha256,
-                        "markdown": f"skills/{skill.alias}/SKILL.md",
-                    }
-                    for skill in release.skills
-                ],
-                "subagents": [
-                    {
-                        "id": subagent.id,
-                        "instructions": subagent_paths[subagent.id],
-                        "skills": list(subagent.skills),
-                    }
-                    for subagent in release.subagents
-                ],
-            }
-            config_path = staging / "config.yaml"
-            config_path.write_text(
-                yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8"
-            )
+def _codex_project_config(otel_port: int) -> str:
+    base = f"http://127.0.0.1:{otel_port}"
+    return (
+        "[agents]\n"
+        "enabled = true\n"
+        "max_concurrent_threads_per_session = 4\n\n"
+        "[otel]\n"
+        'environment = "agentops-harness"\n'
+        "log_user_prompt = false\n"
+        "log_agent_responses = false\n"
+        f'exporter = {{ otlp-http = {{ endpoint = "{base}/v1/logs", protocol = "json" }} }}\n'
+        f'metrics_exporter = {{ otlp-http = {{ endpoint = "{base}/v1/metrics", protocol = "json" }} }}\n'
+    )
 
-            if target.exists():
-                shutil.rmtree(target)
-            os.replace(staging, target)
 
-        return AssemblyResult(
-            runtime_root=target,
-            config_path=target / "config.yaml",
-            skill_paths={alias: target / "skills" / alias for alias in skill_paths},
-        )
-
-    def _download_skill(self, skill: SkillRelease, destination: Path) -> Path:
-        catalog, schema, leaf = skill.uc_parts
-        result = self.runner(
-            [
-                "databricks",
-                "fs",
-                "cp",
-                f"dbfs:/Skills/{catalog}/{schema}/{leaf}/",
-                str(destination),
-                "--recursive",
-                "-p",
-                self.profile,
-            ]
-        )
-        if result.returncode != 0:
-            raise ReleaseError(
-                f"Cannot download UC Skill {skill.uc_name}: {_command_message(result)}"
-            )
-        bundle = _find_downloaded_skill(destination)
-        actual = hash_skill_directory(bundle)
-        if actual != skill.sha256:
-            raise ReleaseError(
-                f"Downloaded UC Skill hash mismatch: {skill.uc_name}; "
-                f"expected {skill.sha256}, got {actual}"
-            )
-        return bundle
+def _replace_directory(source: Path, target: Path) -> None:
+    backup = target.with_name(f"{target.name}.previous")
+    if backup.exists():
+        shutil.rmtree(backup)
+    if target.exists():
+        os.replace(target, backup)
+    try:
+        os.replace(source, target)
+    except Exception:
+        if backup.exists() and not target.exists():
+            os.replace(backup, target)
+        raise
+    finally:
+        if backup.exists():
+            shutil.rmtree(backup)
 
 
 def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -521,23 +502,10 @@ def _command_message(result: subprocess.CompletedProcess[str]) -> str:
     return (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
 
 
-def _required_string(values: dict, key: str, context: str) -> str:
-    value = str(values.get(key, "")).strip()
-    if not value:
-        raise ReleaseError(f"{context} requires '{key}'.")
-    return value
-
-
-def _validate_uc_name(value: str, context: str) -> None:
-    parts = value.split(".")
-    if len(parts) != 3 or any(not part or "/" in part or any(char.isspace() for char in part) for part in parts):
-        raise ReleaseError(f"{context} uc_name must use <catalog>.<schema>.<skill>.")
-
-
 def _safe_relative_path(root: Path, value: str, context: str) -> Path:
     relative = Path(value)
-    if relative.is_absolute():
-        raise ReleaseError(f"{context} path must be relative to the Agent root: {value}")
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ReleaseError(f"{context} path must stay inside the Agent root: {value}")
     resolved = (root / relative).resolve()
     try:
         resolved.relative_to(root)
@@ -546,13 +514,8 @@ def _safe_relative_path(root: Path, value: str, context: str) -> Path:
     return resolved
 
 
-def _find_downloaded_skill(download_root: Path) -> Path:
-    direct = download_root / "SKILL.md"
-    if direct.is_file():
-        return download_root
-    matches = sorted(download_root.rglob("SKILL.md")) if download_root.exists() else []
-    if len(matches) != 1:
-        raise ReleaseError(
-            f"Downloaded Skill must contain exactly one SKILL.md, found {len(matches)}: {download_root}"
-        )
-    return matches[0].parent
+def _required_string(values: dict[str, Any], key: str, context: str) -> str:
+    value = values.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ReleaseError(f"{context} requires non-empty {key}.")
+    return value.strip()

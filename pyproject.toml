@@ -4,14 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codex-agentops"
-version = "0.8.0"
-description = "Version-pinned UC Skills, Agent Registry, and MLflow observability for Codex harness agents"
+version = "1.0.0"
+description = "Markdown Harness Agent Registry, version-pinned UC Skills, and MLflow observability"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "databricks-agents>=1,<2",
   "databricks-sdk>=0.63,<1",
   "mlflow-skinny>=3.16.1,<4",
+  "opentelemetry-proto>=1.30,<2",
   "PyYAML>=6,<7",
 ]
 
