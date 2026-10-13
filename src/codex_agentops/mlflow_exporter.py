@@ -160,6 +160,24 @@ class MlflowTurnExporter:
                     turn.events, "security_access_level"
                 )
                 or "unknown",
+                "agentops.required_uc_permissions": json.dumps(
+                    _first_present(turn.events, "required_uc_permissions") or [],
+                    ensure_ascii=False,
+                ),
+                "agentops.use_flagship_model": bool(
+                    _first_present(turn.events, "use_flagship_model") or False
+                ),
+                "agentops.owner": _first_present(turn.events, "owner") or "unassigned",
+                "agentops.owner_group": _first_present(turn.events, "owner_group") or "unassigned",
+                "agentops.source_system": _first_present(turn.events, "source_system") or "unknown",
+                "agentops.target_users": json.dumps(
+                    _first_present(turn.events, "target_users") or [], ensure_ascii=False
+                ),
+                "agentops.cost_center": _first_present(turn.events, "cost_center") or "unassigned",
+                "agentops.risk_level": _first_present(turn.events, "risk_level") or "unknown",
+                "agentops.hitl_required": bool(
+                    _first_present(turn.events, "hitl_required") or False
+                ),
                 "mlflow.llm.model": model or "unknown",
                 **token_attributes,
             },

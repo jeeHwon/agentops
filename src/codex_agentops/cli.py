@@ -85,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
     registry_list = commands.add_parser("list", help="접근 가능한 Registry Agent를 조회합니다")
     _add_registry_arguments(registry_list)
     registry_list.add_argument("--all-versions", action="store_true", help="모든 버전을 표시합니다")
+    registry_list.add_argument(
+        "--include-unavailable",
+        action="store_true",
+        help="관리자 점검용으로 UC Skill 권한이 없는 Agent도 표시합니다",
+    )
 
     register = commands.add_parser("register", help="Agent 폴더를 불변 버전으로 등록합니다")
     register.add_argument("path", nargs="?", type=Path, default=Path.cwd())
@@ -139,18 +144,23 @@ def main(argv: list[str] | None = None) -> int:
             registry = _registry_client(args)
             registry.initialize()
             print(f"Registry 준비 완료: {registry.location.schema_name}")
-            print(f"Metadata Table: {registry.location.table_name}")
+            print(f"Agent Table: {registry.location.agents_table_name}")
+            print(f"Version Table: {registry.location.versions_table_name}")
+            print(f"Legacy 호환 Table: {registry.location.table_name}")
             print(f"Artifact Volume: {registry.location.volume_root}")
             return 0
         if args.command == "list":
             registry = _registry_client(args)
-            versions = registry.list(all_versions=args.all_versions)
+            versions = registry.list(
+                all_versions=args.all_versions,
+                authorized_only=not args.include_unavailable,
+            )
             if not versions:
                 print("등록된 Agent가 없습니다.")
             for item in versions:
                 print(
                     f"{item.agent_id}@{item.version}\t{item.name}\t"
-                    f"skills={','.join(item.skill_names)}\towner={item.registered_by}"
+                    f"skills={','.join(item.skill_names)}\tregistered_by={item.registered_by}"
                 )
             return 0
         if args.command == "register":

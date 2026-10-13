@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codex-agentops"
-version = "1.0.0"
+version = "1.1.0"
 description = "Markdown Harness Agent Registry, version-pinned UC Skills, and MLflow observability"
 readme = "README.md"
 requires-python = ">=3.11"

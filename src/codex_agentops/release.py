@@ -33,6 +33,7 @@ class SkillRelease:
     uc_name: str
     sha256: str
     source: str
+    publication_mode: str = "agent"
 
     @property
     def version(self) -> str:
@@ -65,6 +66,7 @@ class AgentRelease:
     subagents: tuple[SubagentRelease, ...]
     harness_sha256: str
     skills_sha256: str
+    spec: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -101,9 +103,14 @@ def build_release(root: str | Path, version: str, skill_schema: str) -> AgentRel
     skill_releases = tuple(
         SkillRelease(
             alias=name,
-            uc_name=f"{skill_schema}.{name}",
+            uc_name=(
+                definition.uc_name
+                if definition.uc_mode == "shared-reference"
+                else f"{skill_schema}.{manifest.agent_id}-{name}"
+            ),
             sha256=hash_skill_directory(definition.root),
             source=f"skills/{name}",
+            publication_mode=definition.uc_mode,
         )
         for name, definition in sorted(skills.items())
     )
@@ -125,6 +132,24 @@ def build_release(root: str | Path, version: str, skill_schema: str) -> AgentRel
         ),
         harness_sha256=checksums.harness,
         skills_sha256=checksums.combined_skills,
+        spec={
+            "name": manifest.name,
+            "description": manifest.description,
+            "agent_type": manifest.agent_type,
+            "owner": manifest.owner,
+            "owner_group": manifest.owner_group,
+            "source_system": manifest.source_system,
+            "target_users": list(manifest.target_users),
+            "cost_center": manifest.cost_center,
+            "service_criticality": manifest.service_criticality,
+            "data_sensitivity": manifest.data_sensitivity,
+            "security_access_level": manifest.security_access_level,
+            "risk_level": manifest.risk_level,
+            "hitl_required": manifest.hitl_required,
+            "required_uc_permissions": list(manifest.required_uc_permissions),
+            "use_flagship_model": manifest.use_flagship_model,
+            "success_criteria": manifest.success_criteria,
+        },
     )
 
 
@@ -151,12 +176,14 @@ def release_to_dict(release: AgentRelease) -> dict[str, Any]:
         "harness": release.harness_profile,
         "harness_sha256": release.harness_sha256,
         "skills_sha256": release.skills_sha256,
+        "spec": release.spec,
         "skills": [
             {
                 "alias": skill.alias,
                 "uc_name": skill.uc_name,
                 "sha256": skill.sha256,
                 "source": skill.source,
+                "publication_mode": skill.publication_mode,
             }
             for skill in release.skills
         ],
@@ -172,6 +199,16 @@ def load_release(root: str | Path, *, expected_agent_id: str | None = None) -> A
     raw = read_release_metadata(agent_root)
     if raw is None:
         raise ReleaseError(f"Generated Agent Release metadata is missing: {agent_root / '.aops/release.json'}")
+    return release_from_dict(raw, root=agent_root, expected_agent_id=expected_agent_id)
+
+
+def release_from_dict(
+    raw: dict[str, Any],
+    *,
+    root: str | Path = ".",
+    expected_agent_id: str | None = None,
+) -> AgentRelease:
+    agent_root = Path(root).expanduser().resolve()
     if raw.get("schema_version") != 1:
         raise ReleaseError("Generated Agent Release schema_version must be 1.")
     agent_id = _required_string(raw, "agent_id", "release.json")
@@ -194,6 +231,7 @@ def load_release(root: str | Path, *, expected_agent_id: str | None = None) -> A
             uc_name=_required_string(item, "uc_name", "release skill"),
             sha256=_required_string(item, "sha256", "release skill"),
             source=_required_string(item, "source", "release skill"),
+            publication_mode=str(item.get("publication_mode") or "legacy"),
         )
         if len(skill.sha256) != 64:
             raise ReleaseError(f"Invalid Skill checksum: {skill.alias}")
@@ -221,6 +259,7 @@ def load_release(root: str | Path, *, expected_agent_id: str | None = None) -> A
         subagents=subagents,
         harness_sha256=_required_string(raw, "harness_sha256", "release.json"),
         skills_sha256=_required_string(raw, "skills_sha256", "release.json"),
+        spec=dict(raw.get("spec") or {}),
     )
 
 
@@ -268,6 +307,18 @@ class UcSkillPublisher:
 
         published: list[PublishedSkill] = []
         for skill, source, existed in prepared:
+            if skill.publication_mode == "shared-reference":
+                if not existed:
+                    raise ReleaseError(f"Referenced UC Skill does not exist: {skill.uc_name}")
+                published.append(
+                    PublishedSkill(
+                        alias=skill.alias,
+                        uc_name=skill.uc_name,
+                        sha256=skill.sha256,
+                        action="referenced",
+                    )
+                )
+                continue
             catalog, schema, leaf = skill.uc_parts
             if not existed:
                 parent = quote(f"schemas/{catalog}.{schema}", safe="./")

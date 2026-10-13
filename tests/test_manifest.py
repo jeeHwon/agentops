@@ -53,6 +53,12 @@ def test_spec_contains_governance_defaults(tmp_path):
     assert manifest.required_uc_permissions == ()
     assert manifest.use_flagship_model is False
     assert manifest.model == "system.ai.gpt-5-6-sol"
+    assert manifest.source_system == "local"
+    assert manifest.owner == ""
+    assert manifest.target_users == ()
+    assert manifest.risk_level == "low"
+    assert manifest.hitl_required is False
+    assert manifest.success_criteria["quality"]
 
 
 def test_checksums_change_independently_for_harness_and_skills(tmp_path):

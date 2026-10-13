@@ -34,6 +34,14 @@ class AgentManifest:
     required_uc_permissions: tuple[str, ...]
     use_flagship_model: bool
     model: str
+    owner: str
+    owner_group: str
+    source_system: str
+    target_users: tuple[str, ...]
+    cost_center: str
+    risk_level: str
+    hitl_required: bool
+    success_criteria: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -41,6 +49,8 @@ class SkillDefinition:
     name: str
     description: str
     root: Path
+    uc_mode: str
+    uc_name: str
 
 
 @dataclass(frozen=True)
@@ -67,12 +77,23 @@ id: {agent_id}
 name: {name}
 description: 이 Agent가 해결하는 업무를 한 문장으로 작성하세요.
 agent_type: harness
+owner: ""
+owner_group: ""
+source_system: local
+target_users: []
+cost_center: ""
 service_criticality: low
 data_sensitivity: internal
 security_access_level: standard
+risk_level: low
+hitl_required: false
 required_uc_permissions: []
 use_flagship_model: false
 model: system.ai.gpt-5-6-sol
+success_criteria:
+  quality: "필수 결과를 빠짐없이 제공하고 근거 없는 사실을 생성하지 않습니다."
+  latency_ms: null
+  completion_rate: null
 ---
 
 # Agent Specification
@@ -209,6 +230,29 @@ def load_manifest(root: str | Path) -> AgentManifest:
     use_flagship_model = metadata.get("use_flagship_model")
     if not isinstance(use_flagship_model, bool):
         raise ManifestError("spec.md use_flagship_model must be true or false.")
+    hitl_required = metadata.get("hitl_required", False)
+    if not isinstance(hitl_required, bool):
+        raise ManifestError("spec.md hitl_required must be true or false.")
+    service_criticality = _required_string(metadata, "service_criticality", "spec.md")
+    data_sensitivity = _required_string(metadata, "data_sensitivity", "spec.md")
+    security_access_level = _required_string(
+        metadata, "security_access_level", "spec.md"
+    )
+    source_system = str(metadata.get("source_system") or "local").strip()
+    risk_level = str(metadata.get("risk_level") or "low").strip()
+    _enum_value(service_criticality, "service_criticality", {"low", "medium", "high", "critical"})
+    _enum_value(data_sensitivity, "data_sensitivity", {"public", "internal", "confidential", "restricted"})
+    _enum_value(security_access_level, "security_access_level", {"standard", "elevated", "privileged"})
+    _enum_value(source_system, "source_system", {"local", "innohub", "databricks"})
+    _enum_value(risk_level, "risk_level", {"low", "medium", "high"})
+    target_users = metadata.get("target_users", [])
+    if not isinstance(target_users, list) or not all(
+        isinstance(item, str) and item.strip() for item in target_users
+    ):
+        raise ManifestError("spec.md target_users must be a string list.")
+    success_criteria = metadata.get("success_criteria", {})
+    if not isinstance(success_criteria, dict):
+        raise ManifestError("spec.md success_criteria must be a mapping.")
     return AgentManifest(
         root=agent_root,
         agent_id=agent_id,
@@ -216,14 +260,20 @@ def load_manifest(root: str | Path) -> AgentManifest:
         description=_required_string(metadata, "description", "spec.md"),
         schema_version=SPEC_SCHEMA_VERSION,
         agent_type=agent_type,
-        service_criticality=_required_string(metadata, "service_criticality", "spec.md"),
-        data_sensitivity=_required_string(metadata, "data_sensitivity", "spec.md"),
-        security_access_level=_required_string(
-            metadata, "security_access_level", "spec.md"
-        ),
+        service_criticality=service_criticality,
+        data_sensitivity=data_sensitivity,
+        security_access_level=security_access_level,
         required_uc_permissions=tuple(item.strip() for item in required_permissions),
         use_flagship_model=use_flagship_model,
         model=_required_string(metadata, "model", "spec.md"),
+        owner=str(metadata.get("owner") or "").strip(),
+        owner_group=str(metadata.get("owner_group") or "").strip(),
+        source_system=source_system,
+        target_users=tuple(item.strip() for item in target_users),
+        cost_center=str(metadata.get("cost_center") or "").strip(),
+        risk_level=risk_level,
+        hitl_required=hitl_required,
+        success_criteria=dict(success_criteria),
     )
 
 
@@ -277,6 +327,20 @@ def validate_skill_directory(root: str | Path) -> SkillDefinition:
         raise ManifestError(f"Skill description must be at most 1024 characters: {entrypoint}")
     if not body.strip():
         raise ManifestError(f"Skill instructions are required after frontmatter: {entrypoint}")
+    uc_mode = str(metadata.get("uc_mode") or "agent").strip()
+    if uc_mode not in {"agent", "shared-reference"}:
+        raise ManifestError(f"Skill uc_mode must be agent or shared-reference: {entrypoint}")
+    uc_name = str(metadata.get("uc_name") or "").strip()
+    if uc_mode == "shared-reference":
+        parts = uc_name.split(".")
+        if len(parts) != 3 or not all(parts):
+            raise ManifestError(
+                f"A shared-reference Skill requires uc_name=<catalog>.<schema>.<skill>: {entrypoint}"
+            )
+    elif uc_name:
+        raise ManifestError(
+            f"Agent-scoped Skills must not set uc_name; it is generated safely: {entrypoint}"
+        )
 
     for path in sorted(skill_root.rglob("*")):
         if path.is_symlink():
@@ -294,7 +358,13 @@ def validate_skill_directory(root: str | Path) -> SkillDefinition:
             raise ManifestError(
                 f"1차 Skill은 SKILL.md와 references/*.md만 허용합니다: {path}"
             )
-    return SkillDefinition(name, description, skill_root)
+    return SkillDefinition(name, description, skill_root, uc_mode, uc_name)
+
+
+def _enum_value(value: str, key: str, allowed: set[str]) -> None:
+    if value not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise ManifestError(f"spec.md {key} must be one of: {choices}.")
 
 
 def load_subagents(

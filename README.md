@@ -86,7 +86,7 @@ my-agent/
 
 | 파일 | 작성 내용 |
 |---|---|
-| `spec.md` | Agent ID, 설명, 모델, 입출력, 성공 기준과 운영 메타데이터 |
+| `spec.md` | Agent ID, Owner, 중요도, 민감도, 위험등급, 필요 권한, 모델과 구조화된 성공 기준 |
 | `AGENTS.md` | Agent의 행동 원칙, 실행 순서, Skill과 Sub-agent 사용 규칙 |
 | `README.md` | Agent 사용 방법과 예시 |
 | `skills/<name>/SKILL.md` | 하나의 재사용 가능한 업무 능력과 수행 절차 |
@@ -122,6 +122,20 @@ description: 고객 자료에서 핵심 사실과 후속 행동을 요약해야 
 - `name`은 폴더명과 같아야 하며 소문자, 숫자와 하이픈만 사용합니다.
 - 1차 Harness 범위에서는 `SKILL.md`와 `references/*.md`만 허용합니다.
 - 실행 코드, 바이너리와 심볼릭 링크는 허용하지 않습니다.
+- 기본 Skill은 Agent 전용 UC 이름 `<agent-id>-<skill-name>`으로 게시되므로 다른 Agent의 같은 이름과 충돌하지 않습니다.
+
+기존 조직 공용 UC Skill을 덮어쓰지 않고 참조하려면 `SKILL.md` frontmatter에 다음을 명시합니다.
+
+```yaml
+---
+name: customer-summary
+description: 고객 자료를 정해진 형식으로 요약할 때 사용합니다.
+uc_mode: shared-reference
+uc_name: <catalog>.<schema>.<existing-skill>
+---
+```
+
+`shared-reference`는 기존 UC Skill의 접근권한과 존재만 확인하며 내용을 갱신하지 않습니다. Release Artifact에는 등록 시점의 로컬 Skill 스냅샷과 SHA가 함께 고정됩니다.
 
 ## Agent 등록과 로드
 
@@ -149,15 +163,24 @@ codex
 3. Registry 메타데이터와 Agent ID·버전
 4. 현재 사용자의 각 UC Skill 접근 권한
 
+`aops list`도 기본적으로 현재 사용자가 UC Skill 권한을 가진 Agent만 표시합니다. 관리자가 전체 행을 점검할 때만 `aops list --include-unavailable`을 사용합니다.
+
 Release Artifact에는 등록 시점의 Harness, Skill과 Sub-agent 전체 스냅샷이 들어갑니다. 공통 UC Skill이 나중에 바뀌어도 기존 Release 내용은 바뀌지 않습니다.
 
 ## Registry 저장 구조
 
 | 저장소 | 저장 내용 |
 |---|---|
-| Delta Table `agent_releases` | Agent ID·버전·설명·모델·소유자·Artifact 경로와 해시·Skill 참조·Release manifest |
+| Delta Table `agents` | Agent 현재 이름·Owner·중요도·민감도·위험등급·수명주기와 활성 버전 |
+| Delta Table `agent_versions` | 불변 버전별 spec snapshot·모델·Artifact·해시·평가 연결·Release manifest |
+| Delta Table `agent_version_skills` | Release를 구성하는 UC Skill 이름·해시·게시 방식 |
+| Delta Table `release_gates` | 평가·보안·모니터링 Gate와 승인 증거 |
+| Delta Table `agent_events` | publish·activate·rollback·deprecate·retire 이력 |
+| Delta Table `agent_releases` | 기존 클라이언트 호환을 위한 1차 Release index |
 | UC Volume `agent_artifacts` | Harness, Skill, Sub-agent와 생성된 Release manifest를 포함한 불변 압축파일 |
 | UC Skills | Skill 검색, 권한, 감사와 조직 공용 재사용에 쓰는 현재 Skill 객체 |
+
+`aops registry-init`은 신규 테이블을 만들고 기존 `agent_releases` 데이터를 삭제 없이 이관합니다.
 
 ## Codex 실행과 MLflow
 
@@ -193,6 +216,8 @@ path, release = service.load_agent("my-agent", version="1.0.0", target="./worksp
 ```
 
 플랫폼은 사용자별 작업 디렉터리를 만든 뒤 이 API로 Agent를 로드하고 해당 디렉터리에서 `codex` 세션을 실행하면 됩니다.
+
+운영 Web 환경에서는 최종 사용자에게 공용 Artifact Volume 직접 읽기 권한을 주지 않고, 사용자 자격증명 또는 OBO로 UC Skill 권한을 먼저 확인하는 Loader Backend를 통해 Release를 전달해야 합니다.
 
 Omnigent 실행은 별도 `agentops-omnigent` 어댑터를 사용합니다. 두 방식은 같은 Agent 소스, Registry, Release와 MLflow `agent.turn` 계약을 공유합니다.
 

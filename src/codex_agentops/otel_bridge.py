@@ -241,6 +241,11 @@ class OtelMlflowExporter:
             "agentops.telemetry_source": "omnigent-native-otel",
             "agentops.otel.trace_id": root.trace_id,
             "agentops.otel.span_id": root.span_id,
+            "agentops.turn_id": str(
+                root.attributes.get("turn.id")
+                or root.attributes.get("gen_ai.request.id")
+                or root.span_id
+            ),
             "agentops.tool_count": sum(_span_kind(span) == "TOOL" for span in items),
             "agentops.subagent_count": max(0, len(agent_spans) - 1),
             **usage,
@@ -250,6 +255,19 @@ class OtelMlflowExporter:
             "agentops.skills_checksum",
             "agentops.skill_names",
             "agentops.model",
+            "agentops.user_name",
+            "agentops.owner",
+            "agentops.owner_group",
+            "agentops.source_system",
+            "agentops.target_users",
+            "agentops.cost_center",
+            "agentops.service_criticality",
+            "agentops.data_sensitivity",
+            "agentops.security_access_level",
+            "agentops.risk_level",
+            "agentops.hitl_required",
+            "agentops.required_uc_permissions",
+            "agentops.use_flagship_model",
         ):
             if key in resource:
                 root_attributes[key] = resource[key]
@@ -262,6 +280,7 @@ class OtelMlflowExporter:
             "agentops.telemetry_source": "omnigent-native-otel",
             "agentops.otel.trace_id": root.trace_id,
             "mlflow.trace.session": session_id or "unknown",
+            "mlflow.trace.user": str(resource.get("agentops.user_name") or "unknown"),
         }
         mlflow_root = client.start_trace(
             name="agent.turn",

@@ -77,6 +77,15 @@ def from_hook_payload(
         "service_criticality": manifest.service_criticality,
         "data_sensitivity": manifest.data_sensitivity,
         "security_access_level": manifest.security_access_level,
+        "required_uc_permissions": list(manifest.required_uc_permissions),
+        "use_flagship_model": manifest.use_flagship_model,
+        "owner": manifest.owner or None,
+        "owner_group": manifest.owner_group or None,
+        "source_system": manifest.source_system,
+        "target_users": list(manifest.target_users),
+        "cost_center": manifest.cost_center or None,
+        "risk_level": manifest.risk_level,
+        "hitl_required": manifest.hitl_required,
         "runtime": "codex",
     }
     runtime_agent_id = str(raw.get("agent_id", "")).strip()

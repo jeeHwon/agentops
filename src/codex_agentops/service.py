@@ -46,8 +46,16 @@ class AgentOpsService:
         CodexRuntimeBuilder(otel_port=self.settings.otel_port).prepare(manifest.root)
         return manifest
 
-    def list_agents(self, *, all_versions: bool = False) -> list[AgentVersion]:
-        return self.registry.list(all_versions=all_versions)
+    def list_agents(
+        self,
+        *,
+        all_versions: bool = False,
+        authorized_only: bool = True,
+    ) -> list[AgentVersion]:
+        return self.registry.list(
+            all_versions=all_versions,
+            authorized_only=authorized_only,
+        )
 
     def load_agent(
         self,

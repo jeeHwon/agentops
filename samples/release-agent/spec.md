@@ -4,12 +4,23 @@ id: release-sample-agent
 name: Release Sample Agent
 description: 문서의 핵심 내용과 후속 행동을 요약하고 결과를 검증합니다.
 agent_type: harness
+owner: ""
+owner_group: ""
+source_system: local
+target_users: []
+cost_center: ""
 service_criticality: low
 data_sensitivity: internal
 security_access_level: standard
+risk_level: low
+hitl_required: false
 required_uc_permissions: []
 use_flagship_model: false
 model: system.ai.gpt-5-6-sol
+success_criteria:
+  quality: 원문에 없는 사실을 추가하지 않고 주요 결론과 후속 행동을 빠뜨리지 않습니다.
+  latency_ms: null
+  completion_rate: null
 ---
 
 # Agent Specification

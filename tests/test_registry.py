@@ -9,12 +9,19 @@ import pytest
 
 from codex_agentops.manifest import create_agent, validate_agent
 from codex_agentops.registry import (
+    AgentVersion,
+    RegistryClient,
     RegistryError,
     build_agent_archive,
     extract_agent_archive,
     parse_registry,
 )
-from codex_agentops.release import build_release, load_release, write_release_metadata
+from codex_agentops.release import (
+    build_release,
+    load_release,
+    release_to_dict,
+    write_release_metadata,
+)
 
 
 SAMPLE = Path(__file__).parents[1] / "samples" / "release-agent"
@@ -27,6 +34,8 @@ def _release(root: Path, version: str = "1.0.0") -> None:
 def test_registry_reference_requires_catalog_and_schema():
     location = parse_registry("main.agentops", volume="artifacts", table="releases")
     assert location.table_name == "main.agentops.releases"
+    assert location.agents_table_name == "main.agentops.agents"
+    assert location.versions_table_name == "main.agentops.agent_versions"
     assert location.volume_root == "/Volumes/main/agentops/artifacts"
     with pytest.raises(RegistryError):
         parse_registry("main")
@@ -88,3 +97,81 @@ def test_sample_archive_contains_only_source_and_release_contract(tmp_path):
     assert ".aops/release.json" in archive.files
     assert "agent.yaml" not in archive.files
     assert not any("mcp" in name.lower() for name in archive.files)
+
+
+def test_load_checks_uc_skill_access_before_artifact_download(tmp_path):
+    release = build_release(SAMPLE, "1.0.0", "main.agentops")
+    release_manifest = release_to_dict(release)
+
+    class DeniedPublisher:
+        called = False
+
+        def verify_access(self, value):
+            self.called = True
+            raise RuntimeError("denied")
+
+    class Files:
+        downloaded = False
+
+        def download(self, path):
+            self.downloaded = True
+            raise AssertionError("download must happen after authorization")
+
+    class Workspace:
+        files = Files()
+
+    publisher = DeniedPublisher()
+    client = RegistryClient(
+        profile="test",
+        warehouse_id="warehouse",
+        location=parse_registry("main.agentops"),
+        workspace=Workspace(),
+        skill_publisher=publisher,
+    )
+    registered = AgentVersion(
+        agent_id=release.agent_id,
+        version=release.release_version,
+        name="Sample",
+        description="Sample",
+        agent_type="harness",
+        model=release.model,
+        artifact_path="/Volumes/main/agentops/artifacts/sample.tar.gz",
+        artifact_sha256="0" * 64,
+        artifact_size=1,
+        harness_sha256=release.harness_sha256,
+        skills_sha256=release.skills_sha256,
+        skill_names=tuple(skill.alias for skill in release.skills),
+        registered_by="owner@example.com",
+        registered_at="2026-10-13",
+        release_manifest=release_manifest,
+    )
+    client.get = lambda *args, **kwargs: registered  # type: ignore[method-assign]
+
+    with pytest.raises(RegistryError, match="Cannot authorize"):
+        client.load(release.agent_id, destination=tmp_path / "loaded")
+    assert publisher.called is True
+    assert Workspace.files.downloaded is False
+
+
+def test_v2_registry_initializes_all_lifecycle_tables():
+    client = RegistryClient(
+        profile="test",
+        warehouse_id="warehouse",
+        location=parse_registry("main.agentops"),
+        workspace=object(),
+        skill_publisher=object(),
+    )
+    statements: list[str] = []
+    client._execute_sql = lambda statement, parameters=None: statements.append(statement) or []  # type: ignore[method-assign]
+
+    client._initialize_v2_tables()
+
+    sql = "\n".join(statements)
+    for table in (
+        "`main`.`agentops`.`agents`",
+        "`main`.`agentops`.`agent_versions`",
+        "`main`.`agentops`.`agent_version_skills`",
+        "`main`.`agentops`.`release_gates`",
+        "`main`.`agentops`.`agent_events`",
+    ):
+        assert table in sql

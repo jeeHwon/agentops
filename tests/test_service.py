@@ -10,8 +10,8 @@ class _Registry:
     def __init__(self):
         self.calls = []
 
-    def list(self, *, all_versions=False):
-        self.calls.append(("list", all_versions))
+    def list(self, *, all_versions=False, authorized_only=True):
+        self.calls.append(("list", all_versions, authorized_only))
         return [SimpleNamespace(agent_id="sample")]
 
     def load(self, agent_id, *, version=None, destination=None, prepare_codex=True):
@@ -36,7 +36,7 @@ def test_platform_service_exposes_same_registry_lifecycle(tmp_path):
     service.register_agent(tmp_path, "1.0.1")
 
     assert registry.calls == [
-        ("list", False),
+        ("list", False, True),
         ("load", "sample", "1.0.0", tmp_path / "source", False),
         ("load", "sample", "1.0.0", tmp_path / "codex", True),
         ("register", tmp_path, "1.0.1"),
