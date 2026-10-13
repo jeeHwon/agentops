@@ -146,7 +146,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Registry 준비 완료: {registry.location.schema_name}")
             print(f"Agent Table: {registry.location.agents_table_name}")
             print(f"Version Table: {registry.location.versions_table_name}")
-            print(f"Legacy 호환 Table: {registry.location.table_name}")
             print(f"Artifact Volume: {registry.location.volume_root}")
             return 0
         if args.command == "list":
@@ -246,7 +245,6 @@ def _add_registry_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--registry", help="configure에 저장된 Registry 대신 사용할 <catalog>.<schema>")
     parser.add_argument("--warehouse-id", help="configure에 저장된 SQL Warehouse 대신 사용할 ID")
     parser.add_argument("--volume", default="agent_artifacts", help="Artifact Volume 이름")
-    parser.add_argument("--table", default="agent_releases", help="Metadata Delta Table 이름")
 
 
 def _registry_client(args: argparse.Namespace) -> RegistryClient:
@@ -275,7 +273,7 @@ def _registry_client(args: argparse.Namespace) -> RegistryClient:
         else ""
     )
     warehouse_id = args.warehouse_id or configured_warehouse or get_default_warehouse(profile.name)
-    location = parse_registry(registry_name, volume=args.volume, table=args.table)
+    location = parse_registry(registry_name, volume=args.volume)
     return RegistryClient(
         profile=profile.name,
         warehouse_id=warehouse_id,

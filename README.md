@@ -176,11 +176,10 @@ Release Artifact에는 등록 시점의 Harness, Skill과 Sub-agent 전체 스�
 | Delta Table `agent_version_skills` | Release를 구성하는 UC Skill 이름·해시·게시 방식 |
 | Delta Table `release_gates` | 평가·보안·모니터링 Gate와 승인 증거 |
 | Delta Table `agent_events` | publish·activate·rollback·deprecate·retire 이력 |
-| Delta Table `agent_releases` | 기존 클라이언트 호환을 위한 1차 Release index |
 | UC Volume `agent_artifacts` | Harness, Skill, Sub-agent와 생성된 Release manifest를 포함한 불변 압축파일 |
 | UC Skills | Skill 검색, 권한, 감사와 조직 공용 재사용에 쓰는 현재 Skill 객체 |
 
-`aops registry-init`은 신규 테이블을 만들고 기존 `agent_releases` 데이터를 삭제 없이 이관합니다.
+`aops registry-init`은 위 Registry 테이블과 Artifact Volume을 멱등하게 준비합니다.
 
 ## Codex 실행과 MLflow
 

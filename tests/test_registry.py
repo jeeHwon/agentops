@@ -32,8 +32,7 @@ def _release(root: Path, version: str = "1.0.0") -> None:
 
 
 def test_registry_reference_requires_catalog_and_schema():
-    location = parse_registry("main.agentops", volume="artifacts", table="releases")
-    assert location.table_name == "main.agentops.releases"
+    location = parse_registry("main.agentops", volume="artifacts")
     assert location.agents_table_name == "main.agentops.agents"
     assert location.versions_table_name == "main.agentops.agent_versions"
     assert location.volume_root == "/Volumes/main/agentops/artifacts"
@@ -175,3 +174,4 @@ def test_v2_registry_initializes_all_lifecycle_tables():
         "`main`.`agentops`.`agent_events`",
     ):
         assert table in sql
+    assert "agent_releases" not in sql

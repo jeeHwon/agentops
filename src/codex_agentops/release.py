@@ -231,7 +231,7 @@ def release_from_dict(
             uc_name=_required_string(item, "uc_name", "release skill"),
             sha256=_required_string(item, "sha256", "release skill"),
             source=_required_string(item, "source", "release skill"),
-            publication_mode=str(item.get("publication_mode") or "legacy"),
+            publication_mode=_required_string(item, "publication_mode", "release skill"),
         )
         if len(skill.sha256) != 64:
             raise ReleaseError(f"Invalid Skill checksum: {skill.alias}")

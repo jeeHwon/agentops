@@ -33,7 +33,6 @@ from .release import (
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_VOLUME = "agent_artifacts"
-DEFAULT_TABLE = "agent_releases"
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
 
 
@@ -46,15 +45,10 @@ class RegistryLocation:
     catalog: str
     schema: str
     volume: str = DEFAULT_VOLUME
-    table: str = DEFAULT_TABLE
 
     @property
     def schema_name(self) -> str:
         return f"{self.catalog}.{self.schema}"
-
-    @property
-    def table_name(self) -> str:
-        return f"{self.catalog}.{self.schema}.{self.table}"
 
     @property
     def agents_table_name(self) -> str:
@@ -107,9 +101,7 @@ class AgentArchive:
     files: dict[str, str]
 
 
-def parse_registry(
-    value: str, *, volume: str = DEFAULT_VOLUME, table: str = DEFAULT_TABLE
-) -> RegistryLocation:
+def parse_registry(value: str, *, volume: str = DEFAULT_VOLUME) -> RegistryLocation:
     parts = value.split(".")
     if len(parts) != 2:
         raise RegistryError("Registry must use <catalog>.<schema> format.")
@@ -117,11 +109,10 @@ def parse_registry(
         ("catalog", parts[0]),
         ("schema", parts[1]),
         ("volume", volume),
-        ("table", table),
     ):
         if not IDENTIFIER_RE.fullmatch(identifier):
             raise RegistryError(f"Invalid Registry {label}: {identifier}")
-    return RegistryLocation(parts[0], parts[1], volume, table)
+    return RegistryLocation(parts[0], parts[1], volume)
 
 
 class RegistryClient:
@@ -167,31 +158,7 @@ class RegistryClient:
         except Exception as exc:
             if not isinstance(exc, ResourceAlreadyExists) and not _already_exists(exc):
                 raise
-        self._execute_sql(
-            f"""
-            CREATE TABLE IF NOT EXISTS {_quoted_table(self.location)} (
-              agent_id STRING NOT NULL,
-              version STRING NOT NULL,
-              name STRING NOT NULL,
-              description STRING NOT NULL,
-              agent_type STRING NOT NULL,
-              model STRING NOT NULL,
-              artifact_path STRING NOT NULL,
-              artifact_sha256 STRING NOT NULL,
-              artifact_size BIGINT NOT NULL,
-              harness_sha256 STRING NOT NULL,
-              skills_sha256 STRING NOT NULL,
-              skill_names ARRAY<STRING> NOT NULL,
-              registered_by STRING NOT NULL,
-              registered_at TIMESTAMP NOT NULL,
-              manifest_json STRING NOT NULL
-            )
-            USING DELTA
-            COMMENT 'Immutable Markdown-first Harness Agent releases'
-            """
-        )
         self._initialize_v2_tables()
-        self._migrate_legacy_releases()
 
     def _initialize_v2_tables(self) -> None:
         agents = _quoted_name(self.location.agents_table_name)
@@ -313,98 +280,6 @@ class RegistryClient:
         for statement in statements:
             self._execute_sql(statement)
 
-    def _migrate_legacy_releases(self) -> None:
-        legacy = _quoted_table(self.location)
-        versions = _quoted_name(self.location.versions_table_name)
-        agents = _quoted_name(self.location.agents_table_name)
-        version_skills = _quoted_name(self.location.version_skills_table_name)
-        events = _quoted_name(self.location.events_table_name)
-        self._execute_sql(
-            f"""
-            MERGE INTO {versions} AS t
-            USING (
-              SELECT agent_id, version, name, description,
-                     COALESCE(get_json_object(manifest_json, '$.spec.source_system'), 'local') AS source_system,
-                     agent_type,
-                     NULLIF(get_json_object(manifest_json, '$.spec.owner'), '') AS owner,
-                     NULLIF(get_json_object(manifest_json, '$.spec.owner_group'), '') AS owner_group,
-                     COALESCE(get_json_object(manifest_json, '$.spec.service_criticality'), 'low') AS service_criticality,
-                     COALESCE(get_json_object(manifest_json, '$.spec.data_sensitivity'), 'internal') AS data_sensitivity,
-                     COALESCE(get_json_object(manifest_json, '$.spec.security_access_level'), 'standard') AS security_access_level,
-                     from_json(COALESCE(get_json_object(manifest_json, '$.spec.required_uc_permissions'), '[]'), 'array<string>') AS required_uc_permissions,
-                     COALESCE(get_json_object(manifest_json, '$.spec.success_criteria'), '{{}}') AS success_criteria_json,
-                     COALESCE(CAST(get_json_object(manifest_json, '$.spec.use_flagship_model') AS BOOLEAN), false) AS use_flagship_model,
-                     from_json(COALESCE(get_json_object(manifest_json, '$.spec.target_users'), '[]'), 'array<string>') AS target_users,
-                     NULLIF(get_json_object(manifest_json, '$.spec.cost_center'), '') AS cost_center,
-                     COALESCE(get_json_object(manifest_json, '$.spec.risk_level'), 'low') AS risk_level,
-                     COALESCE(CAST(get_json_object(manifest_json, '$.spec.hitl_required') AS BOOLEAN), false) AS hitl_required,
-                     'unspecified' AS semver_type, model, artifact_path, artifact_sha256,
-                     artifact_size, harness_sha256, skills_sha256, skill_names,
-                     CAST(array() AS ARRAY<STRING>) AS requirements_declared,
-                     CAST(array() AS ARRAY<STRING>) AS requirements_observed,
-                     'passed' AS skeleton_compliance,
-                     NULL AS eval_run_id, NULL AS eval_summary_json, NULL AS git_commit,
-                     NULL AS promoted_to, registered_by, registered_at, manifest_json
-              FROM {legacy}
-            ) AS s
-            ON t.agent_id = s.agent_id AND t.version = s.version
-            WHEN NOT MATCHED THEN INSERT *
-            """
-        )
-        self._execute_sql(
-            f"""
-            MERGE INTO {agents} AS t
-            USING (
-              SELECT agent_id, name, description, source_system, agent_type, owner, owner_group,
-                     service_criticality, data_sensitivity, security_access_level,
-                     required_uc_permissions, success_criteria_json, use_flagship_model,
-                     target_users, cost_center, risk_level, hitl_required,
-                     'active' AS lifecycle, version AS current_version,
-                     concat(artifact_path, '#spec.md') AS spec_uri,
-                     registered_at AS created_at, registered_at AS updated_at
-              FROM {versions}
-              QUALIFY ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY registered_at DESC) = 1
-            ) AS s
-            ON t.agent_id = s.agent_id
-            WHEN NOT MATCHED THEN INSERT *
-            """
-        )
-        self._execute_sql(
-            f"""
-            MERGE INTO {version_skills} AS t
-            USING (
-              SELECT r.agent_id, r.version, skill.alias AS skill_alias,
-                     skill.uc_name, skill.sha256 AS skill_sha256, skill.source,
-                     COALESCE(skill.publication_mode, 'legacy') AS publication_mode,
-                     r.registered_at
-              FROM {legacy} r
-              LATERAL VIEW explode(
-                from_json(
-                  get_json_object(r.manifest_json, '$.skills'),
-                  'array<struct<alias:string,uc_name:string,sha256:string,source:string,publication_mode:string>>'
-                )
-              ) expanded AS skill
-            ) AS s
-            ON t.agent_id = s.agent_id AND t.version = s.version AND t.skill_alias = s.skill_alias
-            WHEN NOT MATCHED THEN INSERT *
-            """
-        )
-        self._execute_sql(
-            f"""
-            MERGE INTO {events} AS t
-            USING (
-              SELECT sha2(concat_ws('|', agent_id, version, 'publish', CAST(registered_at AS STRING)), 256) AS event_id,
-                     agent_id, version, 'publish' AS event_type, NULL AS environment,
-                     'legacy_migration' AS source, registered_by AS actor,
-                     registered_at AS event_ts,
-                     to_json(named_struct('artifact_path', artifact_path, 'migrated', true)) AS detail_json
-              FROM {legacy}
-            ) AS s
-            ON t.event_id = s.event_id
-            WHEN NOT MATCHED THEN INSERT *
-            """
-        )
-
     def register(self, root: str | Path, version: str) -> AgentVersion:
         if not VERSION_RE.fullmatch(version):
             raise RegistryError("Version must contain only letters, numbers, dot, underscore, or hyphen.")
@@ -485,7 +360,6 @@ class RegistryClient:
         harness_sha256: str,
         skills_sha256: str,
     ) -> None:
-        legacy = _quoted_table(self.location)
         versions = _quoted_name(self.location.versions_table_name)
         agents = _quoted_name(self.location.agents_table_name)
         version_skills = _quoted_name(self.location.version_skills_table_name)
@@ -527,24 +401,6 @@ class RegistryClient:
             "git_commit": _git_commit(manifest.root),
             "manifest_json": manifest_json,
         }
-        self._execute_sql(
-            f"""
-            MERGE INTO {legacy} AS t
-            USING (SELECT :agent_id AS agent_id, :version AS version) AS k
-            ON t.agent_id = k.agent_id AND t.version = k.version
-            WHEN NOT MATCHED THEN INSERT (
-              agent_id, version, name, description, agent_type, model,
-              artifact_path, artifact_sha256, artifact_size, harness_sha256,
-              skills_sha256, skill_names, registered_by, registered_at, manifest_json
-            ) VALUES (
-              :agent_id, :version, :name, :description, :agent_type, :model,
-              :artifact_path, :artifact_sha256, CAST(:artifact_size AS BIGINT),
-              :harness_sha256, :skills_sha256, from_json(:skill_names, 'array<string>'),
-              current_user(), current_timestamp(), :manifest_json
-            )
-            """,
-            params,
-        )
         self._execute_sql(
             f"""
             MERGE INTO {versions} AS t
@@ -906,10 +762,6 @@ def _verify_file_checksums(root: Path, expected: Any) -> None:
     normalized = {str(key): str(value) for key, value in expected.items()}
     if actual != normalized:
         raise RegistryError("Agent artifact file checksums do not match Registry metadata.")
-
-
-def _quoted_table(location: RegistryLocation) -> str:
-    return _quoted_name(location.table_name)
 
 
 def _quoted_name(full_name: str) -> str:
