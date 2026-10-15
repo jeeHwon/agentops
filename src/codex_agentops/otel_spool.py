@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from dataclasses import asdict
 from pathlib import Path
 
-from .otel_bridge import OtelSpan, _is_genai_span
+from .otel_bridge import OtelSpan, _is_genai_span, _span_kind
 
 
 MAX_SPOOL_BYTES = 250 * 1024 * 1024
+ROOT_WAIT_WARNING_NS = 24 * 60 * 60 * 1_000_000_000
 
 
 class OtelSpool:
@@ -35,6 +37,10 @@ class OtelSpool:
                 CREATE TABLE IF NOT EXISTS seen (
                     trace_id TEXT PRIMARY KEY
                 );
+                CREATE TABLE IF NOT EXISTS waiting (
+                    trace_id TEXT PRIMARY KEY, first_received_ns INTEGER NOT NULL,
+                    has_agent_root INTEGER NOT NULL DEFAULT 0
+                );
             """)
             stale = (
                 (trace_id, span_id)
@@ -45,6 +51,20 @@ class OtelSpool:
             )
             connection.executemany(
                 "DELETE FROM spans WHERE trace_id = ? AND span_id = ?", stale
+            )
+            received_ns = time.time_ns()
+            for trace_id, payload in connection.execute("SELECT trace_id, payload FROM spans"):
+                connection.execute(
+                    "INSERT OR IGNORE INTO waiting (trace_id, first_received_ns) VALUES (?, ?)",
+                    (trace_id, received_ns),
+                )
+                if _span_kind(OtelSpan(**json.loads(payload))) == "AGENT":
+                    connection.execute(
+                        "UPDATE waiting SET has_agent_root = 1 WHERE trace_id = ?", (trace_id,)
+                    )
+            connection.execute(
+                "DELETE FROM waiting WHERE NOT EXISTS "
+                "(SELECT 1 FROM spans WHERE spans.trace_id = waiting.trace_id)"
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -81,6 +101,15 @@ class OtelSpool:
                     "INSERT OR IGNORE INTO spans VALUES (?, ?, ?)",
                     (span.trace_id, span.span_id, json.dumps(asdict(span), ensure_ascii=False)),
                 )
+                connection.execute(
+                    "INSERT OR IGNORE INTO waiting (trace_id, first_received_ns) VALUES (?, ?)",
+                    (span.trace_id, time.time_ns()),
+                )
+                if _span_kind(span) == "AGENT":
+                    connection.execute(
+                        "UPDATE waiting SET has_agent_root = 1 WHERE trace_id = ?",
+                        (span.trace_id,),
+                    )
             connection.execute("DELETE FROM batches WHERE id = ?", (batch_id,))
 
     def pending_spans(self) -> tuple[OtelSpan, ...]:
@@ -100,6 +129,7 @@ class OtelSpool:
                 for consumed_id in {span.trace_id for span in group}:
                     connection.execute("INSERT OR IGNORE INTO seen VALUES (?)", (consumed_id,))
                     connection.execute("DELETE FROM spans WHERE trace_id = ?", (consumed_id,))
+                    connection.execute("DELETE FROM waiting WHERE trace_id = ?", (consumed_id,))
 
     def completed(self) -> list[tuple[str, tuple[OtelSpan, ...]]]:
         with self._connect() as connection:
@@ -107,12 +137,21 @@ class OtelSpool:
         return [(trace_id, tuple(OtelSpan(**item) for item in json.loads(payload)))
                 for trace_id, payload in rows]
 
-    def stats(self) -> dict[str, int]:
+    def stats(self, *, now_ns: int | None = None) -> dict[str, int]:
         with self._connect() as connection:
-            return {name: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                    for name, table in (("pending_batches", "batches"),
-                                        ("pending_spans", "spans"),
-                                        ("retry_traces", "completed"))}
+            result = {name: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                      for name, table in (("pending_batches", "batches"),
+                                          ("pending_spans", "spans"),
+                                          ("retry_traces", "completed"))}
+            result["waiting_for_root"] = connection.execute(
+                "SELECT COUNT(*) FROM waiting WHERE has_agent_root = 0"
+            ).fetchone()[0]
+            cutoff = (now_ns if now_ns is not None else time.time_ns()) - ROOT_WAIT_WARNING_NS
+            result["waiting_for_root_overdue"] = connection.execute(
+                "SELECT COUNT(*) FROM waiting "
+                "WHERE has_agent_root = 0 AND first_received_ns <= ?", (cutoff,)
+            ).fetchone()[0]
+            return result
 
     def mark_exported(self, trace_id: str) -> None:
         with self._connect() as connection:

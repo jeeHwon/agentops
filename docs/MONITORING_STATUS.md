@@ -1,53 +1,43 @@
-# Skill-based Agent: 토큰 및 MLflow 모니터링 검증표
+# Skill-based Agent — 최종 검증 결과
 
-이 문서는 Codex Hook(A)과 Omnigent(B)의 **현재 구현**을 설명합니다. 판정은 **됨 / 안됨** 두 가지뿐입니다. `됨`은 표에 적힌 조건에서 실제로 확인했다는 뜻이고, `안됨`은 구현되지 않았거나 전수 보증에 필요한 독립 근거가 없다는 뜻입니다. `안됨`을 실제 토큰 0개, 실패율 100%, 또는 기능 장애의 증거로 해석하지 마십시오.
+2026-10-16 기준. **A**는 Codex Hook, **B**는 Omnigent 어댑터입니다. `됨`은 **명시한 조건에서 관측 또는 테스트됨**, `안됨`은 **동작하지 않거나 전수/운영 수준으로 증명되지 않음**을 뜻합니다. `안됨`을 토큰 0개나 모든 실행의 실패로 해석하지 않습니다. 실제 모델 Trace, 격리 실험의 재조회, 합성 OTLP/Hook, 로컬 회귀 테스트를 구분했습니다. 테스트용 환경과 기존 공유 Registry·scorer·권한은 변경하지 않았습니다.
 
-검증 범위: 테스트 workspace의 현행 `SPEC.md` Release와 Registry, A/B 실제 모델 실행 Trace의 읽기 전용 재조회, 무해한 합성 Trace, 로컬 단위·MLflow file-store 통합 테스트, 합성 입력의 별도 자동 평가. Workspace 주소, 사용자 계정, Trace ID, 실측 토큰 수·지연시간, 원문, 고객 데이터는 이 저장소에 포함하지 않습니다. 테스트 날짜: 2026-10-15.
+## 됨
 
-## 실제로 확인한 범위
-
-| 실행 | MLflow 사용량 확인 | Trace 구성 |
+| 대상 | 확인 항목 | 검증 내용 |
 | --- | --- | --- |
-| A 단일 Turn | 관측된 입력·출력·합계가 실행 기록과 일치 | Agent와 Tool span 관측 |
-| A 부모 + 하위 Agent | 관측된 입력·출력·합계가 실행 기록과 일치 | 같은 Trace의 부모·자식 링크와 하위 Tool span 관측 |
-| B 부모 | 관측된 입력·출력·합계가 로컬 세션 기록과 일치 | Agent와 Tool span 관측 |
-| B 하위 Agent | 관측된 입력·출력·합계가 로컬 세션 기록과 일치 | 부모와 별도 최상위 Agent Trace, 하위 Tool span 관측 |
+| A·B | 현행 `SPEC.md` 계약과 Release/Registry | 현재 Release의 필수 메타데이터·Skill/하네스 체크섬과 로드 확인. 별도 구형 Registry는 현행 파서와 호환되지 않으며 수정하지 않음. |
+| A·B | **관측된** 성공 Turn의 사용량 | A 단일/하위 Agent 실제 실행과 B **일부** 부모/자식 실제 실행에서 입력·출력·합계가 로컬 실행 기록과 MLflow에서 일치. 관측 사례에 한하며 아래 B 누락 사례도 존재. 캐시 읽기 토큰은 입력에 이미 포함. |
+| A·B | 결측과 명시적 0 구분 | 로컬 MLflow 테스트에서 부분 결측/미관측은 `partial`/`unknown` 및 사용량 `None`, 명시적인 출력 0은 0으로 보존. |
+| A | 부모→하위 Agent→Tool 한 Trace | 실제 explorer의 부모·자식 span 링크와 하위 Tool을 재조회. |
+| A·B | Agent와 관측 Tool span | A/B 실제 실행에서 Agent와 Tool span 관측. **Tool 경계까지만** 포함하며 외부 서버 내부는 포함하지 않음. |
+| B | Tool 오류와 Agent 복구의 구분 | 실제 실패 Tool `ERROR`, 복구된 Agent root `OK`를 별도 재조회. |
+| A·B | Trace 처리시간·상태 | 실제 Trace에 `execution_time_ms`와 상태 관측. 개별 LLM 요청 지연/서비스 p90은 아님. |
+| B | OTLP 배치의 재시작·순서 복구 | Tool 선도착 → Collector 재시작 → Agent root 후도착을 한 Trace로 복구하고 동일 배치 재전송 중복을 방지. A의 Hook 경로와 구별. |
+| B | 미연결 Tool span의 **가시성** | `/health`의 `otel_spool.waiting_for_root`와 24시간 기준 `waiting_for_root_overdue`를 로컬 회귀 테스트와 격리 Collector에서 확인. 실제 미연결 span이 spool에 남았으며, 새 지표는 알림 발송/자동 삭제가 아님. |
+| A·B | 본문 있는 합성 입력의 assessment | 격리된 자동 평가에서 비고객 합성 입력·출력에 대한 assessment 적재/조회. 업무 품질 합격의 근거는 아님. |
 
-재조회한 실제 Trace는 모두 상태 `OK`이며 Trace 단위 `execution_time_ms`가 존재하지만, `trace.info.cost`는 `None`이었습니다. 관측된 세션/Turn 사용량을 모델 요청 전수 또는 청구액으로 해석하지 않습니다. B 부모·자식 세션의 합계를 **하나의 Trace 토큰**으로 보도하지 않습니다. A/B 실제 Trace에서 요청별 신뢰 가능한 모델 호출 ID는 확인되지 않았습니다. 과거 B 실측의 `coverage=observed`는 요청별 전수를 의미하지 않으며, 현재 코드는 LLM span이 없으면 `unverified`로 저장합니다. 무해한 합성 B Trace의 원격 재조회에서 Tool span, `agentops.subagent_span_coverage=unverified`, `agentops.token_usage.coverage=unverified`, `agentops.evaluation_inputs_available=false`, `cost=None`을 확인했습니다. 합성 Trace를 실제 모델 호출로 간주하지 않습니다.
+## 안됨
 
-## 기능별 최종 판정
+| 대상 | 확인 항목 | 근거 및 현재 경계 |
+| --- | --- | --- |
+| A·B | **모든** 모델 요청의 토큰 100% 수집 | 공급자가 생성한 요청별 ID와 모델 호출별 span의 독립적인 1:1 분모/분자 없음. 재시도·중단·Tool 내부 모델 호출까지 전수 대조 불가. 성공한 Turn의 합계가 존재해도 100%가 아님. |
+| A | 모든 성공/재개 Turn에서 사용량 확보 | 실제 재개·중단은 별도 환경 모델 설정 오류로 미검증. 합성 Hook 수치를 실제 모델 검증으로 해석하지 않음. |
+| B | 모든 성공/재개 Turn에서 사용량 확보 | 실제 재개 Turn의 사용량이 `None`이었고 **추가 재시험에서는 첫 Turn과 재개 Turn 모두** MLflow `usage=None`, `coverage=unknown`; 같은 세션의 로컬 Omnigent 사용량도 비어 있었음. 누락은 재개에만 한정되지 않음. |
+| B | 누락 사용량 원인의 확정·복구 | Omnigent 0.17의 `run_turn`은 `thread/tokenUsage/updated`에서 사용량을 채우지만 `final_answer` 항목 완료나 `turn/completed`에서 즉시 반환함. 이벤트 선후관계가 가능한 원인이나 이번 실행의 **원시 Codex 이벤트 순서는 보존되지 않아 확정 불가**. 이전 Turn 값을 복사하거나 합성 수치를 만들지 않음. |
+| A·B | 실제 Turn 중단 시 서버 취소·정확한 상태/사용량 | A는 실제 중단 미재현(합성 Hook의 `ERROR`/토큰 보존만 확인). B Ctrl-C 시 원격 root가 `OK`였고, 세션별 interrupt API 두 번은 해당 Turn이 이미 완료된 후 요청됨; HTTP `202 {"queued":false}`는 라우트 구현상 성공적인 실제 중단 증거가 아님. 실행 중 취소와 잔여 사용량은 입증하지 못함. |
+| B | 부모와 자식의 동일 Trace 연결 | 실제 하위 Agent는 별도 최상위 Trace. 기본 본문 비수집 상태에서 부모 Tool span에 자식 session ID가 없으므로 수집된 데이터만으로 연결 불가. 부모·자식 토큰을 하나의 Trace로 더하지 않음. |
+| A | 실제 Tool 오류와 Agent 복구 구분 | 합성 Hook 오류는 확인했지만 실제 Tool 실패·복구 Turn의 원격 조회는 미검증. |
+| A·B | 외부 MCP/Tool 서버 내부 호출 및 그 모델 사용량 | 외부 서버의 자체 계측과 trace context 전달 없음. 현재 Tool span은 경계 호출만 뜻함. |
+| A·B | 모델 요청별 비용·실제 청구액 | 실제 Trace의 `cost=None`. 관리형 MLflow는 LiteLLM 가격 정보나 명시적 비용 속성이 필요할 수 있고, 추정 비용은 청구액과 별개. |
+| A·B | CPU/메모리 OTel 시계열 메트릭 | A `/v1/metrics`는 저장/집계하지 않고 B는 `OTEL_METRICS_EXPORTER=none`. Trace 처리시간은 시계열 메트릭이 아님. |
+| A·B | 원격 MLflow exactly-once | 로컬 ACK 직전 크래시 등으로 원격 성공 후 재시도가 일어나면 중복 가능. 로컬 spool 재전송 시험만으로 원격 전수를 보증하지 않음. |
+| B | 미연결 span의 자동 알림·보존 만료 | `/health`의 개수·24시간 지표는 구현됨. 경보 전달, 수명 제한/자동 청소는 없음. 늦은 root 복구를 위해 현재 미연결 span은 보존되며 spool 용량 상한에 도달할 수 있음. |
+| A·B | 기본 비수집 Trace의 본문 기반 품질 점수 | Prompt/응답 본문이 없으므로 관련성/완전성/안전성 점수를 실제 업무 품질로 해석할 수 없음. 기존 공유 실험 scorer는 `agent.turn`만 필터링하며 본문 가용성 검사가 없음; 승인 없이 정책 변경하지 않음. |
+| A·B | `SPEC.md` 성공 기준의 운영 자동 승인 | 합성 평가를 실제 업무 데이터의 정확성·관련성·안전성 및 지연 p90을 통과한 Release 게이트로 해석할 근거 없음. |
+| A·B | MLflow Trace의 UC 테이블 저장 | 확인한 실험의 `trace_location=None`. UC Agent/Skill Registry는 UC Trace 테이블과 별도. 기존 공유 실험의 저장소·권한 변경은 수행하지 않음. |
+| A·B | 민감 Skill을 원문 비공개로 실행만 허용 | 현재 A/B는 Skill 원문을 로컬 실행 환경에 복사하므로 실행 사용자에게 원문을 강제로 숨길 수 없음. 고객의 별도 권한/격리 결정 전에는 지원하지 않음. |
 
-| 기능 | A | B | 판정 근거 / 경계 |
-| --- | --- | --- | --- |
-| `SPEC.md` 계약·Release/Registry 일치 | **됨** | **됨** | 원본 템플릿의 필수 키, 아카이브의 `SPEC.md`·Skill·SHA-256·Registry 버전 및 모델을 읽기 전용 확인. 과거 스키마의 별도 Agent가 자동 전환된 것은 아님. |
-| 성공한 Turn의 입력·출력·캐시 사용량 | **됨** | **됨** | 위 실제 Trace와 A Turn/B 세션 사용량 합계 대조. 캐시 읽기는 이미 입력에 포함. 모델 개별 호출별 정확도를 뜻하지 않음. |
-| 토큰 일부 결측을 실제 0으로 오인하지 않기 | **됨** | **됨** | 로컬 MLflow 통합 테스트에서 입력/출력 누락 시 `token_usage=None` 및 partial/unknown 표시; 명시적인 출력 0은 실제 0으로 처리. |
-| 전체 모델 요청의 토큰 **100%** 대조 | **안됨** | **안됨** | 요청마다 공급자 생성 ID를 Trace span에 연결한 독립 분모/분자가 없음. 도구 내부 모델 호출, 중단·재시도·export 지연도 포함해 보증 불가. |
-| 동일 Trace의 하위 Agent/Tool 계층 | **됨** | **안됨** | A 실제 explorer와 그 하위 Tool의 부모 링크 확인. B 실제 validator는 Tool은 보이나 부모와 **별도 최상위 Trace**; 원문 비수집 상태에서 자식 session ID가 OTel 비본문 속성에 없음. |
-| 관측된 하위 Tool 호출의 span | **됨** | **됨** | A/B 실제 Tool span 재조회. 원격 Tool 서버의 내부 호출까지 자동 계측한다는 뜻은 아님. |
-| 원격 MCP·Tool 내부 호출/모델 사용량 | **안됨** | **안됨** | Hook/Omnigent가 내보낸 경계 이후는 별도 서버 계측 및 trace context 전달이 필요. |
-| Trace 단위 처리시간·상태 조회 | **됨** | **됨** | 실제 Trace의 `execution_time_ms`와 `TraceStatus.OK` 확인. 개별 LLM 지연이나 90백분위 지표가 아님. |
-| 모델 호출별 비용과 청구액 | **안됨** | **안됨** | 네 실제 Trace의 `cost=None`; 모델명만으로 USD 청구액을 만들지 않음. |
-| 기본 비수집 시 본문 기반 품질점수의 **유효성** | **안됨** | **안됨** | Prompt·응답이 없으므로 관련성/완전성/안전성 점수를 업무 품질로 해석 불가. |
-| 안전한 합성 평가의 비동기 assessment 적재 | **됨** | **됨** | 격리 실험에서 입력·출력이 있는 합성 Trace에 scorer assessment 적재 및 조회. 업무 품질 합격을 뜻하지 않음. |
-| 현재 선택된 공유 실험의 **본문 가용성 필터** | **안됨** | **안됨** | 읽기 전용 재조회에서 세 scorer가 `agent.turn`만 필터링해 본문 없는 Trace도 대상에 포함. 현재 코드는 기존 공유 scorer 정책을 자동 변경하지 않고 충돌 오류를 반환함. 필터 변경은 별도 승인 필요. |
-| CPU/메모리 등 OTel 시계열 지표 | **안됨** | **안됨** | A의 `/v1/metrics`는 현재 계측 저장을 하지 않음. B는 `OTEL_METRICS_EXPORTER=none`. Trace의 `execution_time_ms`와 별도. |
-| OTLP 배치 재시도 및 로컬 재시작 복구 | **됨** | **됨** | 로컬 SQLite spool 재기동·내보내기 일시 실패 재시도·중복 수신 테스트 확인. 배치 ACK가 원격 Trace 적재 완료를 뜻하지는 않음. |
-| 원격 MLflow Trace exactly-once | **안됨** | **안됨** | 원격 적재 성공 후 로컬 완료 표시 전 강제 종료 시 재전송/중복 가능. |
-| 실제 사용자 중단·도구 오류·장기 세션까지의 전수 운영 검증 | **안됨** | **안됨** | 로컬 입력/실패 분기 테스트와 제한된 실제 성공 실행만 확인. 해당 실패 조건의 전체 실사용 시나리오는 재현·대조하지 않음. |
+검증: A `pytest -q`, B `PYTHONPATH=../agentops/src:src ../agentops/.venv/bin/pytest -q`, B UI `node tests/test_web_ui.mjs`. 실측 Trace ID·계정·원문·수치·workspace 주소는 공개 저장소에 기록하지 않았습니다. Unity Gateway 연결은 이번 범위에서 제외했습니다.
 
-**A/B 성공 Turn에 `token_usage`가 존재하는 것은 100% 커버리지 검증과 다른 질문입니다.** 자체 사용량 출처가 둘 이상이어도 둘이 동시에 놓친 모델 요청은 알 수 없습니다. MLflow의 부모 span 사용량과 자식 span 사용량을 중복 더하지 말고, 캐시 토큰을 입력 합계에 다시 더하지 마십시오. 직접 OTLP 수집 경로로 전환하면 캐시·0 토큰 처리를 버전별로 재검증해야 합니다.
-
-## `안됨`의 확인·해결 조건
-
-1. **전수 토큰:** 제공자 생성 요청 ID를 LLM span에 연결한 뒤, 동일 기간·모델·사용자 범위에서 실제 요청 목록과 1:1 대조합니다. 재시도/취소/독립 도구 호출을 분모에 포함하고 누락 수를 공개합니다. 독립 분모가 확보되지 않는 동안 100%라고 표시하지 않습니다.
-2. **B 하위 Agent:** `sys_session_send`가 자식 session ID를 민감한 prompt/tool 본문과 분리된 OTel 속성으로 내보내는지 검증하고, 실제 실행 후 부모→자식→Tool 링크를 다시 조회합니다. 현재 원시 이벤트에는 이 ID가 없어 기본 비수집 모드에서 복구할 수 없습니다.
-3. **Tool 내부·비용·시계열:** 도구 서버 계측과 context 전달, 비용 산정 출처/가격 정책, OTel metrics exporter 및 저장 대상이 마련되기 전까지 기능 불가로 표시합니다.
-4. **공유 실험 scorer:** 현재 `agent.turn` 전체를 보는 정책을 본문 있는 Trace만 평가하도록 줄이면 기존의 태그 없는 Trace는 Safety 등에서 빠집니다. 실험 소유자가 미태그 데이터의 보존·별도 평가 방안을 검토하고 명시적으로 승인하기 전에는 필터를 바꾸지 않습니다. 승인과 상관없이 기본 비수집 Trace의 기존 품질 assessment는 신뢰하지 않습니다.
-5. **운영 실패 시나리오:** 사용자 중단, Tool 실패, 지연된 OTLP, 재시작을 각각 실제 실행하고 독립 요청 로그와 MLflow Trace를 비교합니다. 실패 Trace가 생성됐다는 사실만으로 토큰 전수 수집을 증명할 수 없습니다.
-
-민감 Skill의 “실행만 허용, 원문은 숨김”은 로컬에 원문을 복사하는 A/B 구조에서 강제할 수 없습니다. 해당 사용 사례는 고객 의사결정 전까지 지원하지 않으며, 이 작업에는 신규 실행/서빙 구현이 포함되지 않습니다. 이 문서에는 Unity Gateway 연결 작업이 포함되지 않습니다.
-
-검증 명령: A `pytest -q`, B `PYTHONPATH=../agentops/src:src ../agentops/.venv/bin/pytest -q`, B UI `node tests/test_web_ui.mjs`. 외부 읽기 시험은 사용자가 명시적으로 선택한 Databricks profile·Registry·실험을 사용해야 합니다. 공유 실험 scorer/Registry GRANT 및 기존 테이블은 이 문서 작성 중 변경하지 않았습니다.
-
-공식 참고: [MLflow 토큰·비용](https://mlflow.org/docs/latest/genai/tracing/token-usage-cost/), [MLflow 집계 구현](https://github.com/mlflow/mlflow/blob/master/mlflow/tracing/utils/__init__.py), [MLflow 직접 OTLP 캐시/0 값 이슈](https://github.com/mlflow/mlflow/issues/22745), [OpenTelemetry GenAI 속성](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/), [Databricks 자동 scorer](https://docs.databricks.com/aws/en/mlflow3/genai/eval-monitor/production-monitoring).
+공식 구현/문서: [MLflow 토큰·비용](https://mlflow.org/docs/latest/genai/tracing/token-usage-cost/), [MLflow 집계 구현](https://github.com/mlflow/mlflow/blob/master/mlflow/tracing/utils/__init__.py), [Omnigent Codex 이벤트 처리](https://github.com/omnigent-ai/omnigent/blob/main/omnigent/inner/codex_executor.py), [Codex App Server 토큰 이벤트 스키마](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/json/v2/ThreadTokenUsageUpdatedNotification.json), [Codex Python SDK Turn 처리](https://github.com/openai/codex/blob/main/sdk/python/src/openai_codex/_run.py), [Databricks UC Trace](https://docs.databricks.com/aws/en/mlflow3/genai/tracing/trace-unity-catalog).

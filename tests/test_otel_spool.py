@@ -63,6 +63,48 @@ def test_otel_spool_prunes_old_unrelated_spans_on_restart(tmp_path):
     assert OtelSpool(path).pending_spans() == ()
 
 
+def test_unmatched_tool_is_alerted_but_late_root_survives_restart(tmp_path, monkeypatch):
+    spool_path = tmp_path / "spool.db"
+    root, tool = parse_otlp_traces(_payload())
+    received_ns = 1_000_000_000_000
+    monkeypatch.setattr("codex_agentops.otel_spool.time.time_ns", lambda: received_ns)
+    spool = OtelSpool(spool_path)
+    spool.append(_payload())
+    batch_id, _ = spool.batches()[0]
+    spool.persist_batch(batch_id, (tool,))
+
+    later_ns = received_ns + 25 * 60 * 60 * 1_000_000_000
+    assert spool.stats(now_ns=later_ns)["waiting_for_root"] == 1
+    assert spool.stats(now_ns=later_ns)["waiting_for_root_overdue"] == 1
+
+    recovered = OtelSpool(spool_path)
+    assert recovered.pending_spans() == (tool,)
+    recovered.append(_payload())
+    root_batch_id, _ = recovered.batches()[0]
+    recovered.persist_batch(root_batch_id, (root,))
+    assert recovered.stats(now_ns=later_ns)["waiting_for_root_overdue"] == 0
+    groups = OtelTraceAssembler().ingest(recovered.pending_spans())
+    assert len(groups) == 1
+    assert {span.span_id for span in groups[0]} == {root.span_id, tool.span_id}
+    recovered.save_groups(groups)
+    assert recovered.stats(now_ns=later_ns)["waiting_for_root"] == 0
+
+
+def test_unmatched_span_monitor_recovers_existing_spool_without_dropping_it(tmp_path):
+    spool_path = tmp_path / "spool.db"
+    spool = OtelSpool(spool_path)
+    _, tool = parse_otlp_traces(_payload())
+    with sqlite3.connect(spool_path) as connection:
+        connection.execute(
+            "INSERT INTO spans VALUES (?, ?, ?)",
+            (tool.trace_id, tool.span_id, json.dumps(asdict(tool))),
+        )
+
+    recovered = OtelSpool(spool_path)
+    assert recovered.stats()["waiting_for_root"] == 1
+    assert recovered.pending_spans() == (tool,)
+
+
 def test_otel_spool_retries_mlflow_failure_without_losing_acknowledged_batch(tmp_path, monkeypatch):
     spool = OtelSpool(tmp_path / "spool.db")
     spool.append(_payload())
