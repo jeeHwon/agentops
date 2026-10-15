@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+import pytest
 
+from codex_agentops.config import Settings
+from codex_agentops.events import from_hook_payload
+from codex_agentops.manifest import load_manifest
 from codex_agentops.release import (
     CodexRuntimeBuilder,
+    ReleaseError,
     UcSkillPublisher,
     build_release,
     hash_skill_directory,
     load_release,
+    release_from_dict,
+    release_to_dict,
     write_release_metadata,
 )
 
@@ -23,6 +30,8 @@ def _result(command, returncode=0, stdout="", stderr=""):
 def test_release_pins_two_skill_snapshots_and_subagent(tmp_path):
     release = build_release(SAMPLE, "1.0.0", "poc_catalog.agentops_test")
     assert release.release_version == "1.0.0"
+    assert release.spec["build_type"] == "skill"
+    assert release_to_dict(release)["agent_type"] == "skill-based-agent"
     assert release.harness_profile == "codex"
     assert [skill.alias for skill in release.skills] == [
         "release-summary",
@@ -38,7 +47,7 @@ def test_release_pins_two_skill_snapshots_and_subagent(tmp_path):
 
     root = tmp_path / "copy"
     root.mkdir()
-    for name in ("AGENTS.md", "README.md", "spec.md"):
+    for name in ("AGENTS.md", "README.md", "SPEC.md"):
         (root / name).write_bytes((SAMPLE / name).read_bytes())
     import shutil
 
@@ -49,7 +58,47 @@ def test_release_pins_two_skill_snapshots_and_subagent(tmp_path):
     loaded = load_release(root, expected_agent_id="release-sample-agent")
     assert loaded.release_version == "1.0.0"
     assert loaded.skills == rebuilt.skills
-    assert loaded.spec["source_system"] == "local"
+    assert loaded.spec["origin"] == "databricks"
+    assert loaded.spec["agent_version"] == "1.0.0"
+    assert loaded.spec["uc_permissions"] == []
+
+    agents = root / "AGENTS.md"
+    agents.write_text(agents.read_text() + "\nWork in progress.\n")
+    event = from_hook_payload(
+        {"hook_event_name": "Stop", "session_id": "s", "turn_id": "t"},
+        load_manifest(root), Settings("test", "https://example.com"),
+    )
+    assert event.payload["release_version"] == "working"
+
+
+def test_release_rejects_version_that_differs_from_spec():
+    with pytest.raises(ReleaseError, match="SPEC.md agent_version"):
+        build_release(SAMPLE, "1.0.1", "main.agentops")
+
+
+def test_release_rejects_unsupported_schema_type_and_version():
+    release = release_to_dict(build_release(SAMPLE, "1.0.0", "main.agentops"))
+    for field, value in (("schema_version", 1), ("agent_type", "harness"), ("version", "1.0")):
+        unsupported = {**release, field: value}
+        with pytest.raises(ReleaseError):
+            release_from_dict(unsupported)
+
+
+def test_codex_runtime_rejects_unsupported_release_before_generating_files(tmp_path):
+    import json
+    import shutil
+
+    root = tmp_path / "source"
+    shutil.copytree(SAMPLE, root, ignore=shutil.ignore_patterns(".aops", ".agents", ".codex"))
+    release = build_release(root, "1.0.0", "main.agentops")
+    metadata = write_release_metadata(release)
+    data = json.loads(metadata.read_text())
+    data["schema_version"] = 1
+    metadata.write_text(json.dumps(data))
+
+    with pytest.raises(ReleaseError, match="schema_version"):
+        CodexRuntimeBuilder().prepare(root)
+    assert not (root / ".agents").exists()
 
 
 def test_publish_creates_missing_uc_skills_with_explicit_profile():
@@ -72,7 +121,13 @@ def test_publish_creates_missing_uc_skills_with_explicit_profile():
     assert all("test-profile" in command for command in commands)
 
 
-def test_publish_updates_existing_uc_skill_but_release_keeps_snapshot_hash():
+def test_publish_updates_existing_uc_skill_but_release_keeps_snapshot_hash(tmp_path):
+    import shutil
+
+    root = tmp_path / "source"
+    shutil.copytree(SAMPLE, root, ignore=shutil.ignore_patterns(".aops", ".agents", ".codex"))
+    spec = root / "SPEC.md"
+    spec.write_text(spec.read_text().replace('agent_version: "1.0.0"', 'agent_version: "1.0.1"'))
     commands: list[list[str]] = []
 
     def runner(command):
@@ -80,7 +135,7 @@ def test_publish_updates_existing_uc_skill_but_release_keeps_snapshot_hash():
         commands.append(command)
         return _result(command, 0, stdout="{}")
 
-    release = build_release(SAMPLE, "1.0.1", "poc_catalog.agentops_test")
+    release = build_release(root, "1.0.1", "poc_catalog.agentops_test")
     published = UcSkillPublisher("test-profile", runner=runner).publish(release)
 
     assert [item.action for item in published] == ["updated", "updated"]
@@ -92,7 +147,7 @@ def test_shared_reference_never_overwrites_existing_uc_skill(tmp_path):
     import shutil
 
     root = tmp_path / "agent"
-    shutil.copytree(SAMPLE, root)
+    shutil.copytree(SAMPLE, root, ignore=shutil.ignore_patterns(".aops", ".agents", ".codex"))
     skill_path = root / "skills/release-summary/SKILL.md"
     skill_path.write_text(
         skill_path.read_text(encoding="utf-8").replace(
@@ -126,7 +181,7 @@ def test_codex_runtime_is_generated_from_source_without_mutating_source(tmp_path
     import shutil
 
     root = tmp_path / "agent"
-    shutil.copytree(SAMPLE, root)
+    shutil.copytree(SAMPLE, root, ignore=shutil.ignore_patterns(".aops", ".agents", ".codex"))
     before = hash_skill_directory(root / "skills/release-summary")
     result = CodexRuntimeBuilder().prepare(root)
 
@@ -134,5 +189,6 @@ def test_codex_runtime_is_generated_from_source_without_mutating_source(tmp_path
     assert (root / ".agents/skills/release-summary/SKILL.md").is_file()
     assert (root / ".agents/skills/release-validation/SKILL.md").is_file()
     assert (root / ".codex/agents/validator.toml").is_file()
+    assert "[otel]" not in (root / ".codex/config.toml").read_text(encoding="utf-8")
     assert (root / ".aops/runtime.json").is_file()
     assert hash_skill_directory(root / "skills/release-summary") == before

@@ -15,6 +15,7 @@ def test_settings_round_trip_without_token(tmp_path):
         warehouse_id="warehouse-1",
         registry="poc_catalog.agentops_test",
         capture_content=True,
+        content_capture_consent=True,
     )
     save_settings(settings, target)
     loaded = load_settings(target)
@@ -27,6 +28,12 @@ def test_settings_round_trip_without_token(tmp_path):
     raw = target.read_text()
     assert "token" not in raw.lower()
     assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_legacy_capture_setting_is_not_explicit_consent(tmp_path):
+    target = tmp_path / "config.json"
+    target.write_text(json.dumps({"profile": "test", "host": "https://example.com", "capture_content": True}))
+    assert load_settings(target).capture_content is False
 
 
 def test_invalid_config_is_rejected(tmp_path):

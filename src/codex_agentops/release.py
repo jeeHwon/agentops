@@ -12,6 +12,8 @@ from typing import Any, Callable, Sequence
 from urllib.parse import quote
 
 from .manifest import (
+    SKILL_BASED_AGENT_TYPE,
+    SPEC_SCHEMA_VERSION,
     VERSION_RE,
     ManifestError,
     calculate_definition_checksums,
@@ -19,6 +21,7 @@ from .manifest import (
     load_skills,
     load_subagents,
     read_release_metadata,
+    require_source_distribution_allowed,
     validate_agent,
 )
 
@@ -34,11 +37,6 @@ class SkillRelease:
     sha256: str
     source: str
     publication_mode: str = "agent"
-
-    @property
-    def version(self) -> str:
-        """Compatibility alias: the immutable version is the content hash."""
-        return self.sha256[:12]
 
     @property
     def uc_parts(self) -> tuple[str, str, str]:
@@ -76,10 +74,6 @@ class PublishedSkill:
     sha256: str
     action: str
 
-    @property
-    def version(self) -> str:
-        return self.sha256[:12]
-
 
 @dataclass(frozen=True)
 class AssemblyResult:
@@ -93,8 +87,11 @@ CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 def build_release(root: str | Path, version: str, skill_schema: str) -> AgentRelease:
     if not VERSION_RE.fullmatch(version):
-        raise ReleaseError("Version must contain only letters, numbers, dot, underscore, or hyphen.")
+        raise ReleaseError("Version must use major.minor.patch.")
     manifest = validate_agent(root)
+    if version != manifest.agent_version:
+        raise ReleaseError("Release version must equal SPEC.md agent_version.")
+    require_source_distribution_allowed(manifest.data_sensitivity, manifest.security_level)
     schema_parts = skill_schema.split(".")
     if len(schema_parts) != 2 or not all(schema_parts):
         raise ReleaseError("Skill schema must use <catalog>.<schema> format.")
@@ -119,7 +116,7 @@ def build_release(root: str | Path, version: str, skill_schema: str) -> AgentRel
         root=manifest.root,
         agent_id=manifest.agent_id,
         release_version=version,
-        model=manifest.model,
+        model=manifest.model_service,
         harness_profile="codex",
         skills=skill_releases,
         subagents=tuple(
@@ -133,21 +130,20 @@ def build_release(root: str | Path, version: str, skill_schema: str) -> AgentRel
         harness_sha256=checksums.harness,
         skills_sha256=checksums.combined_skills,
         spec={
-            "name": manifest.name,
-            "description": manifest.description,
-            "agent_type": manifest.agent_type,
+            "agent_id": manifest.agent_id,
+            "agent_name": manifest.name,
+            "agent_version": manifest.agent_version,
+            "build_type": manifest.build_type,
+            "serving_type": manifest.serving_type,
+            "origin": manifest.origin,
             "owner": manifest.owner,
             "owner_group": manifest.owner_group,
-            "source_system": manifest.source_system,
-            "target_users": list(manifest.target_users),
-            "cost_center": manifest.cost_center,
             "service_criticality": manifest.service_criticality,
             "data_sensitivity": manifest.data_sensitivity,
-            "security_access_level": manifest.security_access_level,
-            "risk_level": manifest.risk_level,
-            "hitl_required": manifest.hitl_required,
-            "required_uc_permissions": list(manifest.required_uc_permissions),
-            "use_flagship_model": manifest.use_flagship_model,
+            "security_level": manifest.security_level,
+            "uc_permissions": list(manifest.uc_permissions),
+            "flagship_model": manifest.flagship_model,
+            "model_service": manifest.model_service,
             "success_criteria": manifest.success_criteria,
         },
     )
@@ -168,10 +164,10 @@ def write_release_metadata(release: AgentRelease) -> Path:
 
 def release_to_dict(release: AgentRelease) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": SPEC_SCHEMA_VERSION,
         "agent_id": release.agent_id,
         "version": release.release_version,
-        "agent_type": "harness",
+        "agent_type": SKILL_BASED_AGENT_TYPE,
         "model": release.model,
         "harness": release.harness_profile,
         "harness_sha256": release.harness_sha256,
@@ -209,8 +205,10 @@ def release_from_dict(
     expected_agent_id: str | None = None,
 ) -> AgentRelease:
     agent_root = Path(root).expanduser().resolve()
-    if raw.get("schema_version") != 1:
-        raise ReleaseError("Generated Agent Release schema_version must be 1.")
+    if raw.get("schema_version") != SPEC_SCHEMA_VERSION:
+        raise ReleaseError("Unsupported Agent Release schema_version.")
+    if raw.get("agent_type") != SKILL_BASED_AGENT_TYPE:
+        raise ReleaseError("Unsupported Release agent_type.")
     agent_id = _required_string(raw, "agent_id", "release.json")
     if expected_agent_id and agent_id != expected_agent_id:
         raise ReleaseError(
@@ -378,19 +376,20 @@ class UcSkillPublisher:
 
     def verify_access(self, release: AgentRelease) -> None:
         for skill in release.skills:
+            catalog, schema, name = skill.uc_parts
             result = self.runner(
                 [
                     "databricks",
-                    "api",
-                    "get",
-                    f"/api/2.1/unity-catalog/skills/{quote(skill.uc_name, safe='.')}",
+                    "fs",
+                    "cat",
+                    f"dbfs:/Skills/{catalog}/{schema}/{name}/SKILL.md",
                     "-p",
                     self.profile,
                 ]
             )
             if result.returncode != 0:
                 raise ReleaseError(
-                    f"UC Skill access denied or missing: {skill.uc_name}: {_command_message(result)}"
+                    f"UC Skill content read denied or missing: {skill.uc_name}"
                 )
 
     def _exists(self, full_name: str) -> bool:
@@ -421,13 +420,19 @@ class UcSkillPublisher:
 
 
 class CodexRuntimeBuilder:
-    def __init__(self, *, otel_port: int = 4319) -> None:
-        self.otel_port = otel_port
-
     def prepare(self, root: str | Path) -> AssemblyResult:
         manifest = validate_agent(root)
+        require_source_distribution_allowed(manifest.data_sensitivity, manifest.security_level)
         skills = load_skills(manifest.root)
         subagents = load_subagents(manifest.root, set(skills))
+        release = read_release_metadata(manifest.root)
+        if release is not None:
+            release_from_dict(release, root=manifest.root, expected_agent_id=manifest.agent_id)
+        checksums = calculate_definition_checksums(manifest.root)
+        version = str(release["version"]) if release and (
+            release["harness_sha256"] == checksums.harness
+            and release["skills_sha256"] == checksums.combined_skills
+        ) else "working"
         generated_agents = manifest.root / ".agents"
         generated_codex = manifest.root / ".codex"
         with tempfile.TemporaryDirectory(prefix="aops-runtime-", dir=manifest.root.parent) as temporary:
@@ -440,7 +445,7 @@ class CodexRuntimeBuilder:
                 shutil.copytree(skill.root, destination)
             (codex_staging / "agents").mkdir(parents=True, exist_ok=True)
             (codex_staging / "config.toml").write_text(
-                _codex_project_config(self.otel_port),
+                _codex_project_config(manifest.model_service),
                 encoding="utf-8",
             )
             for name, subagent in subagents.items():
@@ -452,15 +457,13 @@ class CodexRuntimeBuilder:
 
         runtime_meta = manifest.root / ".aops" / "runtime.json"
         runtime_meta.parent.mkdir(parents=True, exist_ok=True)
-        release = read_release_metadata(manifest.root)
         runtime_meta.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
                     "runtime": "codex",
                     "agent_id": manifest.agent_id,
-                    "release_version": (release or {}).get("version", "working"),
-                    "model": manifest.model,
+                    "release_version": version,
+                    "model": manifest.model_service,
                     "skills": sorted(skills),
                     "subagents": sorted(subagents),
                 },
@@ -513,18 +516,12 @@ def _codex_subagent_toml(subagent: Any) -> str:
     )
 
 
-def _codex_project_config(otel_port: int) -> str:
-    base = f"http://127.0.0.1:{otel_port}"
+def _codex_project_config(model_service: str) -> str:
     return (
+        f"model = {json.dumps(model_service, ensure_ascii=False)}\n\n"
         "[agents]\n"
         "enabled = true\n"
         "max_concurrent_threads_per_session = 4\n\n"
-        "[otel]\n"
-        'environment = "agentops-harness"\n'
-        "log_user_prompt = false\n"
-        "log_agent_responses = false\n"
-        f'exporter = {{ otlp-http = {{ endpoint = "{base}/v1/logs", protocol = "json" }} }}\n'
-        f'metrics_exporter = {{ otlp-http = {{ endpoint = "{base}/v1/metrics", protocol = "json" }} }}\n'
     )
 
 

@@ -68,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="기본 Agent Registry 위치: <catalog>.<schema>",
     )
     configure.add_argument("--no-content", action="store_true", help="Prompt와 응답 본문 없이 메타데이터만 저장합니다")
+    configure.add_argument("--capture-content", action="store_true", help="민감정보가 없는 경우에만 Prompt·응답 본문 수집을 허용합니다")
     configure.add_argument("--otel-port", type=int, default=DEFAULT_OTEL_PORT, help="로컬 Codex OTel Port")
 
     init = commands.add_parser("init", help="표준 Agent 폴더를 생성합니다")
@@ -133,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Agent 생성 완료: {root}")
             print(f"편집 안내: {root / 'README.md'}")
             print(f"Skill 템플릿: {root / 'skills/request-structurer/SKILL.md'}")
-            print(f"다음 단계: cd {root} && codex")
+            print(f"다음 단계: cd {root} && codex (Unity Gateway model_provider/인증을 먼저 설정하세요)")
             return 0
         if args.command == "validate":
             manifest = validate_agent(_agent_root(args.path))
@@ -181,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Local Path: {target}")
             print(f"UC Skill 권한 및 Release 체크섬 검증 완료: {len(item.skill_names)}개")
             print(f"검증: cd {target} && aops validate")
-            print(f"실행: cd {target} && codex")
+            print(f"실행: cd {target} && codex (Unity Gateway model_provider/인증을 먼저 설정하세요)")
             return 0
         if args.command == "doctor":
             checks = run_doctor(write_test_trace=args.write_test_trace)
@@ -196,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "flush":
             outbox = Outbox(outbox_path())
             outbox.requeue_failed()
-            result = export_pending(outbox, load_settings(), limit=args.limit, require_usage=True)
+            result = export_pending(outbox, load_settings(), limit=args.limit, require_usage=False)
             print(f"uploaded={result.uploaded} failed={result.failed}")
             for trace_id in result.trace_ids:
                 print(f"trace_id={trace_id}")
@@ -236,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
 def _agent_root(path: Path) -> Path:
     root = find_agent_root(path)
     if root is None:
-        raise ManifestError(f"spec.md와 AGENTS.md를 찾을 수 없습니다: {path.expanduser().resolve()}")
+        raise ManifestError(f"SPEC.md와 AGENTS.md를 찾을 수 없습니다: {path.expanduser().resolve()}")
     return root
 
 
@@ -278,16 +279,11 @@ def _registry_client(args: argparse.Namespace) -> RegistryClient:
         profile=profile.name,
         warehouse_id=warehouse_id,
         location=location,
-        codex_otel_port=(settings.otel_port if settings else DEFAULT_OTEL_PORT),
     )
 
 
 def _codex_runtime_builder() -> CodexRuntimeBuilder:
-    try:
-        port = load_settings().otel_port
-    except ConfigError:
-        port = DEFAULT_OTEL_PORT
-    return CodexRuntimeBuilder(otel_port=port)
+    return CodexRuntimeBuilder()
 
 
 def _validate_profile(profile_name: str) -> None:
@@ -335,7 +331,8 @@ def _configure(args: argparse.Namespace) -> int:
         warehouse_id=warehouse_id,
         registry=registry_name,
         experiment=args.experiment,
-        capture_content=not args.no_content,
+        capture_content=args.capture_content and not args.no_content,
+        content_capture_consent=args.capture_content and not args.no_content,
         otel_port=args.otel_port,
         configured_at=datetime.now(timezone.utc).isoformat(),
     )
@@ -355,7 +352,7 @@ def _configure(args: argparse.Namespace) -> int:
         print(f"Codex OTel: {codex_path} -> http://127.0.0.1:{settings.otel_port}")
     else:
         print(f"Codex OTel: 기존 전역 설정을 보존했습니다: {codex_path}")
-        print(f"Agent 프로젝트 OTel: http://127.0.0.1:{settings.otel_port}")
+        print("경고: Codex는 프로젝트의 [otel]을 무시합니다. 전역 exporter를 Collector로 연결하지 않으면 토큰/Tool 시간이 누락될 수 있습니다.")
     print(f"Codex: {codex_version}")
     print(f"Test Trace: {trace_id}")
     print("백그라운드 Turn Scorer:")

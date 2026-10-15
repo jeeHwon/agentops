@@ -12,12 +12,37 @@ import yaml
 
 
 AGENT_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
-VERSION_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$")
-SPEC_SCHEMA_VERSION = 1
+VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+SPEC_SCHEMA_VERSION = 2
+SKILL_BASED_AGENT_TYPE = "skill-based-agent"
+SPEC_FIELDS = frozenset({
+    "agent_id", "agent_name", "agent_version", "build_type", "serving_type",
+    "origin", "owner", "owner_group", "service_criticality", "data_sensitivity",
+    "security_level", "uc_permissions", "success_criteria", "flagship_model",
+    "model_service",
+})
 
 
 class ManifestError(RuntimeError):
     pass
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    pass
+
+
+def _unique_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict[str, Any]:
+    loader.flatten_mapping(node)
+    result: dict[str, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node)
+        if key in result:
+            raise ManifestError(f"Duplicate YAML field: {key}")
+        result[key] = loader.construct_object(value_node)
+    return result
+
+
+_UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
 
 
 @dataclass(frozen=True)
@@ -26,22 +51,27 @@ class AgentManifest:
     agent_id: str
     name: str
     description: str
-    schema_version: int
-    agent_type: str
+    agent_version: str
+    build_type: str
+    serving_type: str
+    origin: str
     service_criticality: str
     data_sensitivity: str
-    security_access_level: str
-    required_uc_permissions: tuple[str, ...]
-    use_flagship_model: bool
-    model: str
+    security_level: str
+    uc_permissions: tuple[dict[str, str], ...]
+    flagship_model: bool
+    model_service: str
     owner: str
     owner_group: str
-    source_system: str
-    target_users: tuple[str, ...]
-    cost_center: str
-    risk_level: str
-    hitl_required: bool
     success_criteria: dict[str, Any]
+
+    @property
+    def schema_version(self) -> int:
+        return SPEC_SCHEMA_VERSION
+
+    @property
+    def agent_type(self) -> str:
+        return SKILL_BASED_AGENT_TYPE
 
 
 @dataclass(frozen=True)
@@ -72,47 +102,48 @@ class DefinitionChecksums:
 
 SPEC_TEMPLATE = """\
 ---
-schema_version: 1
-id: {agent_id}
-name: {name}
-description: 이 Agent가 해결하는 업무를 한 문장으로 작성하세요.
-agent_type: harness
-owner: ""
-owner_group: ""
-source_system: local
-target_users: []
-cost_center: ""
-service_criticality: low
-data_sensitivity: internal
-security_access_level: standard
-risk_level: low
-hitl_required: false
-required_uc_permissions: []
-use_flagship_model: false
-model: system.ai.gpt-5-6-sol
+agent_id: {agent_id}
+agent_name: {name}
+agent_version: "1.0.0"
+build_type: skill
+serving_type: apps
+origin: databricks
+owner: owner@example.com
+owner_group: AI-CoE
+service_criticality: 하
+data_sensitivity: 내부
+security_level: 일반
+uc_permissions: []
 success_criteria:
-  quality: "필수 결과를 빠짐없이 제공하고 근거 없는 사실을 생성하지 않습니다."
-  latency_ms: null
-  completion_rate: null
+  correctness_min: 0.8
+  relevance_min: 0.9
+  safety_min: 1.0
+  latency_p90_seconds: 10
+flagship_model: false
+model_service: system.ai.gpt-5-6-sol
 ---
 
-# Agent Specification
+# 에이전트 설계서 (SPEC)
 
-## 입력
+## 1. 해결하려는 문제
 
-- 사용자의 업무 요청
-- 작업 수행에 필요한 배경 정보
+사용자의 업무 요청을 정의된 Skill 절차로 처리합니다.
 
-## 출력
+## 2. 사용자와 사용 시나리오
 
-- 요청에 대한 최종 결과
-- 판단 근거와 확인이 필요한 제한사항
+업무 담당자의 요청을 구조화하고 검증합니다.
 
-## 성공 기준
+## 3. 사용하는 데이터와 도구
 
-- 사용자가 요청한 필수 결과를 모두 제공합니다.
-- 근거 없는 사실을 생성하지 않습니다.
-- 정의된 Skill 절차와 출력 형식을 따릅니다.
+필요한 데이터와 도구, UC 권한을 명시합니다.
+
+## 4. 성공 기준과 평가 방법
+
+성공 기준의 근거와 평가 데이터의 출처를 명시합니다.
+
+## 5. 제약 사항과 가드레일
+
+민감정보 처리 및 사람 승인 조건을 명시합니다.
 """
 
 
@@ -203,83 +234,98 @@ def find_agent_root(start: str | Path) -> Path | None:
     if path.is_file():
         path = path.parent
     for candidate in (path, *path.parents):
-        if (candidate / "spec.md").is_file() and (candidate / "AGENTS.md").is_file():
+        if (candidate / "AGENTS.md").is_file() and any(
+            child.name == "SPEC.md" and child.is_file() for child in candidate.iterdir()
+        ):
             return candidate
     return None
 
 
 def load_manifest(root: str | Path) -> AgentManifest:
     agent_root = Path(root).expanduser().resolve()
-    metadata, body = read_markdown_frontmatter(agent_root / "spec.md", "spec.md")
+    if not agent_root.is_dir():
+        raise ManifestError(f"Agent source directory does not exist: {agent_root}")
+    if not any(child.name == "SPEC.md" and child.is_file() for child in agent_root.iterdir()):
+        raise ManifestError(f"Agent source requires the exact filename SPEC.md: {agent_root}")
+    metadata, body = read_markdown_frontmatter(agent_root / "SPEC.md", "SPEC.md")
     if not body.strip():
-        raise ManifestError(f"spec.md instructions are empty: {agent_root / 'spec.md'}")
-    schema_version = metadata.get("schema_version")
-    if schema_version != SPEC_SCHEMA_VERSION:
-        raise ManifestError(f"spec.md schema_version must be {SPEC_SCHEMA_VERSION}.")
-    agent_id = _required_string(metadata, "id", "spec.md")
+        raise ManifestError(f"SPEC.md instructions are empty: {agent_root / 'SPEC.md'}")
+    missing = SPEC_FIELDS - metadata.keys()
+    unknown = metadata.keys() - SPEC_FIELDS
+    if missing or unknown:
+        raise ManifestError(
+            f"SPEC.md fields mismatch; missing={sorted(missing)}, unknown={sorted(unknown)}. "
+            "Use the current SPEC.md template."
+        )
+    agent_id = _required_string(metadata, "agent_id", "SPEC.md")
     if not AGENT_ID_RE.fullmatch(agent_id) or "--" in agent_id:
-        raise ManifestError("spec.md id must use lower-case kebab-case and be at most 64 characters.")
-    agent_type = _required_string(metadata, "agent_type", "spec.md")
-    if agent_type != "harness":
-        raise ManifestError("1차 구현에서 spec.md agent_type은 harness만 지원합니다.")
-    required_permissions = metadata.get("required_uc_permissions")
-    if not isinstance(required_permissions, list) or not all(
-        isinstance(item, str) and item.strip() for item in required_permissions
+        raise ManifestError("SPEC.md agent_id must use lower-case kebab-case and be at most 64 characters.")
+    agent_version = _required_string(metadata, "agent_version", "SPEC.md")
+    if not VERSION_RE.fullmatch(agent_version):
+        raise ManifestError("SPEC.md agent_version must be major.minor.patch.")
+    build_type = _required_string(metadata, "build_type", "SPEC.md")
+    serving_type = _required_string(metadata, "serving_type", "SPEC.md")
+    origin = _required_string(metadata, "origin", "SPEC.md")
+    criticality = _required_string(metadata, "service_criticality", "SPEC.md")
+    sensitivity = _required_string(metadata, "data_sensitivity", "SPEC.md")
+    security_level = _required_string(metadata, "security_level", "SPEC.md")
+    _enum_value(build_type, "build_type", {"code", "skill", "no-code"})
+    _enum_value(serving_type, "serving_type", {"apps", "Apps", "SE", "se", "Job", "job"})
+    _enum_value(origin, "origin", {"databricks", "innohub"})
+    _enum_value(criticality, "service_criticality", {"상", "중", "하"})
+    _enum_value(sensitivity, "data_sensitivity", {"공개", "내부", "대외비", "개인정보"})
+    _enum_value(security_level, "security_level", {"일반", "강화"})
+    permissions = metadata["uc_permissions"]
+    if not isinstance(permissions, list) or any(
+        not isinstance(item, dict)
+        or set(item) != {"object", "privilege"}
+        or not all(isinstance(item[key], str) and item[key].strip() for key in ("object", "privilege"))
+        or len(item["object"].split(".")) != 3
+        or not all(part.strip() for part in item["object"].split("."))
+        for item in permissions
     ):
-        raise ManifestError("spec.md required_uc_permissions must be a string list.")
-    use_flagship_model = metadata.get("use_flagship_model")
-    if not isinstance(use_flagship_model, bool):
-        raise ManifestError("spec.md use_flagship_model must be true or false.")
-    hitl_required = metadata.get("hitl_required", False)
-    if not isinstance(hitl_required, bool):
-        raise ManifestError("spec.md hitl_required must be true or false.")
-    service_criticality = _required_string(metadata, "service_criticality", "spec.md")
-    data_sensitivity = _required_string(metadata, "data_sensitivity", "spec.md")
-    security_access_level = _required_string(
-        metadata, "security_access_level", "spec.md"
-    )
-    source_system = str(metadata.get("source_system") or "local").strip()
-    risk_level = str(metadata.get("risk_level") or "low").strip()
-    _enum_value(service_criticality, "service_criticality", {"low", "medium", "high", "critical"})
-    _enum_value(data_sensitivity, "data_sensitivity", {"public", "internal", "confidential", "restricted"})
-    _enum_value(security_access_level, "security_access_level", {"standard", "elevated", "privileged"})
-    _enum_value(source_system, "source_system", {"local", "innohub", "databricks"})
-    _enum_value(risk_level, "risk_level", {"low", "medium", "high"})
-    target_users = metadata.get("target_users", [])
-    if not isinstance(target_users, list) or not all(
-        isinstance(item, str) and item.strip() for item in target_users
-    ):
-        raise ManifestError("spec.md target_users must be a string list.")
-    success_criteria = metadata.get("success_criteria", {})
-    if not isinstance(success_criteria, dict):
-        raise ManifestError("spec.md success_criteria must be a mapping.")
+        raise ManifestError("SPEC.md uc_permissions must contain {object, privilege} entries with three-part objects.")
+    flagship_model = metadata["flagship_model"]
+    if not isinstance(flagship_model, bool):
+        raise ManifestError("SPEC.md flagship_model must be true or false.")
+    success_criteria = metadata["success_criteria"]
+    expected_criteria = {"correctness_min", "relevance_min", "safety_min", "latency_p90_seconds"}
+    if not isinstance(success_criteria, dict) or set(success_criteria) != expected_criteria:
+        raise ManifestError("SPEC.md success_criteria must define correctness_min, relevance_min, safety_min, latency_p90_seconds.")
+    for key in ("correctness_min", "relevance_min", "safety_min"):
+        value = success_criteria[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ManifestError(f"SPEC.md success_criteria.{key} must be between 0 and 1.")
+    latency = success_criteria["latency_p90_seconds"]
+    if isinstance(latency, bool) or not isinstance(latency, (int, float)) or not 0 < latency < float("inf"):
+        raise ManifestError("SPEC.md success_criteria.latency_p90_seconds must be positive and finite.")
+    owner = _required_string(metadata, "owner", "SPEC.md")
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", owner):
+        raise ManifestError("SPEC.md owner must be an email address.")
     return AgentManifest(
         root=agent_root,
         agent_id=agent_id,
-        name=_required_string(metadata, "name", "spec.md"),
-        description=_required_string(metadata, "description", "spec.md"),
-        schema_version=SPEC_SCHEMA_VERSION,
-        agent_type=agent_type,
-        service_criticality=service_criticality,
-        data_sensitivity=data_sensitivity,
-        security_access_level=security_access_level,
-        required_uc_permissions=tuple(item.strip() for item in required_permissions),
-        use_flagship_model=use_flagship_model,
-        model=_required_string(metadata, "model", "spec.md"),
-        owner=str(metadata.get("owner") or "").strip(),
-        owner_group=str(metadata.get("owner_group") or "").strip(),
-        source_system=source_system,
-        target_users=tuple(item.strip() for item in target_users),
-        cost_center=str(metadata.get("cost_center") or "").strip(),
-        risk_level=risk_level,
-        hitl_required=hitl_required,
+        name=_required_string(metadata, "agent_name", "SPEC.md"),
+        description=_spec_description(body),
+        agent_version=agent_version,
+        build_type=build_type,
+        serving_type=serving_type,
+        origin=origin,
+        service_criticality=criticality,
+        data_sensitivity=sensitivity,
+        security_level=security_level,
+        uc_permissions=tuple({key: item[key].strip() for key in ("object", "privilege")} for item in permissions),
+        flagship_model=flagship_model,
+        model_service=_required_string(metadata, "model_service", "SPEC.md"),
+        owner=owner,
+        owner_group=_required_string(metadata, "owner_group", "SPEC.md"),
         success_criteria=dict(success_criteria),
     )
 
 
 def validate_agent(root: str | Path) -> AgentManifest:
     manifest = load_manifest(root)
-    for name in ("README.md", "AGENTS.md", "spec.md"):
+    for name in ("README.md", "AGENTS.md", "SPEC.md"):
         path = manifest.root / name
         if not path.is_file() or not path.read_text(encoding="utf-8").strip():
             raise ManifestError(f"Missing or empty Agent definition: {path}")
@@ -289,11 +335,29 @@ def validate_agent(root: str | Path) -> AgentManifest:
         raise ManifestError(f"At least one Skill is required under {manifest.root / 'skills'}.")
     load_subagents(manifest.root, set(skills))
     _validate_source_tree(manifest.root)
+    dataset = manifest.root / "eval" / "eval_dataset.json"
+    if dataset.is_file():
+        if dataset.stat().st_size > 10 * 1024 * 1024:
+            raise ManifestError("eval/eval_dataset.json exceeds 10 MiB.")
+        try:
+            content = json.loads(dataset.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:
+            raise ManifestError(f"Invalid eval/eval_dataset.json: {exc}") from exc
+        if not isinstance(content, (list, dict)):
+            raise ManifestError("eval/eval_dataset.json must contain a JSON array or object.")
     if not (manifest.root / "README.md").read_text(encoding="utf-8").lstrip().startswith("#"):
         raise ManifestError("README.md must start with a Markdown heading.")
     if not (manifest.root / "AGENTS.md").read_text(encoding="utf-8").lstrip().startswith("#"):
         raise ManifestError("AGENTS.md must start with a Markdown heading.")
     return manifest
+
+
+def require_source_distribution_allowed(data_sensitivity: str, security_level: str) -> None:
+    if data_sensitivity not in {"공개", "내부"} or security_level != "일반":
+        raise ManifestError(
+            "대외비/개인정보 또는 강화 등급 Skill 원문은 이 로컬 복사형 실행·Registry 경로에 "
+            "게시할 수 없습니다. 별도 서버 측 실행과 서비스 주체 권한이 필요합니다."
+        )
 
 
 def load_skills(root: str | Path) -> dict[str, SkillDefinition]:
@@ -348,7 +412,7 @@ def validate_skill_directory(root: str | Path) -> SkillDefinition:
         if path.is_dir():
             if path != skill_root / "references":
                 raise ManifestError(
-                    f"1차 Skill은 references/ 외의 하위 폴더를 허용하지 않습니다: {path}"
+                    f"Skill은 references/ 외의 하위 폴더를 허용하지 않습니다: {path}"
                 )
             continue
         relative = path.relative_to(skill_root)
@@ -356,7 +420,7 @@ def validate_skill_directory(root: str | Path) -> SkillDefinition:
             continue
         if len(relative.parts) != 2 or relative.parts[0] != "references" or path.suffix != ".md":
             raise ManifestError(
-                f"1차 Skill은 SKILL.md와 references/*.md만 허용합니다: {path}"
+                f"Skill은 SKILL.md와 references/*.md만 허용합니다: {path}"
             )
     return SkillDefinition(name, description, skill_root, uc_mode, uc_name)
 
@@ -364,7 +428,7 @@ def validate_skill_directory(root: str | Path) -> SkillDefinition:
 def _enum_value(value: str, key: str, allowed: set[str]) -> None:
     if value not in allowed:
         choices = ", ".join(sorted(allowed))
-        raise ManifestError(f"spec.md {key} must be one of: {choices}.")
+        raise ManifestError(f"SPEC.md {key} must be one of: {choices}.")
 
 
 def load_subagents(
@@ -408,7 +472,7 @@ def validate_subagent(
         raise ManifestError(f"Sub-agent instructions are empty: {path}")
     unsupported = [item for item in subagent_root.iterdir() if item.name != "AGENTS.md"]
     if unsupported:
-        raise ManifestError(f"1차 Sub-agent 폴더에는 AGENTS.md만 허용합니다: {unsupported[0]}")
+        raise ManifestError(f"Sub-agent 폴더에는 AGENTS.md만 허용합니다: {unsupported[0]}")
     return SubagentDefinition(
         name=name,
         description=description,
@@ -433,7 +497,7 @@ def create_agent(agent_id: str, destination: str | Path | None = None) -> Path:
     reference_root.mkdir(parents=True)
     subagent_root.mkdir(parents=True)
     files = {
-        root / "spec.md": SPEC_TEMPLATE.format(agent_id=agent_id, name=name),
+        root / "SPEC.md": SPEC_TEMPLATE.format(agent_id=agent_id, name=name),
         root / "AGENTS.md": AGENTS_TEMPLATE,
         root / "README.md": _agent_readme(agent_id),
         skill_root / "SKILL.md": EXAMPLE_SKILL,
@@ -452,11 +516,11 @@ def _agent_readme(agent_id: str) -> str:
         f"""\
         # {title}
 
-        이 폴더 하나가 Harness Agent의 개발·테스트·등록 단위입니다.
+        이 폴더 하나가 Skill-based Agent의 개발·테스트·등록 단위입니다.
 
         ## 수정할 파일
 
-        - `spec.md`: Agent ID, 설명, 모델과 운영 기준
+        - `SPEC.md`: Agent ID, 설명, 모델과 운영 기준
         - `AGENTS.md`: Agent의 공통 행동과 실행 절차
         - `skills/*/SKILL.md`: 재사용 가능한 업무 절차
         - `skills/*/references/*.md`: Skill 참고자료
@@ -485,7 +549,7 @@ def _agent_readme(agent_id: str) -> str:
 def calculate_definition_checksums(root: str | Path) -> DefinitionChecksums:
     manifest = load_manifest(root)
     harness_paths = [
-        manifest.root / "spec.md",
+        manifest.root / "SPEC.md",
         manifest.root / "AGENTS.md",
         manifest.root / "README.md",
     ]
@@ -531,7 +595,7 @@ def read_markdown_frontmatter(path: Path, label: str) -> tuple[dict[str, Any], s
     if len(parts) != 3:
         raise ManifestError(f"{label} frontmatter is not closed: {path}")
     try:
-        metadata = yaml.safe_load(parts[1])
+        metadata = yaml.load(parts[1], Loader=_UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise ManifestError(f"Invalid {label} frontmatter {path}: {exc}") from exc
     if not isinstance(metadata, dict):
@@ -539,9 +603,29 @@ def read_markdown_frontmatter(path: Path, label: str) -> tuple[dict[str, Any], s
     return metadata, parts[2]
 
 
+def _spec_description(body: str) -> str:
+    description = ""
+    for section in range(1, 6):
+        match = re.search(
+            rf"(?ms)^## {section}\. [^\n]+\n(.*?)(?=^## [1-5]\. |\Z)", body
+        )
+        if match is None:
+            raise ManifestError(f"SPEC.md requires numbered section {section}.")
+        content = next(
+            (line.strip() for line in match.group(1).splitlines()
+             if line.strip() and not line.lstrip().startswith("#")),
+            "",
+        )
+        if not content:
+            raise ManifestError(f"SPEC.md section {section} must not be empty.")
+        if section == 1:
+            description = content
+    return description
+
+
 def _validate_source_tree(root: Path) -> None:
     generated = {".aops", ".agents", ".codex", ".git", ".gitignore"}
-    allowed_files = {"AGENTS.md", "README.md", "spec.md", ".gitignore"}
+    allowed_files = {"AGENTS.md", "README.md", "SPEC.md", ".gitignore"}
     for path in root.iterdir():
         if path.name in generated:
             continue
@@ -549,8 +633,12 @@ def _validate_source_tree(root: Path) -> None:
             raise ManifestError(f"Symbolic links are not allowed in Agent source: {path}")
         if path.is_file() and path.name not in allowed_files:
             raise ManifestError(f"Agent 루트에는 표준 Markdown 파일만 허용합니다: {path}")
-        if path.is_dir() and path.name not in {"skills", "agents"}:
-            raise ManifestError(f"Agent 루트에는 skills/와 agents/만 허용합니다: {path}")
+        if path.is_dir() and path.name not in {"skills", "agents", "eval"}:
+            raise ManifestError(f"Agent 루트에는 skills/, agents/와 eval/만 허용합니다: {path}")
+        if path.is_dir() and path.name == "eval":
+            if any(item.is_symlink() or not item.is_file() or item.name != "eval_dataset.json"
+                   for item in path.iterdir()):
+                raise ManifestError(f"eval/에는 eval_dataset.json만 허용합니다: {path}")
 
 
 def _required_string(values: dict[str, Any], key: str, context: str) -> str:

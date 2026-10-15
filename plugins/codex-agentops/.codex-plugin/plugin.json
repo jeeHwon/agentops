@@ -1,7 +1,7 @@
 {
   "name": "codex-agentops",
   "version": "1.2.0",
-  "description": "Markdown Harness Agent Registry, UC Skills와 MLflow 모니터링",
+  "description": "Markdown Skill-based Agent Registry, UC Skills와 MLflow 모니터링",
   "author": {
     "name": "Contributors"
   },
@@ -9,13 +9,13 @@
   "keywords": ["agentops", "codex", "databricks", "mlflow"],
   "interface": {
     "displayName": "Codex AgentOps",
-    "shortDescription": "UC Skill을 고정한 Harness Agent Release를 관리합니다.",
-    "longDescription": "Markdown Harness Agent와 UC Skill 스냅샷을 불변 Release로 등록하고 Codex Turn을 MLflow Trace로 모니터링합니다.",
+    "shortDescription": "UC Skill을 고정한 Skill-based Agent Release를 관리합니다.",
+    "longDescription": "Markdown Skill-based Agent와 UC Skill 스냅샷을 불변 Release로 등록하고 Codex Turn을 MLflow Trace로 모니터링합니다.",
     "developerName": "Contributors",
     "category": "Developer Tools",
     "capabilities": ["Observability", "Agent Registry", "UC Skills"],
     "defaultPrompt": [
-      "이 Agent 폴더의 Harness와 Skill을 확인하고 테스트해 주세요."
+      "이 Skill-based Agent 폴더의 AGENTS.md와 Skill을 확인하고 테스트해 주세요."
     ]
   }
 }

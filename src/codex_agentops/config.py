@@ -27,7 +27,8 @@ class Settings:
     warehouse_id: str = ""
     registry: str = ""
     experiment: str = DEFAULT_EXPERIMENT
-    capture_content: bool = True
+    capture_content: bool = False
+    content_capture_consent: bool = False
     otel_port: int = DEFAULT_OTEL_PORT
     otel_mode: str = "auto"
     configured_at: str = ""
@@ -56,7 +57,11 @@ class Settings:
             warehouse_id=str(raw.get("warehouse_id", "")),
             registry=str(raw.get("registry", "")).strip(),
             experiment=experiment,
-            capture_content=bool(raw.get("capture_content", True)),
+            capture_content=(
+                raw.get("capture_content") is True
+                and raw.get("content_capture_consent") is True
+            ),
+            content_capture_consent=raw.get("content_capture_consent") is True,
             otel_port=otel_port,
             otel_mode=otel_mode,
             configured_at=str(raw.get("configured_at", "")),

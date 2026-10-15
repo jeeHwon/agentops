@@ -3,6 +3,7 @@ from __future__ import annotations
 import mlflow
 import mlflow.genai.scorers as scorers
 import mlflow.tracing as tracing
+import pytest
 
 from codex_agentops.config import Settings
 from codex_agentops.monitoring import TURN_TRACE_FILTER, configure_turn_monitoring
@@ -75,6 +76,33 @@ def test_configure_turn_monitoring_registers_three_background_scorers(monkeypatc
     ]
     assert all(item.sample_rate == 1.0 for item in active)
     assert all(item.filter_string == TURN_TRACE_FILTER for item in active)
+    assert "agentops.evaluation_inputs_available" in TURN_TRACE_FILTER
     assert warehouse_calls == [
         {"sql_warehouse_id": "warehouse-1", "experiment_id": "experiment-1"}
     ]
+
+
+def test_configure_turn_monitoring_rejects_existing_shared_policy(monkeypatch):
+    legacy_scorer = _Scorer("safety")
+    legacy_scorer.sample_rate = 1.0
+    legacy_scorer.filter_string = "tags.`mlflow.traceName` = 'agent.turn'"
+    monkeypatch.setattr(mlflow, "MlflowClient", _Client)
+    monkeypatch.setattr(mlflow, "set_tracking_uri", lambda uri: None)
+    monkeypatch.setattr(mlflow, "set_experiment", lambda **kwargs: None)
+    monkeypatch.setattr(scorers, "list_scorers", lambda **kwargs: [legacy_scorer])
+    warehouse_calls = []
+    monkeypatch.setattr(
+        tracing,
+        "set_databricks_monitoring_sql_warehouse_id",
+        lambda **kwargs: warehouse_calls.append(kwargs),
+    )
+
+    with pytest.raises(RuntimeError, match="Review coverage for untagged traces"):
+        configure_turn_monitoring(Settings(
+            profile="test-profile",
+            host="https://example.cloud.databricks.com",
+            warehouse_id="warehouse-1",
+        ))
+
+    assert legacy_scorer.filter_string == "tags.`mlflow.traceName` = 'agent.turn'"
+    assert warehouse_calls == []

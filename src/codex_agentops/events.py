@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import Settings
 from .manifest import AgentManifest, calculate_definition_checksums, read_release_metadata
+from .redaction import redact_json_body
 
 
 SUPPORTED_EVENTS = {
@@ -20,6 +21,7 @@ SUPPORTED_EVENTS = {
     "Interrupt",
 }
 TERMINAL_EVENTS = {"Stop", "Interrupt"}
+CONTENT_CAPTURE_DISABLED = "[CONTENT_CAPTURE_DISABLED]"
 
 
 @dataclass(frozen=True)
@@ -46,8 +48,8 @@ def _stable_hash(*values: str) -> str:
 
 def _safe_body(value: Any, settings: Settings) -> Any:
     if not settings.capture_content:
-        return "[CONTENT_CAPTURE_DISABLED]"
-    return value
+        return CONTENT_CAPTURE_DISABLED
+    return redact_json_body(value)
 
 
 def from_hook_payload(
@@ -63,6 +65,12 @@ def from_hook_payload(
     created_ns = now_ns or time.time_ns()
     checksums = calculate_definition_checksums(manifest.root)
     release = read_release_metadata(manifest.root) or {}
+    release_version = (
+        release.get("version")
+        if release.get("harness_sha256") == checksums.harness
+        and release.get("skills_sha256") == checksums.combined_skills
+        else None
+    )
     common: dict[str, Any] = {
         "model": str(raw.get("model", "")) or None,
         "permission_mode": str(raw.get("permission_mode", "")) or None,
@@ -72,20 +80,22 @@ def from_hook_payload(
         "harness_checksum": checksums.harness,
         "skill_checksums": checksums.skills,
         "skills_checksum": checksums.combined_skills,
-        "release_version": str(release.get("version") or "working"),
+        "release_version": str(release_version or "working"),
         "agent_type": manifest.agent_type,
+        "agent_name": manifest.name,
+        "agent_version": manifest.agent_version,
+        "build_type": manifest.build_type,
+        "serving_type": manifest.serving_type,
+        "origin": manifest.origin,
+        "security_level": manifest.security_level,
+        "uc_permissions": list(manifest.uc_permissions),
+        "flagship_model": manifest.flagship_model,
+        "model_service": manifest.model_service,
+        "success_criteria": manifest.success_criteria,
         "service_criticality": manifest.service_criticality,
         "data_sensitivity": manifest.data_sensitivity,
-        "security_access_level": manifest.security_access_level,
-        "required_uc_permissions": list(manifest.required_uc_permissions),
-        "use_flagship_model": manifest.use_flagship_model,
         "owner": manifest.owner or None,
         "owner_group": manifest.owner_group or None,
-        "source_system": manifest.source_system,
-        "target_users": list(manifest.target_users),
-        "cost_center": manifest.cost_center or None,
-        "risk_level": manifest.risk_level,
-        "hitl_required": manifest.hitl_required,
         "runtime": "codex",
     }
     runtime_agent_id = str(raw.get("agent_id", "")).strip()
@@ -115,6 +125,7 @@ def from_hook_payload(
         specific = {
             "tool_name": str(raw.get("tool_name", "unknown")),
             "tool_use_id": str(raw.get("tool_use_id", "")) or None,
+            "tool_failed": tool_failed(raw),
             "tool_input": _safe_body(raw.get("tool_input"), settings),
             "tool_response": _safe_body(raw.get("tool_response"), settings),
         }
@@ -137,6 +148,8 @@ def from_hook_payload(
 
 
 def tool_failed(payload: dict[str, Any]) -> bool:
+    if payload.get("tool_failed") is True:
+        return True
     response = payload.get("tool_response")
     if _contains_error(response):
         return True

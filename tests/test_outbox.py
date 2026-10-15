@@ -1,10 +1,23 @@
 from __future__ import annotations
 
+import sqlite3
+
+import pytest
+
 from codex_agentops.config import Settings
 from codex_agentops.events import from_hook_payload
 from codex_agentops.manifest import create_agent, load_manifest
 from codex_agentops.outbox import Outbox
 from codex_agentops.usage import TokenUsage
+
+
+def test_outbox_rejects_incompatible_local_schema(tmp_path):
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO schema_meta VALUES ('schema_version', '2')")
+    with pytest.raises(ValueError, match="incompatible"):
+        Outbox(path)
 
 
 def _event(root, name, now_ns, **fields):
@@ -27,6 +40,7 @@ def _event(root, name, now_ns, **fields):
 def test_outbox_deduplicates_events_and_claims_only_completed_turns(tmp_path):
     root = create_agent("test-agent", tmp_path / "agent")
     outbox = Outbox(tmp_path / "outbox.db")
+    assert (tmp_path / "outbox.db").stat().st_mode & 0o777 == 0o600
     prompt = _event(root, "UserPromptSubmit", 1, prompt="hello")
     assert outbox.append(prompt) is True
     assert outbox.append(prompt) is False
@@ -64,7 +78,7 @@ def test_outbox_prefers_otel_usage_and_falls_back_to_transcript(tmp_path):
     )
     turn = outbox.claim(now_ns=400, require_usage=True)
     assert turn is not None
-    assert turn.token_usage_source == "otel"
+    assert turn.token_usage_source == "otel+transcript"
     assert turn.token_usage is not None
     assert turn.token_usage.total_tokens == 100
 
@@ -137,3 +151,26 @@ def test_outbox_associates_subagent_with_root_and_aggregates_usage(tmp_path):
     assert turn.token_usage is not None
     assert turn.token_usage.total_tokens == 160
     assert outbox.stats()["open"] == 0
+
+
+def test_partial_otel_does_not_override_transcript_and_missing_usage_settles(tmp_path):
+    root = create_agent("test-agent", tmp_path / "agent")
+    outbox = Outbox(tmp_path / "outbox.db")
+    outbox.append(_event(root, "UserPromptSubmit", 100, prompt="hello"))
+    outbox.append(_event(root, "Stop", 300, last_assistant_message="done"))
+    outbox.append_token_usage(
+        event_id="transcript", session_id="session-1", turn_id="turn-1",
+        observed_ns=300, source="transcript", usage=TokenUsage(90, 10, total_tokens=100),
+    )
+    outbox.append_token_usage(
+        event_id="otel", session_id="session-1", observed_ns=200,
+        source="otel", usage=TokenUsage(4, 2, total_tokens=6),
+    )
+    turn = outbox.claim(now_ns=400, require_usage=True)
+    assert turn.token_usage.total_tokens == 100
+    assert turn.token_usage_source == "transcript-otel-partial"
+
+    second = Outbox(tmp_path / "missing.db")
+    second.append(_event(root, "Stop", 300))
+    assert second.claim(now_ns=400, require_usage=True) is None
+    assert second.claim(now_ns=300 + 60_000_000_000, require_usage=True).token_usage is None

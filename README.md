@@ -1,6 +1,6 @@
 # AgentOps
 
-Markdown으로 Harness Agent를 만들고, Unity Catalog에 불변 Release로 등록하며, 기존 `codex`에서 Turn 단위로 MLflow Trace와 평가 결과를 남기는 표준 구현입니다.
+Markdown으로 Skill-based Agent를 만들고, Unity Catalog에 불변 Release로 등록하며, 기존 `codex`에서 Turn 단위로 MLflow Trace와 평가 결과를 남기는 표준 구현입니다.
 
 ```text
 Agent 폴더 작성
@@ -9,10 +9,14 @@ Agent 폴더 작성
   → Release 메타데이터를 Delta Registry에 등록
   → Agent 목록 조회·로드
   → Codex 또는 Omnigent에서 실행
-  → 매 Turn MLflow Trace와 Scorer 결과 확인
+  → 매 Turn MLflow Trace, 입력·출력이 있는 경우 Scorer 결과 확인
 ```
 
 Agent 자체를 MCP 서버로 배포하는 기능은 포함하지 않습니다. Web UI나 사내 플랫폼은 `AgentOpsService` Python API를 사용하고, 터미널 사용자는 `aops` CLI를 사용합니다.
+
+추적 범위와 실제 검증 결과는 [MONITORING_STATUS.md](docs/MONITORING_STATUS.md)에 **됨/안됨**으로 정리했습니다. 토큰 전수 추적이나 민감 Skill의 원문 비공개를 보장하지 않습니다.
+
+최신 `SPEC.md` 키·Registry 마이그레이션·운영 검증 사항: [SPEC_CONTRACT.md](docs/SPEC_CONTRACT.md). 등록 버전은 `agent_version`과 동일해야 합니다.
 
 ## 설치
 
@@ -46,9 +50,11 @@ aops configure \
 
 1. 선택한 Profile과 SQL Warehouse 접근을 확인합니다.
 2. MLflow Experiment가 없으면 생성하고 테스트 Trace를 기록합니다.
-3. `RelevanceToQuery`, `Safety`, `Completeness` Scorer를 모든 `agent.turn` Trace에 100% 비동기로 적용합니다.
-4. Codex OTel을 로컬 Collector에 연결해 정확한 Token과 Tool 실행시간을 보완합니다.
+3. `RelevanceToQuery`, `Safety`, `Completeness` Scorer를 **평가용 입력·출력이 모두 있는** `agent.turn`에 한해 100% 샘플링으로 등록합니다. 비동기 assessment 완료 여부는 별도로 확인해야 합니다. 기본 비수집 모드에서는 본문 기반 품질 평가를 하지 않습니다.
+4. 사용자 전역 Codex OTel 설정을 로컬 Collector에 연결해 관측된 Token과 Tool 실행시간을 보완합니다. 누락·부분집계는 구분합니다.
 5. Profile, Registry, Experiment와 Warehouse를 사용자 설정에 저장합니다.
+
+기존 공유 실험에 서로 다른 scorer 필터가 있으면 이를 자동 덮어쓰지 않고 설정을 중단합니다. 필터 변경 시 태그가 없는 기존 Trace의 Safety 평가 범위가 줄어들 수 있으므로 실험 소유자가 먼저 검토해야 합니다.
 
 관리자는 Registry마다 한 번 초기화합니다.
 
@@ -58,6 +64,8 @@ aops registry-init
 
 ## 새 Agent 개발
 
+선택한 모델 공급자/인증이 별도로 준비된 Codex에서 실행합니다. `aops configure`의 OTel 설정은 모델 공급자를 변경하지 않습니다.
+
 ```bash
 aops init my-agent
 cd my-agent
@@ -65,13 +73,15 @@ aops validate
 codex
 ```
 
+`SPEC.md`의 `model_service`는 모델 이름만 지정합니다. 실제 Codex 공급자와 인증이 해당 모델에 맞는지는 실행 환경에서 확인해야 합니다.
+
 `aops init`이 만드는 공통 소스는 다음과 같습니다.
 
 ```text
 my-agent/
 ├── AGENTS.md
 ├── README.md
-├── spec.md
+├── SPEC.md
 ├── skills/
 │   └── request-structurer/
 │       ├── SKILL.md
@@ -86,7 +96,7 @@ my-agent/
 
 | 파일 | 작성 내용 |
 |---|---|
-| `spec.md` | Agent ID, Owner, 중요도, 민감도, 위험등급, 필요 권한, 모델과 구조화된 성공 기준 |
+| `SPEC.md` | Agent ID/Version, 생성·서빙 방식, 출처, Owner, 중요도·민감도·보안등급, UC 권한, 모델 서비스와 성공 기준 |
 | `AGENTS.md` | Agent의 행동 원칙, 실행 순서, Skill과 Sub-agent 사용 규칙 |
 | `README.md` | Agent 사용 방법과 예시 |
 | `skills/<name>/SKILL.md` | 하나의 재사용 가능한 업무 능력과 수행 절차 |
@@ -120,7 +130,7 @@ description: 고객 자료에서 핵심 사실과 후속 행동을 요약해야 
 
 - `name`과 `description`은 필수입니다.
 - `name`은 폴더명과 같아야 하며 소문자, 숫자와 하이픈만 사용합니다.
-- 1차 Harness 범위에서는 `SKILL.md`와 `references/*.md`만 허용합니다.
+- 현재 Skill-based Agent 정의에서는 `SKILL.md`와 `references/*.md`만 허용합니다.
 - 실행 코드, 바이너리와 심볼릭 링크는 허용하지 않습니다.
 - 기본 Skill은 Agent 전용 UC 이름 `<agent-id>-<skill-name>`으로 게시되므로 다른 Agent의 같은 이름과 충돌하지 않습니다.
 
@@ -165,7 +175,7 @@ codex
 
 `aops list`도 기본적으로 현재 사용자가 UC Skill 권한을 가진 Agent만 표시합니다. 관리자가 전체 행을 점검할 때만 `aops list --include-unavailable`을 사용합니다.
 
-Release Artifact에는 등록 시점의 Harness, Skill과 Sub-agent 전체 스냅샷이 들어갑니다. 공통 UC Skill이 나중에 바뀌어도 기존 Release 내용은 바뀌지 않습니다.
+Release Artifact에는 등록 시점의 Skill-based Agent 정의, Skill과 Sub-agent 전체 스냅샷이 들어갑니다. 공통 UC Skill이 나중에 바뀌어도 기존 Release 내용은 바뀌지 않습니다.
 
 ## Registry 저장 구조
 
@@ -176,7 +186,7 @@ Release Artifact에는 등록 시점의 Harness, Skill과 Sub-agent 전체 스�
 | Delta Table `agent_version_skills` | Release를 구성하는 UC Skill 이름·해시·게시 방식 |
 | Delta Table `release_gates` | 평가·보안·모니터링 Gate와 승인 증거 |
 | Delta Table `agent_events` | publish·activate·rollback·deprecate·retire 이력 |
-| UC Volume `agent_artifacts` | Harness, Skill, Sub-agent와 생성된 Release manifest를 포함한 불변 압축파일 |
+| UC Volume `agent_artifacts` | Skill-based Agent 정의, Skill, Sub-agent와 생성된 Release manifest를 포함한 불변 압축파일 |
 | UC Skills | Skill 검색, 권한, 감사와 조직 공용 재사용에 쓰는 현재 Skill 객체 |
 
 `aops registry-init`은 위 Registry 테이블과 Artifact Volume을 멱등하게 준비합니다.
@@ -185,16 +195,18 @@ Release Artifact에는 등록 시점의 Harness, Skill과 Sub-agent 전체 스�
 
 Agent 루트에서 평소와 같이 `codex`를 실행합니다. Plugin Hook은 응답이 끝나는 `Stop` 이벤트에서 Turn을 완성하고, Codex OTel과 transcript 보정 결과를 로컬 Outbox에서 결합해 백그라운드로 MLflow에 전송합니다.
 
+**OTel은 프로젝트 `.codex/config.toml`에서 설정하지 않습니다.** Codex는 프로젝트 범위의 `[otel]` 설정을 읽지 않습니다. `aops configure`는 충돌이 없으면 사용자 전역 `~/.codex/config.toml`에 로컬 Collector exporter를 설치합니다. 기존 전역 exporter가 있으면 보존하고 경고하므로 `aops doctor`의 `codex-otel-config`와 실제 Token 수집 여부를 확인하십시오. 기존 exporter를 변경할 수 없으면 해당 Collector로 전달하거나 실행 시 Codex `-c` 설정을 명시해야 합니다.
+
 ```text
 UserPromptSubmit → 사용자 입력 저장
 PostToolUse      → Tool 입력·출력 저장
 SubagentStart/Stop → Sub-agent 계층과 결과 저장
-Codex OTel       → 정확한 Token·Tool 시간 저장
+Codex OTel       → 관측된 Token·Tool 시간 저장 (결측·부분집계 표시)
 Stop             → agent.turn 완성 및 즉시 업로드
 SessionEnd       → 누락 Token 사후 보정과 재전송
 ```
 
-각 `agent.turn`에는 Agent ID·Release, 입력·출력 원문, 성공 여부, 지연시간, 모델, Token, Tool, Sub-agent와 Skill 체크섬을 기록합니다. 1차 검증 범위에서는 샘플링과 마스킹을 적용하지 않습니다.
+각 `agent.turn`에는 Agent ID·Release, 성공 여부, 지연시간, 모델, 관측된 Token, Tool, Sub-agent와 Skill 체크섬을 기록합니다. 입력·출력 원문은 기본 비수집이며 `aops configure --capture-content`를 명시한 경우에만 패턴 마스킹 후 수집합니다. 100% 모델 호출 커버리지와 완전한 비식별화는 보장하지 않습니다.
 
 ```bash
 aops doctor --write-test-trace

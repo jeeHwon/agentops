@@ -63,7 +63,11 @@ class PendingTurn:
 class Outbox:
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if self.path.is_symlink():
+            raise ValueError("Outbox database must not be a symbolic link.")
+        self.path.touch(mode=0o600, exist_ok=True)
+        self.path.chmod(0o600)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -76,6 +80,22 @@ class Outbox:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            existing_tables = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            try:
+                current = connection.execute(
+                    "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+                ).fetchone()
+            except sqlite3.OperationalError:
+                current = None
+            if (current is None and existing_tables) or (
+                current is not None and current[0] != str(SCHEMA_VERSION)
+            ):
+                raise ValueError(
+                    "Outbox schema is incompatible. Back up and remove the old local "
+                    "database before starting AgentOps."
+                )
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -468,7 +488,14 @@ class Outbox:
                 usage, source, runtime_usage, usage_complete = self._usage_for_turn(
                     connection, row, event_rows, agent_rows
                 )
-                if require_usage and (usage is None or not usage_complete):
+                terminal_ns = max(
+                    item["created_ns"] for item in event_rows
+                    if item["event_name"] in {"Stop", "Interrupt"}
+                )
+                settled = now - terminal_ns >= 60 * 1_000_000_000
+                if require_usage and not settled and (usage is None or not usage_complete):
+                    continue
+                if require_usage and source == "otel" and now - terminal_ns < 2 * 1_000_000_000:
                     continue
                 selected = row, event_rows, agent_rows, usage, source, runtime_usage
                 break
@@ -709,11 +736,6 @@ def _usage_for_conversation(
         """,
         (conversation_id, start_ns, end_ns),
     ).fetchall()
-    if otel_rows:
-        usage = TokenUsage(0, 0)
-        for item in otel_rows:
-            usage += _usage_from_row(item)
-        return usage, "otel"
     transcript_row = connection.execute(
         """
         SELECT * FROM token_usage_events
@@ -722,6 +744,22 @@ def _usage_for_conversation(
         """,
         (conversation_id, turn_id),
     ).fetchone()
-    if transcript_row is not None:
-        return _usage_from_row(transcript_row), "transcript"
+    transcript = _usage_from_row(transcript_row) if transcript_row is not None else None
+    if otel_rows:
+        usage = TokenUsage(0, 0)
+        for item in otel_rows:
+            usage += _usage_from_row(item)
+        if transcript is not None:
+            if transcript.total_tokens > usage.total_tokens:
+                return transcript, "transcript-otel-partial"
+            if (
+                transcript.input_tokens == usage.input_tokens
+                and transcript.output_tokens == usage.output_tokens
+                and transcript.total_tokens == usage.total_tokens
+            ):
+                return usage, "otel+transcript"
+            return usage, "otel-transcript-mismatch"
+        return usage, "otel"
+    if transcript is not None:
+        return transcript, "transcript"
     return None, None

@@ -50,9 +50,10 @@ def run_doctor(*, write_test_trace: bool = False) -> list[Check]:
     else:
         checks.append(
             Check(
-                "OK",
+                "WARN",
                 "codex-otel-config",
-                "existing global exporter preserved; Agent project config routes OTel locally",
+                "existing global exporter preserved; Codex ignores project-level [otel]. "
+                "Route the user-level exporter to the collector or supply CLI -c overrides.",
             )
         )
         checks.append(

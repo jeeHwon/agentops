@@ -5,10 +5,10 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +26,8 @@ from .otel_bridge import (
     OtelTraceAssembler,
     parse_otlp_traces,
 )
+from .otel_spool import OtelSpool
+from .mlflow_exporter import export_pending
 
 
 MAX_REQUEST_BYTES = 10 * 1024 * 1024
@@ -87,21 +89,25 @@ def serve_collector(settings: Settings | None = None) -> None:
     target = collector_pid_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(f"{os.getpid()}\n", encoding="utf-8")
-    trace_assembler = OtelTraceAssembler()
-    # MLflow writes are slower than the OTLP exporter's acknowledgement
-    # timeout. A single background worker acknowledges OTLP immediately,
-    # preserves turn ordering and prevents the exporter from retrying the same
-    # completed spans while a Databricks write is still in flight.
-    trace_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aops-otel-mlflow")
+    spool = OtelSpool(outbox_path().with_name("otel-spool.db"))
+    wake = threading.Event()
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=_otel_worker, args=(spool, active, wake, stop), daemon=True,
+        name="aops-otel-mlflow",
+    )
+    worker.start()
     server = ThreadingHTTPServer(
         ("127.0.0.1", active.otel_port),
-        _handler(active, trace_assembler=trace_assembler, trace_executor=trace_executor),
+        _handler(active, spool=spool, wake=wake),
     )
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
         server.server_close()
-        trace_executor.shutdown(wait=True, cancel_futures=False)
+        stop.set()
+        wake.set()
+        worker.join(timeout=5)
         try:
             target.unlink()
         except FileNotFoundError:
@@ -230,18 +236,20 @@ def ingest_otlp_logs(payload: dict[str, Any], outbox: Outbox) -> int:
 def _handler(
     settings: Settings,
     *,
-    trace_assembler: OtelTraceAssembler | None = None,
-    trace_executor: ThreadPoolExecutor | None = None,
+    spool: OtelSpool,
+    wake: threading.Event,
 ):
     outbox = Outbox(outbox_path())
-    assembler = trace_assembler or OtelTraceAssembler()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             if self.path != "/health":
                 self._send(404, {"error": "not_found"})
                 return
-            self._send(200, {"service": "codex-agentops-otel", "version": __version__})
+            self._send(200, {
+                "service": "codex-agentops-otel", "version": __version__,
+                "otel_spool": spool.stats(),
+            })
 
         def do_POST(self) -> None:
             if self.path not in {"/v1/logs", "/v1/metrics", "/v1/traces"}:
@@ -257,13 +265,11 @@ def _handler(
                     if "protobuf" not in self.headers.get("content-type", "").lower():
                         self._send(415, {"error": "protobuf_required"})
                         return
-                    groups = assembler.ingest(parse_otlp_traces(raw))
-                    _write_heartbeat("traces", len(groups))
+                    parse_otlp_traces(raw)
+                    spool.append(raw)
+                    _write_heartbeat("traces", 1)
                     self._send_protobuf(200, b"")
-                    if trace_executor is None:
-                        _export_otel_groups(groups, settings)
-                    else:
-                        trace_executor.submit(_export_otel_groups, groups, settings)
+                    wake.set()
                     return
                 if "json" not in self.headers.get("content-type", "").lower():
                     self._send(415, {"error": "json_required"})
@@ -304,21 +310,45 @@ def _handler(
     return Handler
 
 
-def _export_otel_groups(
-    groups: tuple[tuple[Any, ...], ...],
-    settings: Settings,
+def _drain_otel_spool(
+    spool: OtelSpool, assembler: OtelTraceAssembler, settings: Settings
 ) -> None:
-    if not groups:
-        return
-    exporter = OtelMlflowExporter(settings)
-    for group in groups:
+    for batch_id, raw in spool.batches():
+        spans = parse_otlp_traces(raw)
+        spool.persist_batch(batch_id, spans)
+        spool.save_groups(assembler.ingest(spans))
+    spool.save_groups(assembler.ingest(()))
+    for trace_id, group in spool.completed():
         try:
-            exporter.export(group)
+            OtelMlflowExporter(settings).export(group)
         except Exception as exc:
-            # Collector stdout/stderr is already redirected to collector.log.
-            # Keep OTLP ingestion available even if a single MLflow write
-            # fails; a later turn can still be observed.
-            print(f"ERROR: failed to export assembled OTel trace: {exc}", file=sys.stderr)
+            print(f"ERROR: OTel export failed for {trace_id}: {type(exc).__name__}", file=sys.stderr)
+        else:
+            spool.mark_exported(trace_id)
+
+
+def _otel_worker(
+    spool: OtelSpool, settings: Settings, wake: threading.Event, stop: threading.Event
+) -> None:
+    assembler = OtelTraceAssembler(grace_seconds=2.0)
+    next_turn_scan = time.monotonic()
+    try:
+        spool.save_groups(assembler.ingest(spool.pending_spans()))
+    except Exception as exc:
+        print(f"ERROR: OTel recovery failed: {type(exc).__name__}", file=sys.stderr)
+    while not stop.is_set():
+        try:
+            _drain_otel_spool(spool, assembler, settings)
+            if time.monotonic() >= next_turn_scan:
+                export_pending(Outbox(outbox_path()), settings, limit=100, require_usage=True,
+                               attempts_per_turn=1)
+                next_turn_scan = time.monotonic() + 30
+        except Exception as exc:
+            print(f"ERROR: OTel worker failed: {type(exc).__name__}", file=sys.stderr)
+            assembler = OtelTraceAssembler(grace_seconds=2.0)
+            assembler.ingest(spool.pending_spans())
+        wake.wait(1)
+        wake.clear()
 
 
 def _attributes(items: Any) -> dict[str, Any]:

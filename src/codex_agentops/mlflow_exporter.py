@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .config import Settings
-from .events import tool_failed
+from .events import CONTENT_CAPTURE_DISABLED, tool_failed
 from .outbox import Outbox, PendingTurn, RuntimeAgent, StoredEvent, ToolObservation
 from . import __version__
 
@@ -71,7 +71,6 @@ class MlflowTurnExporter:
             span_type="AGENT",
             inputs={"message": "Codex AgentOps configuration test"},
             attributes={
-                "agentops.phase": "1",
                 "agentops.test": "true",
                 "agentops.profile": self.settings.profile,
             },
@@ -103,6 +102,11 @@ class MlflowTurnExporter:
         mlflow_status = "ERROR" if status_name in {"cancelled", "error"} else "OK"
         prompt = prompt_event.payload.get("prompt") if prompt_event else None
         response = stop_event.payload.get("last_assistant_message") if stop_event else None
+        if prompt == CONTENT_CAPTURE_DISABLED:
+            prompt = None
+        if response == CONTENT_CAPTURE_DISABLED:
+            response = None
+        evaluation_inputs_available = bool(prompt) and bool(response)
         model = _first_present(turn.events, "model")
         permission_mode = _first_present(turn.events, "permission_mode")
         user_name = _first_present(turn.events, "user_name") or self.settings.user_name or "unknown"
@@ -132,19 +136,35 @@ class MlflowTurnExporter:
             attributes={
                 "agentops.agent_id": turn.agent_id,
                 "agentops.agent_revision": release_version,
-                "agentops.agent_type": _first_present(turn.events, "agent_type") or "harness",
+                "agentops.agent_type": _first_present(turn.events, "agent_type") or "skill-based-agent",
                 "agentops.runtime": runtime,
                 "agentops.session_id": turn.session_id,
                 "agentops.turn_id": turn.turn_id,
                 "agentops.model": model or "unknown",
                 "agentops.permission_mode": permission_mode or "unknown",
                 "agentops.status": status_name,
+                "agentops.evaluation_inputs_available": evaluation_inputs_available,
                 "agentops.tool_count": len(tool_events),
                 "agentops.tool_error_count": sum(_tool_event_failed(turn, item) for item in tool_events),
                 "agentops.subagent_count": len(turn.runtime_agents),
                 "agentops.telemetry_source": "codex-plugin-hooks",
-                "agentops.phase": "1",
-                "agentops.skeleton_version": __version__,
+                "agentops.adapter_version": __version__,
+                "agentops.agent_version": _first_present(turn.events, "agent_version") or release_version,
+                "agentops.build_type": _first_present(turn.events, "build_type") or "unknown",
+                "agentops.serving_type": _first_present(turn.events, "serving_type") or "unknown",
+                "agentops.origin": _first_present(turn.events, "origin") or "unknown",
+                "agentops.security_level": _first_present(turn.events, "security_level") or "unknown",
+                "agentops.uc_permissions": json.dumps(
+                    _first_present(turn.events, "uc_permissions") or [], ensure_ascii=False
+                ),
+                "agentops.flagship_model": bool(
+                    _first_present(turn.events, "flagship_model") or False
+                ),
+                "agentops.model_service": _first_present(turn.events, "model_service") or "unknown",
+                "agentops.agent_name": _first_present(turn.events, "agent_name") or "unknown",
+                "agentops.success_criteria": json.dumps(
+                    _first_present(turn.events, "success_criteria") or {}, ensure_ascii=False
+                ),
                 "agentops.harness_checksum": harness_checksum,
                 "agentops.skills_checksum": skills_checksum,
                 "agentops.skill_checksums": json.dumps(skill_checksums, sort_keys=True),
@@ -156,39 +176,43 @@ class MlflowTurnExporter:
                     turn.events, "data_sensitivity"
                 )
                 or "unknown",
-                "agentops.security_access_level": _first_present(
-                    turn.events, "security_access_level"
-                )
-                or "unknown",
-                "agentops.required_uc_permissions": json.dumps(
-                    _first_present(turn.events, "required_uc_permissions") or [],
-                    ensure_ascii=False,
-                ),
-                "agentops.use_flagship_model": bool(
-                    _first_present(turn.events, "use_flagship_model") or False
-                ),
                 "agentops.owner": _first_present(turn.events, "owner") or "unassigned",
                 "agentops.owner_group": _first_present(turn.events, "owner_group") or "unassigned",
-                "agentops.source_system": _first_present(turn.events, "source_system") or "unknown",
-                "agentops.target_users": json.dumps(
-                    _first_present(turn.events, "target_users") or [], ensure_ascii=False
-                ),
-                "agentops.cost_center": _first_present(turn.events, "cost_center") or "unassigned",
-                "agentops.risk_level": _first_present(turn.events, "risk_level") or "unknown",
-                "agentops.hitl_required": bool(
-                    _first_present(turn.events, "hitl_required") or False
-                ),
                 "mlflow.llm.model": model or "unknown",
                 **token_attributes,
             },
             tags={
                 "agentops.agent_id": turn.agent_id,
+                "agentops.agent_name": _first_present(turn.events, "agent_name") or "unknown",
+                "agentops.agent_version": _first_present(turn.events, "agent_version") or release_version,
+                "agentops.build_type": _first_present(turn.events, "build_type") or "unknown",
+                "agentops.serving_type": _first_present(turn.events, "serving_type") or "unknown",
+                "agentops.origin": _first_present(turn.events, "origin") or "unknown",
+                "agentops.owner": _first_present(turn.events, "owner") or "unknown",
+                "agentops.owner_group": _first_present(turn.events, "owner_group") or "unknown",
+                "agentops.service_criticality": _first_present(turn.events, "service_criticality") or "unknown",
+                "agentops.data_sensitivity": _first_present(turn.events, "data_sensitivity") or "unknown",
+                "agentops.security_level": _first_present(turn.events, "security_level") or "unknown",
+                "agentops.uc_permissions": "|".join(
+                    f"{item['object']}:{item['privilege']}"
+                    for item in _first_present(turn.events, "uc_permissions") or []
+                ),
+                "agentops.flagship_model": str(bool(
+                    _first_present(turn.events, "flagship_model")
+                )).lower(),
+                "agentops.model_service": _first_present(turn.events, "model_service") or "unknown",
+                "agentops.success_criteria": "|".join(
+                    f"{key}={value}" for key, value in (
+                        _first_present(turn.events, "success_criteria") or {}
+                    ).items()
+                ),
                 "agentops.agent_revision": release_version,
                 "agentops.runtime": runtime,
                 "agentops.session_id": turn.session_id,
                 "agentops.turn_id": turn.turn_id,
                 "agentops.turn_key": turn.turn_key,
                 "agentops.status": status_name,
+                "agentops.evaluation_inputs_available": str(evaluation_inputs_available).lower(),
                 "agentops.telemetry_source": "codex-plugin-hooks",
                 "mlflow.trace.user": user_name,
                 "mlflow.trace.session": turn.session_id,
@@ -220,7 +244,7 @@ class MlflowTurnExporter:
                         **_token_attributes(
                             agent.token_usage,
                             agent.token_usage_source,
-                            include_mlflow=False,
+                            include_mlflow=True,
                         ),
                     },
                     start_time_ns=agent_start_ns,
@@ -394,7 +418,12 @@ def _token_attributes(usage: Any, source: str | None, *, include_mlflow: bool) -
     attributes.update(
         {
             "agentops.token_usage.source": source or "unknown",
-            "agentops.token_usage.exact": True,
+            "agentops.token_usage.exact": False,
+            "agentops.token_usage.coverage": (
+                "corroborated" if source == "otel+transcript"
+                else "partial" if source in {"transcript-otel-partial", "otel-transcript-mismatch", "mixed"}
+                else "unverified"
+            ),
             "agentops.tokens.input": usage.input_tokens,
             "agentops.tokens.output": usage.output_tokens,
             "agentops.tokens.cached_input": usage.cached_input_tokens,

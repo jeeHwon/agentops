@@ -19,9 +19,14 @@ from databricks.sdk.errors import ResourceAlreadyExists
 from databricks.sdk.service.catalog import VolumeType
 from databricks.sdk.service.sql import StatementParameterListItem
 
-from .manifest import AGENT_ID_RE, VERSION_RE, calculate_definition_checksums, validate_agent
+from .manifest import (
+    AGENT_ID_RE, SKILL_BASED_AGENT_TYPE, SPEC_SCHEMA_VERSION, VERSION_RE,
+    calculate_definition_checksums,
+    require_source_distribution_allowed, validate_agent,
+)
 from .release import (
     CodexRuntimeBuilder,
+    ReleaseError,
     UcSkillPublisher,
     build_release,
     load_release,
@@ -34,6 +39,20 @@ from .release import (
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_VOLUME = "agent_artifacts"
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024
+AGENT_TABLE_COLUMNS = frozenset("""
+    agent_id name description agent_type agent_version build_type serving_type origin
+    owner owner_group service_criticality data_sensitivity security_level
+    uc_permissions success_criteria_json flagship_model model_service lifecycle
+    current_version spec_uri created_at updated_at
+""".split())
+VERSION_TABLE_COLUMNS = (AGENT_TABLE_COLUMNS - {
+    "lifecycle", "current_version", "spec_uri", "created_at", "updated_at",
+}) | frozenset("""
+    version semver_type model artifact_path artifact_sha256 artifact_size
+    harness_sha256 skills_sha256 skill_names requirements_declared
+    requirements_observed skeleton_compliance eval_run_id eval_summary_json
+    git_commit promoted_to registered_by registered_at manifest_json
+""".split())
 
 
 class RegistryError(RuntimeError):
@@ -124,7 +143,6 @@ class RegistryClient:
         location: RegistryLocation,
         workspace: WorkspaceClient | None = None,
         skill_publisher: UcSkillPublisher | None = None,
-        codex_otel_port: int = 4319,
     ) -> None:
         if not profile.strip():
             raise RegistryError("Databricks profile is required.")
@@ -135,14 +153,13 @@ class RegistryClient:
         self.location = location
         self.workspace = workspace or WorkspaceClient(profile=profile)
         self.skill_publisher = skill_publisher or UcSkillPublisher(profile)
-        self.codex_otel_port = codex_otel_port
 
     def initialize(self) -> None:
         try:
             self.workspace.schemas.create(
                 name=self.location.schema,
                 catalog_name=self.location.catalog,
-                comment="Harness Agent Registry metadata and immutable artifacts",
+                comment="Skill-based Agent Registry metadata and immutable artifacts",
             )
         except Exception as exc:
             if not isinstance(exc, ResourceAlreadyExists) and not _already_exists(exc):
@@ -153,14 +170,14 @@ class RegistryClient:
                 schema_name=self.location.schema,
                 name=self.location.volume,
                 volume_type=VolumeType.MANAGED,
-                comment="Immutable Harness Agent release artifacts",
+                comment="Immutable Skill-based Agent release artifacts",
             )
         except Exception as exc:
             if not isinstance(exc, ResourceAlreadyExists) and not _already_exists(exc):
                 raise
-        self._initialize_v2_tables()
+        self._initialize_tables()
 
-    def _initialize_v2_tables(self) -> None:
+    def _initialize_tables(self) -> None:
         agents = _quoted_name(self.location.agents_table_name)
         versions = _quoted_name(self.location.versions_table_name)
         version_skills = _quoted_name(self.location.version_skills_table_name)
@@ -172,20 +189,20 @@ class RegistryClient:
               agent_id STRING NOT NULL,
               name STRING NOT NULL,
               description STRING NOT NULL,
-              source_system STRING NOT NULL,
               agent_type STRING NOT NULL,
+              agent_version STRING NOT NULL,
+              build_type STRING NOT NULL,
+              serving_type STRING NOT NULL,
+              origin STRING NOT NULL,
               owner STRING,
               owner_group STRING,
               service_criticality STRING NOT NULL,
               data_sensitivity STRING NOT NULL,
-              security_access_level STRING NOT NULL,
-              required_uc_permissions ARRAY<STRING> NOT NULL,
+              security_level STRING NOT NULL,
+              uc_permissions ARRAY<STRUCT<object: STRING, privilege: STRING>> NOT NULL,
               success_criteria_json STRING NOT NULL,
-              use_flagship_model BOOLEAN NOT NULL,
-              target_users ARRAY<STRING> NOT NULL,
-              cost_center STRING,
-              risk_level STRING NOT NULL,
-              hitl_required BOOLEAN NOT NULL,
+              flagship_model BOOLEAN NOT NULL,
+              model_service STRING NOT NULL,
               lifecycle STRING NOT NULL,
               current_version STRING,
               spec_uri STRING,
@@ -200,20 +217,20 @@ class RegistryClient:
               version STRING NOT NULL,
               name STRING NOT NULL,
               description STRING NOT NULL,
-              source_system STRING NOT NULL,
               agent_type STRING NOT NULL,
+              agent_version STRING NOT NULL,
+              build_type STRING NOT NULL,
+              serving_type STRING NOT NULL,
+              origin STRING NOT NULL,
               owner STRING,
               owner_group STRING,
               service_criticality STRING NOT NULL,
               data_sensitivity STRING NOT NULL,
-              security_access_level STRING NOT NULL,
-              required_uc_permissions ARRAY<STRING> NOT NULL,
+              security_level STRING NOT NULL,
+              uc_permissions ARRAY<STRUCT<object: STRING, privilege: STRING>> NOT NULL,
               success_criteria_json STRING NOT NULL,
-              use_flagship_model BOOLEAN NOT NULL,
-              target_users ARRAY<STRING> NOT NULL,
-              cost_center STRING,
-              risk_level STRING NOT NULL,
-              hitl_required BOOLEAN NOT NULL,
+              flagship_model BOOLEAN NOT NULL,
+              model_service STRING NOT NULL,
               semver_type STRING NOT NULL,
               model STRING NOT NULL,
               artifact_path STRING NOT NULL,
@@ -279,11 +296,35 @@ class RegistryClient:
         ]
         for statement in statements:
             self._execute_sql(statement)
+        for table, expected in ((agents, AGENT_TABLE_COLUMNS), (versions, VERSION_TABLE_COLUMNS)):
+            described = self._execute_sql(f"DESCRIBE TABLE {table}")
+            columns = {
+                str(row[0]).strip().lower() for row in described
+                if row and row[0] and str(row[0]).strip() and not str(row[0]).startswith("#")
+            }
+            permissions_type = next(
+                (str(row[1]).lower().replace(" ", "") for row in described
+                 if len(row) > 1 and str(row[0]).strip().lower() == "uc_permissions"),
+                None,
+            )
+            if columns != expected or (
+                permissions_type is not None
+                and permissions_type != "array<struct<object:string,privilege:string>>"
+            ):
+                raise RegistryError(
+                    f"Incompatible Registry table {table}. Back up and recreate the old tables "
+                    f"before registry-init; missing={sorted(expected - columns)}, "
+                    f"unexpected={sorted(columns - expected)}, "
+                    f"uc_permissions_type={permissions_type}. Automatic migration is not supported."
+                )
 
     def register(self, root: str | Path, version: str) -> AgentVersion:
         if not VERSION_RE.fullmatch(version):
-            raise RegistryError("Version must contain only letters, numbers, dot, underscore, or hyphen.")
+            raise RegistryError("Version must use major.minor.patch.")
         manifest = validate_agent(root)
+        if version != manifest.agent_version:
+            raise RegistryError("Registry version must equal SPEC.md agent_version.")
+        require_source_distribution_allowed(manifest.data_sensitivity, manifest.security_level)
         if self.get(manifest.agent_id, version, allow_missing=True) is not None:
             raise RegistryError(f"Agent version already exists: {manifest.agent_id}@{version}")
 
@@ -372,26 +413,24 @@ class RegistryClient:
             "version": version,
             "name": manifest.name,
             "description": manifest.description,
-            "source_system": manifest.source_system,
+            "agent_version": manifest.agent_version,
+            "build_type": manifest.build_type,
+            "serving_type": manifest.serving_type,
+            "origin": manifest.origin,
+            "security_level": manifest.security_level,
+            "uc_permissions": json.dumps(list(manifest.uc_permissions), ensure_ascii=False),
+            "flagship_model": str(manifest.flagship_model).lower(),
+            "model_service": manifest.model_service,
             "agent_type": manifest.agent_type,
             "owner": manifest.owner,
             "owner_group": manifest.owner_group,
             "service_criticality": manifest.service_criticality,
             "data_sensitivity": manifest.data_sensitivity,
-            "security_access_level": manifest.security_access_level,
-            "required_uc_permissions": json.dumps(
-                list(manifest.required_uc_permissions), ensure_ascii=False
-            ),
             "success_criteria_json": json.dumps(
                 manifest.success_criteria, ensure_ascii=False, sort_keys=True
             ),
-            "use_flagship_model": str(manifest.use_flagship_model).lower(),
-            "target_users": json.dumps(list(manifest.target_users), ensure_ascii=False),
-            "cost_center": manifest.cost_center,
-            "risk_level": manifest.risk_level,
-            "hitl_required": str(manifest.hitl_required).lower(),
             "semver_type": _semver_type(version),
-            "model": manifest.model,
+            "model": manifest.model_service,
             "artifact_path": artifact_path,
             "artifact_sha256": artifact_sha256,
             "artifact_size": str(artifact_size),
@@ -407,26 +446,26 @@ class RegistryClient:
             USING (SELECT :agent_id AS agent_id, :version AS version) AS k
             ON t.agent_id = k.agent_id AND t.version = k.version
             WHEN NOT MATCHED THEN INSERT (
-              agent_id, version, name, description, source_system, agent_type,
-              owner, owner_group, service_criticality, data_sensitivity,
-              security_access_level, required_uc_permissions, success_criteria_json,
-              use_flagship_model, target_users, cost_center, risk_level, hitl_required,
+              agent_id, version, name, description, agent_type,
+              owner, owner_group, service_criticality, data_sensitivity, success_criteria_json,
               semver_type, model, artifact_path, artifact_sha256, artifact_size,
               harness_sha256, skills_sha256, skill_names, requirements_declared,
               requirements_observed, skeleton_compliance, eval_run_id, eval_summary_json,
-              git_commit, promoted_to, registered_by, registered_at, manifest_json
+              git_commit, promoted_to, registered_by, registered_at, manifest_json,
+              agent_version, build_type, serving_type, origin, security_level,
+              uc_permissions, flagship_model, model_service
             ) VALUES (
-              :agent_id, :version, :name, :description, :source_system, :agent_type,
+              :agent_id, :version, :name, :description, :agent_type,
               NULLIF(:owner, ''), NULLIF(:owner_group, ''), :service_criticality,
-              :data_sensitivity, :security_access_level,
-              from_json(:required_uc_permissions, 'array<string>'), :success_criteria_json,
-              CAST(:use_flagship_model AS BOOLEAN), from_json(:target_users, 'array<string>'),
-              NULLIF(:cost_center, ''), :risk_level, CAST(:hitl_required AS BOOLEAN),
+              :data_sensitivity, :success_criteria_json,
               :semver_type, :model, :artifact_path, :artifact_sha256,
               CAST(:artifact_size AS BIGINT), :harness_sha256, :skills_sha256,
               from_json(:skill_names, 'array<string>'), CAST(array() AS ARRAY<STRING>),
               CAST(array() AS ARRAY<STRING>), 'passed', NULL, NULL,
-              NULLIF(:git_commit, ''), NULL, current_user(), current_timestamp(), :manifest_json
+              NULLIF(:git_commit, ''), NULL, current_user(), current_timestamp(), :manifest_json,
+              :agent_version, :build_type, :serving_type, :origin, :security_level,
+              from_json(:uc_permissions, 'array<struct<object:string,privilege:string>>'),
+              CAST(:flagship_model AS BOOLEAN), :model_service
             )
             """,
             params,
@@ -437,34 +476,35 @@ class RegistryClient:
             USING (SELECT :agent_id AS agent_id) AS k
             ON t.agent_id = k.agent_id
             WHEN MATCHED THEN UPDATE SET
-              name = :name, description = :description, source_system = :source_system,
+              name = :name, description = :description,
               agent_type = :agent_type, owner = COALESCE(NULLIF(:owner, ''), t.owner),
               owner_group = COALESCE(NULLIF(:owner_group, ''), t.owner_group),
               service_criticality = :service_criticality,
               data_sensitivity = :data_sensitivity,
-              security_access_level = :security_access_level,
-              required_uc_permissions = from_json(:required_uc_permissions, 'array<string>'),
               success_criteria_json = :success_criteria_json,
-              use_flagship_model = CAST(:use_flagship_model AS BOOLEAN),
-              target_users = from_json(:target_users, 'array<string>'),
-              cost_center = NULLIF(:cost_center, ''), risk_level = :risk_level,
-              hitl_required = CAST(:hitl_required AS BOOLEAN), current_version = :version,
-              spec_uri = concat(:artifact_path, '#spec.md'), updated_at = current_timestamp()
+              current_version = :version,
+              spec_uri = concat(:artifact_path, '#SPEC.md'),
+              agent_version = :agent_version, build_type = :build_type,
+              serving_type = :serving_type, origin = :origin,
+              security_level = :security_level,
+              uc_permissions = from_json(:uc_permissions, 'array<struct<object:string,privilege:string>>'),
+              flagship_model = CAST(:flagship_model AS BOOLEAN),
+              model_service = :model_service, updated_at = current_timestamp()
             WHEN NOT MATCHED THEN INSERT (
-              agent_id, name, description, source_system, agent_type, owner, owner_group,
-              service_criticality, data_sensitivity, security_access_level,
-              required_uc_permissions, success_criteria_json, use_flagship_model,
-              target_users, cost_center, risk_level, hitl_required, lifecycle,
-              current_version, spec_uri, created_at, updated_at
+              agent_id, name, description, agent_type, owner, owner_group,
+              service_criticality, data_sensitivity, success_criteria_json, lifecycle,
+              current_version, spec_uri, created_at, updated_at,
+              agent_version, build_type, serving_type, origin, security_level,
+              uc_permissions, flagship_model, model_service
             ) VALUES (
-              :agent_id, :name, :description, :source_system, :agent_type,
+              :agent_id, :name, :description, :agent_type,
               NULLIF(:owner, ''), NULLIF(:owner_group, ''), :service_criticality,
-              :data_sensitivity, :security_access_level,
-              from_json(:required_uc_permissions, 'array<string>'), :success_criteria_json,
-              CAST(:use_flagship_model AS BOOLEAN), from_json(:target_users, 'array<string>'),
-              NULLIF(:cost_center, ''), :risk_level, CAST(:hitl_required AS BOOLEAN),
-              'active', :version, concat(:artifact_path, '#spec.md'),
-              current_timestamp(), current_timestamp()
+              :data_sensitivity, :success_criteria_json,
+              'active', :version, concat(:artifact_path, '#SPEC.md'),
+              current_timestamp(), current_timestamp(),
+              :agent_version, :build_type, :serving_type, :origin, :security_level,
+              from_json(:uc_permissions, 'array<struct<object:string,privilege:string>>'),
+              CAST(:flagship_model AS BOOLEAN), :model_service
             )
             """,
             params,
@@ -583,7 +623,7 @@ class RegistryClient:
         if not AGENT_ID_RE.fullmatch(agent_id):
             raise RegistryError("agent_id must use lower-case kebab-case.")
         if version is not None and not VERSION_RE.fullmatch(version):
-            raise RegistryError("Invalid Agent version.")
+            raise RegistryError("Agent version must use major.minor.patch.")
         version_filter = " AND version = :version" if version else ""
         parameters = {"agent_id": agent_id}
         if version:
@@ -620,6 +660,14 @@ class RegistryClient:
         if registered is None:
             raise RegistryError(f"Agent not found in Registry: {agent_id}")
         try:
+            release_from_dict(registered.release_manifest, expected_agent_id=registered.agent_id)
+        except ReleaseError as exc:
+            raise RegistryError(f"Invalid Registry Release: {exc}") from exc
+        require_source_distribution_allowed(
+            str((registered.release_manifest.get("spec") or {}).get("data_sensitivity") or ""),
+            str((registered.release_manifest.get("spec") or {}).get("security_level") or ""),
+        )
+        try:
             self.skill_publisher.verify_access(
                 release_from_dict(
                     registered.release_manifest,
@@ -646,6 +694,7 @@ class RegistryClient:
             extract_agent_archive(content, temporary_root)
             _verify_file_checksums(temporary_root, registered.release_manifest.get("files", {}))
             manifest = validate_agent(temporary_root)
+            require_source_distribution_allowed(manifest.data_sensitivity, manifest.security_level)
             if manifest.agent_id != registered.agent_id:
                 raise RegistryError("Downloaded artifact agent_id does not match Registry metadata.")
             release = load_release(temporary_root, expected_agent_id=registered.agent_id)
@@ -655,7 +704,7 @@ class RegistryClient:
                 target.rmdir()
             shutil.move(str(temporary_root), str(target))
         if prepare_codex:
-            CodexRuntimeBuilder(otel_port=self.codex_otel_port).prepare(target)
+            CodexRuntimeBuilder().prepare(target)
         return target, registered
 
     def _execute_sql(
@@ -697,7 +746,7 @@ def build_agent_archive(root: str | Path) -> AgentArchive:
     files = [
         manifest.root / "AGENTS.md",
         manifest.root / "README.md",
-        manifest.root / "spec.md",
+        manifest.root / "SPEC.md",
         manifest.root / ".aops" / "release.json",
     ]
     for directory in (manifest.root / "skills", manifest.root / "agents"):
@@ -812,6 +861,8 @@ def _already_exists(exc: Exception) -> bool:
 def _row_to_agent_version(row: list[Any]) -> AgentVersion:
     if len(row) != 15:
         raise RegistryError(f"Unexpected Registry row width: {len(row)}")
+    if not VERSION_RE.fullmatch(str(row[1])) or row[4] != SKILL_BASED_AGENT_TYPE:
+        raise RegistryError("Registry contains an unsupported Agent version or type.")
     try:
         skills = tuple(json.loads(row[11] or "[]"))
         manifest = json.loads(row[14] or "{}")
@@ -819,6 +870,8 @@ def _row_to_agent_version(row: list[Any]) -> AgentVersion:
         raise RegistryError("Invalid Registry JSON metadata.") from exc
     if not isinstance(manifest, dict):
         raise RegistryError("Registry manifest_json must be an object.")
+    if manifest.get("schema_version") != SPEC_SCHEMA_VERSION:
+        raise RegistryError("Registry contains an unsupported Agent Release format.")
     return AgentVersion(
         agent_id=str(row[0]),
         version=str(row[1]),

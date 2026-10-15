@@ -32,18 +32,17 @@ class AgentOpsService:
                 profile=self.settings.profile,
                 warehouse_id=self.settings.warehouse_id,
                 location=parse_registry(self.settings.registry),
-                codex_otel_port=self.settings.otel_port,
             )
         return self._registry_client
 
     def init_agent(self, target: str | Path, agent_id: str) -> Path:
         root = create_agent(agent_id, target)
-        CodexRuntimeBuilder(otel_port=self.settings.otel_port).prepare(root)
+        CodexRuntimeBuilder().prepare(root)
         return root
 
     def validate_agent(self, path: str | Path) -> AgentManifest:
         manifest = validate_agent(path)
-        CodexRuntimeBuilder(otel_port=self.settings.otel_port).prepare(manifest.root)
+        CodexRuntimeBuilder().prepare(manifest.root)
         return manifest
 
     def list_agents(
@@ -78,7 +77,7 @@ class AgentOpsService:
         return self.registry.register(path, version)
 
     def prepare_codex_workspace(self, path: str | Path) -> AssemblyResult:
-        return CodexRuntimeBuilder(otel_port=self.settings.otel_port).prepare(path)
+        return CodexRuntimeBuilder().prepare(path)
 
     def get_agent_status(self, path: str | Path) -> dict[str, Any]:
         manifest = load_manifest(path)
@@ -86,7 +85,7 @@ class AgentOpsService:
         return {
             "agent_id": manifest.agent_id,
             "agent_type": manifest.agent_type,
-            "model": manifest.model,
+            "model": manifest.model_service,
             "release_version": (release or {}).get("version", "working"),
             "codex_runtime_ready": (
                 (manifest.root / ".agents" / "skills").is_dir()

@@ -32,6 +32,17 @@ def test_supported_commands_match_harness_lifecycle():
             parser.parse_args([removed])
 
 
+def test_init_warns_that_codex_needs_gateway_provider(monkeypatch, capsys, tmp_path):
+    root = tmp_path / "sample-agent"
+    monkeypatch.setattr(cli, "create_agent", lambda agent_id, path: root)
+    monkeypatch.setattr(
+        cli, "_codex_runtime_builder", lambda: SimpleNamespace(prepare=lambda path: None)
+    )
+
+    assert cli.main(["init", "sample-agent", "--path", str(root)]) == 0
+    assert "Unity Gateway model_provider/인증을 먼저 설정하세요" in capsys.readouterr().out
+
+
 def test_configure_accepts_explicit_profile_and_defaults():
     args = build_parser().parse_args(
         [
