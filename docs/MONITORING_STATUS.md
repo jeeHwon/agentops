@@ -8,9 +8,12 @@
 | --- | --- | --- |
 | A·B | 현행 `SPEC.md` 계약과 Release/Registry | 현재 Release의 필수 메타데이터·Skill/하네스 체크섬과 로드 확인. 별도 구형 Registry는 현행 파서와 호환되지 않으며 수정하지 않음. |
 | A·B | **관측된** 성공 Turn의 사용량 | A 단일/하위 Agent 실제 실행과 B **일부** 부모/자식 실제 실행에서 입력·출력·합계가 로컬 실행 기록과 MLflow에서 일치. 관측 사례에 한하며 아래 B 누락 사례도 존재. 캐시 읽기 토큰은 입력에 이미 포함. |
-| A·B | 결측과 명시적 0 구분 | 로컬 MLflow 테스트에서 부분 결측/미관측은 `partial`/`unknown` 및 사용량 `None`, 명시적인 출력 0은 0으로 보존. |
+| A·B | 결측과 명시적 0 구분 | 로컬 MLflow 테스트에서 부분 결측/미관측은 `partial`/`unknown` 및 사용량 `None`, 명시적인 출력 0은 0으로 보존. 기존 원격 Trace에는 `available=false`인데 MLflow 요약 사용량이 0인 사례도 있으므로 요약값만으로 실제 사용량 0이라고 판단하지 않음. |
 | A | 부모→하위 Agent→Tool 한 Trace | 실제 explorer의 부모·자식 span 링크와 하위 Tool을 재조회. |
+| B | 조건이 맞을 때 부모→하위 Agent 연결 | 기존 실제 위임 Trace에서 부모와 자식이 동일 MLflow Trace로 연결된 실행을 재조회. 자식 세션 ID와 수집 순서에 의존하므로 모든 위임의 연결을 뜻하지 않음. |
 | A·B | Agent와 관측 Tool span | A/B 실제 실행에서 Agent와 Tool span 관측. **Tool 경계까지만** 포함하며 외부 서버 내부는 포함하지 않음. |
+| A | 전송 완료 Trace 재조회 | 로컬 outbox가 `uploaded`로 기록한 Trace는 해당 표본 모두 원격에서 재조회됨. Hook에 애초에 오지 않은 호출/Turn의 전수를 증명하지는 않음. |
+| B | 관리형 프로젝트 Tool 건수 대조 | 조사한 관리형 실행의 Tool 카드 수와 Tool span 수는 일치. 동일 호출 ID별 일치는 검증되지 않음. |
 | B | Tool 오류와 Agent 복구의 구분 | 실제 실패 Tool `ERROR`, 복구된 Agent root `OK`를 별도 재조회. |
 | A·B | Trace 처리시간·상태 | 실제 Trace에 `execution_time_ms`와 상태 관측. 개별 LLM 요청 지연/서비스 p90은 아님. |
 | B | OTLP 배치의 재시작·순서 복구 | Tool 선도착 → Collector 재시작 → Agent root 후도착을 한 Trace로 복구하고 동일 배치 재전송 중복을 방지. A의 Hook 경로와 구별. |
@@ -26,7 +29,9 @@
 | B | 모든 성공/재개 Turn에서 사용량 확보 | 실제 재개 Turn의 사용량이 `None`이었고 **추가 재시험에서는 첫 Turn과 재개 Turn 모두** MLflow `usage=None`, `coverage=unknown`; 같은 세션의 로컬 Omnigent 사용량도 비어 있었음. 누락은 재개에만 한정되지 않음. |
 | B | 누락 사용량 원인의 확정·복구 | Omnigent 0.17의 `run_turn`은 `thread/tokenUsage/updated`에서 사용량을 채우지만 `final_answer` 항목 완료나 `turn/completed`에서 즉시 반환함. 이벤트 선후관계가 가능한 원인이나 이번 실행의 **원시 Codex 이벤트 순서는 보존되지 않아 확정 불가**. 이전 Turn 값을 복사하거나 합성 수치를 만들지 않음. |
 | A·B | 실제 Turn 중단 시 서버 취소·정확한 상태/사용량 | A는 실제 중단 미재현(합성 Hook의 `ERROR`/토큰 보존만 확인). B Ctrl-C 시 원격 root가 `OK`였고, 세션별 interrupt API 두 번은 해당 Turn이 이미 완료된 후 요청됨; HTTP `202 {"queued":false}`는 라우트 구현상 성공적인 실제 중단 증거가 아님. 실행 중 취소와 잔여 사용량은 입증하지 못함. |
-| B | 부모와 자식의 동일 Trace 연결 | 실제 하위 Agent는 별도 최상위 Trace. 기본 본문 비수집 상태에서 부모 Tool span에 자식 session ID가 없으므로 수집된 데이터만으로 연결 불가. 부모·자식 토큰을 하나의 Trace로 더하지 않음. |
+| B | 모든 부모·자식의 동일 Trace 연결 | 실제 위임에서 연결된 경우와 자식이 별도 최상위 Trace가 된 경우가 모두 있음. 자식 ID가 있어도 부모가 먼저 확정되면 별도 저장되는 순서 문제를 로컬에서 재현. 자식 ID가 없는 경우도 있어 새 실행의 연결은 보장되지 않음. 별도 Trace의 부모·자식 토큰을 자동 합산하지 않음. |
+| A | 모든 Tool 호출 및 오류 Turn의 Trace | 완료된 호스티드 WebSearch가 Hook/Tool span에 빠진 실제 사례가 있음. 종료 Hook이 없는 오류 Turn도 MLflow에 Trace가 생성되지 않았음. Codex 공식 Hook 문서는 호스티드 WebSearch가 Tool Hook을 거치지 않는다고 명시. |
+| B | 관리형 실행 밖 Codex-native Tool 전수 | 조사한 프로젝트 밖 세션에서 실제 Bash 호출은 있었지만 해당 Tool span은 없었음. 관리형 프로젝트의 카드·span 건수 일치를 전체 Codex 세션 커버리지로 확대할 수 없음. |
 | A | 실제 Tool 오류와 Agent 복구 구분 | 합성 Hook 오류는 확인했지만 실제 Tool 실패·복구 Turn의 원격 조회는 미검증. |
 | A·B | 외부 MCP/Tool 서버 내부 호출 및 그 모델 사용량 | 외부 서버의 자체 계측과 trace context 전달 없음. 현재 Tool span은 경계 호출만 뜻함. |
 | A·B | 모델 요청별 비용·실제 청구액 | 실제 Trace의 `cost=None`. 관리형 MLflow는 LiteLLM 가격 정보나 명시적 비용 속성이 필요할 수 있고, 추정 비용은 청구액과 별개. |
@@ -40,4 +45,4 @@
 
 검증: A `pytest -q`, B `PYTHONPATH=../agentops/src:src ../agentops/.venv/bin/pytest -q`, B UI `node tests/test_web_ui.mjs`. 실측 Trace ID·계정·원문·수치·workspace 주소는 공개 저장소에 기록하지 않았습니다. Unity Gateway 연결은 이번 범위에서 제외했습니다.
 
-공식 구현/문서: [MLflow 토큰·비용](https://mlflow.org/docs/latest/genai/tracing/token-usage-cost/), [MLflow 집계 구현](https://github.com/mlflow/mlflow/blob/master/mlflow/tracing/utils/__init__.py), [Omnigent Codex 이벤트 처리](https://github.com/omnigent-ai/omnigent/blob/main/omnigent/inner/codex_executor.py), [Codex App Server 토큰 이벤트 스키마](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/json/v2/ThreadTokenUsageUpdatedNotification.json), [Codex Python SDK Turn 처리](https://github.com/openai/codex/blob/main/sdk/python/src/openai_codex/_run.py), [Databricks UC Trace](https://docs.databricks.com/aws/en/mlflow3/genai/tracing/trace-unity-catalog).
+공식 구현/문서: [Codex Hook 범위](https://learn.chatgpt.com/docs/hooks), [MLflow 토큰·비용](https://mlflow.org/docs/latest/genai/tracing/token-usage-cost/), [MLflow 집계 구현](https://github.com/mlflow/mlflow/blob/master/mlflow/tracing/utils/__init__.py), [Omnigent Codex 이벤트 처리](https://github.com/omnigent-ai/omnigent/blob/main/omnigent/inner/codex_executor.py), [Codex App Server 토큰 이벤트 스키마](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/json/v2/ThreadTokenUsageUpdatedNotification.json), [Codex Python SDK Turn 처리](https://github.com/openai/codex/blob/main/sdk/python/src/openai_codex/_run.py), [Databricks UC Trace](https://docs.databricks.com/aws/en/mlflow3/genai/tracing/trace-unity-catalog).
