@@ -225,6 +225,34 @@ def test_real_mlflow_trace_contains_root_io_and_tool_span(tmp_path, monkeypatch)
     assert trace.info.cost is None
 
 
+def test_reconciled_websearch_exports_id_without_search_content(tmp_path, monkeypatch):
+    import mlflow
+    from mlflow import MlflowClient
+
+    outbox, settings = _complete_turn(tmp_path, capture_content=False)
+    assert outbox.append_transcript_websearch(
+        session_id="s", turn_id="t", call_id="hosted-search", observed_ns=time.time_ns()
+    )
+    turn = outbox.claim()
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    tracking_uri = str(tmp_path / "mlruns")
+    mlflow.set_tracking_uri(tracking_uri)
+    client = MlflowClient(tracking_uri=tracking_uri)
+    experiment_id = client.create_experiment("websearch-local")
+    exporter = MlflowTurnExporter(settings)
+    monkeypatch.setattr(exporter, "_client_and_experiment", lambda: (client, experiment_id))
+
+    trace = client.get_trace(exporter.export_turn(turn))
+    tools = [span for span in trace.data.spans if span.span_type == "TOOL"]
+    assert len(tools) == 2
+    hosted = next(span for span in tools if span.name == "tool.WebSearch")
+    assert hosted.attributes["agentops.tool_use_id"] == "hosted-search"
+    assert hosted.attributes["agentops.capture_source"] == "codex-transcript"
+    assert hosted.inputs is None
+    assert hosted.outputs is None
+    assert trace.data.spans[0].attributes["agentops.token_usage.available"] is False
+
+
 def test_no_content_turn_is_not_eligible_for_quality_scoring(tmp_path, monkeypatch):
     import mlflow
     from mlflow import MlflowClient

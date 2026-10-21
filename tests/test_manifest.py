@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 import yaml
 
@@ -18,6 +20,14 @@ from codex_agentops.release import CodexRuntimeBuilder
 from codex_agentops.release import build_release
 
 
+def _add_validator(root):
+    path = root / "agents/validator/AGENTS.md"
+    path.parent.mkdir(parents=True)
+    example = (root / "README.md").read_text(encoding="utf-8").split("```markdown\n", 1)[1].split("\n```", 1)[0]
+    path.write_text(example + "\n", encoding="utf-8")
+    return path
+
+
 def test_create_agent_uses_markdown_source_and_generated_codex_runtime(tmp_path):
     root = create_agent("claims-helper", tmp_path / "claims-helper")
     manifest = load_manifest(root)
@@ -27,9 +37,16 @@ def test_create_agent_uses_markdown_source_and_generated_codex_runtime(tmp_path)
     assert manifest.agent_type == "skill-based-agent"
     assert (root / "SPEC.md").is_file()
     assert (root / "AGENTS.md").is_file()
+    assert "validator" not in (root / "AGENTS.md").read_text(encoding="utf-8")
     assert (root / "README.md").is_file()
     assert (root / "skills/request-structurer/SKILL.md").is_file()
-    assert (root / "agents/validator/AGENTS.md").is_file()
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert "기본 예시 Skill" in readme
+    assert "Skill 내용이 자동으로 생성되지는 않습니다" in readme
+    assert "폴더명과 `SKILL.md`의 `name`을 일치" in readme
+    assert not (root / "agents").exists()
+    assert "기본 폴더에는 Sub-agent가 없습니다" in readme
+    assert "agents/validator/AGENTS.md" in readme
     assert not (root / "agent.yaml").exists()
     assert not (root / "CLAUDE.md").exists()
     assert find_agent_root(root / "skills/request-structurer") == root
@@ -40,9 +57,46 @@ def test_create_agent_uses_markdown_source_and_generated_codex_runtime(tmp_path)
     assert (root / ".codex/config.toml").is_file()
     assert "[otel]" not in (root / ".codex/config.toml").read_text(encoding="utf-8")
     assert 'model = "system.ai.gpt-5-6-sol"' in (root / ".codex/config.toml").read_text()
-    assert (root / ".codex/agents/validator.toml").is_file()
+    assert not (root / ".codex/agents/validator.toml").exists()
     assert (root / ".aops/runtime.json").is_file()
+    assert json.loads((root / ".aops/runtime.json").read_text())["subagents"] == []
     assert validate_agent(root) == manifest
+    assert build_release(root, "1.0.0", "main.agentops").subagents == ()
+
+
+def test_finder_metadata_is_not_part_of_the_agent_release(tmp_path):
+    from codex_agentops.registry import build_agent_archive
+    from codex_agentops.release import hash_skill_directory, write_release_metadata
+
+    root = create_agent("claims-helper", tmp_path / "claims-helper")
+    _add_validator(root)
+    eval_root = root / "eval"
+    eval_root.mkdir()
+    (eval_root / "eval_dataset.json").write_text("[]")
+    write_release_metadata(build_release(root, "1.0.0", "main.agentops"))
+    baseline_checksums = calculate_definition_checksums(root)
+    baseline_skill_hash = hash_skill_directory(root / "skills/request-structurer")
+    baseline_archive = build_agent_archive(root)
+
+    folders = (root, root / "skills", root / "skills/request-structurer",
+               root / "skills/request-structurer/references", root / "agents",
+               root / "agents/validator", eval_root)
+    for folder in folders:
+        (folder / ".DS_Store").write_bytes(b"Finder metadata")
+
+    assert validate_agent(root).agent_id == "claims-helper"
+    assert calculate_definition_checksums(root) == baseline_checksums
+    assert hash_skill_directory(root / "skills/request-structurer") == baseline_skill_hash
+    assert build_agent_archive(root).content == baseline_archive.content
+    CodexRuntimeBuilder().prepare(root)
+    assert not (root / ".agents/skills/request-structurer/.DS_Store").exists()
+
+
+def test_finder_named_symlink_is_not_ignored(tmp_path):
+    root = create_agent("claims-helper", tmp_path / "claims-helper")
+    (root / ".DS_Store").symlink_to(root / "README.md")
+    with pytest.raises(ManifestError, match="Symbolic links"):
+        validate_agent(root)
 
 
 def test_sensitive_local_runtime_is_denied(tmp_path):
@@ -89,7 +143,7 @@ def test_latest_spec_fields_and_structured_uc_permissions_round_trip(tmp_path):
     metadata, body = read_markdown_frontmatter(spec, "SPEC.md")
     metadata.update({
         "agent_version": "0.1.0",
-        "build_type": "code",
+        "build_type": "skill",
         "serving_type": "SE",
         "origin": "innohub",
         "service_criticality": "중",
@@ -105,6 +159,15 @@ def test_latest_spec_fields_and_structured_uc_permissions_round_trip(tmp_path):
     assert manifest.agent_version == "0.1.0"
     assert manifest.uc_permissions == ({"object": "catalog.schema.table", "privilege": "SELECT"},)
     assert manifest.model_service == "claude-opus-5-5"
+
+
+@pytest.mark.parametrize("other_type", ["code", "no-code"])
+def test_skill_based_cli_rejects_other_agent_build_types(tmp_path, other_type):
+    root = create_agent("claims-helper", tmp_path / "claims-helper")
+    spec = root / "SPEC.md"
+    spec.write_text(spec.read_text().replace("build_type: skill", f"build_type: {other_type}"))
+    with pytest.raises(ManifestError, match="build_type must be skill"):
+        validate_agent(root)
 
 
 @pytest.mark.parametrize("field,replacement", [
@@ -188,9 +251,19 @@ def test_checksums_change_independently_for_harness_and_skills(tmp_path):
 def test_skill_and_subagent_follow_standard_source_contract(tmp_path):
     root = create_agent("claims-helper", tmp_path / "claims-helper")
     skills = load_skills(root)
+    assert load_subagents(root, set(skills)) == {}
+    _add_validator(root)
     subagents = load_subagents(root, set(skills))
     assert set(skills) == {"request-structurer"}
     assert subagents["validator"].skills == ("request-structurer",)
+    CodexRuntimeBuilder().prepare(root)
+    assert (root / ".codex/agents/validator.toml").is_file()
+    (root / "agents/validator/AGENTS.md").unlink()
+    (root / "agents/validator").rmdir()
+    (root / "agents").rmdir()
+    assert validate_agent(root).agent_id == "claims-helper"
+    CodexRuntimeBuilder().prepare(root)
+    assert not (root / ".codex/agents/validator.toml").exists()
 
 
 def test_create_agent_rejects_non_kebab_id(tmp_path):
@@ -230,7 +303,7 @@ def test_validate_agent_rejects_scripts_and_symbolic_links(tmp_path):
 
 def test_validate_agent_rejects_unknown_subagent_skill(tmp_path):
     root = create_agent("claims-helper", tmp_path / "claims-helper")
-    path = root / "agents/validator/AGENTS.md"
+    path = _add_validator(root)
     path.write_text(
         path.read_text(encoding="utf-8").replace(
             "  - request-structurer", "  - missing-skill"

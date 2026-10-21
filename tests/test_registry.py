@@ -63,7 +63,7 @@ def test_agent_archive_is_deterministic_and_round_trips(tmp_path):
     assert first.content == second.content
     assert first.sha256 == second.sha256
     assert "skills/request-structurer/SKILL.md" in first.files
-    assert "agents/validator/AGENTS.md" in first.files
+    assert not any(name.startswith("agents/") for name in first.files)
     assert ".aops/release.json" in first.files
     assert not any(name.startswith(".codex/") for name in first.files)
     assert not any(name.startswith(".agents/") for name in first.files)

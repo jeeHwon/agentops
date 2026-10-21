@@ -27,6 +27,10 @@ class ManifestError(RuntimeError):
     pass
 
 
+def is_os_metadata_file(path: Path) -> bool:
+    return path.name == ".DS_Store" and path.is_file() and not path.is_symlink()
+
+
 class _UniqueKeyLoader(yaml.SafeLoader):
     pass
 
@@ -164,10 +168,6 @@ AGENTS_TEMPLATE = """\
 - 요청과 `description`이 일치하는 Skill만 사용합니다.
 - 여러 Skill이 관련되면 필요한 Skill만 순서대로 사용합니다.
 
-## Sub-agent 사용
-
-- 독립적인 검증이 필요하면 `validator` Sub-agent에게 맡깁니다.
-
 ## 기본 원칙
 
 - 제공되지 않은 사실은 추측하지 않습니다.
@@ -212,23 +212,6 @@ EXAMPLE_REFERENCE = """\
 """
 
 
-EXAMPLE_SUBAGENT = """\
----
-name: validator
-description: 결과가 Agent의 성공 기준과 Skill 출력 형식을 충족하는지 독립적으로 검증할 때 사용합니다.
-sandbox_mode: read-only
-skills:
-  - request-structurer
----
-
-# Validator
-
-결과의 사실성, 누락과 요구사항 충족 여부를 검증합니다.
-문제를 발견하면 근거와 수정 방향을 간단히 반환합니다.
-파일은 수정하지 않습니다.
-"""
-
-
 def find_agent_root(start: str | Path) -> Path | None:
     path = Path(start).expanduser().resolve()
     if path.is_file():
@@ -269,7 +252,8 @@ def load_manifest(root: str | Path) -> AgentManifest:
     criticality = _required_string(metadata, "service_criticality", "SPEC.md")
     sensitivity = _required_string(metadata, "data_sensitivity", "SPEC.md")
     security_level = _required_string(metadata, "security_level", "SPEC.md")
-    _enum_value(build_type, "build_type", {"code", "skill", "no-code"})
+    if build_type != "skill":
+        raise ManifestError("SPEC.md build_type must be skill for Skill-based Agents.")
     _enum_value(serving_type, "serving_type", {"apps", "Apps", "SE", "se", "Job", "job"})
     _enum_value(origin, "origin", {"databricks", "innohub"})
     _enum_value(criticality, "service_criticality", {"상", "중", "하"})
@@ -371,7 +355,7 @@ def load_skills(root: str | Path) -> dict[str, SkillDefinition]:
         if skill.name in result:
             raise ManifestError(f"Duplicate Skill name: {skill.name}")
         result[skill.name] = skill
-    unsupported = sorted(path for path in skills_root.iterdir() if not path.is_dir())
+    unsupported = sorted(path for path in skills_root.iterdir() if not path.is_dir() and not is_os_metadata_file(path))
     if unsupported:
         raise ManifestError(f"skills/ may contain only Skill folders: {unsupported[0]}")
     return result
@@ -409,6 +393,8 @@ def validate_skill_directory(root: str | Path) -> SkillDefinition:
     for path in sorted(skill_root.rglob("*")):
         if path.is_symlink():
             raise ManifestError(f"Symbolic links are not allowed in Skill bundles: {path}")
+        if is_os_metadata_file(path):
+            continue
         if path.is_dir():
             if path != skill_root / "references":
                 raise ManifestError(
@@ -442,7 +428,7 @@ def load_subagents(
     for subagent_root in sorted(path for path in agents_root.iterdir() if path.is_dir()):
         definition = validate_subagent(subagent_root, available_skills)
         result[definition.name] = definition
-    unsupported = sorted(path for path in agents_root.iterdir() if not path.is_dir())
+    unsupported = sorted(path for path in agents_root.iterdir() if not path.is_dir() and not is_os_metadata_file(path))
     if unsupported:
         raise ManifestError(f"agents/ may contain only Sub-agent folders: {unsupported[0]}")
     return result
@@ -470,7 +456,7 @@ def validate_subagent(
             raise ManifestError(f"Sub-agent references unknown Skills: {', '.join(unknown)}")
     if not body.strip():
         raise ManifestError(f"Sub-agent instructions are empty: {path}")
-    unsupported = [item for item in subagent_root.iterdir() if item.name != "AGENTS.md"]
+    unsupported = [item for item in subagent_root.iterdir() if item.name != "AGENTS.md" and not is_os_metadata_file(item)]
     if unsupported:
         raise ManifestError(f"Sub-agent 폴더에는 AGENTS.md만 허용합니다: {unsupported[0]}")
     return SubagentDefinition(
@@ -493,16 +479,13 @@ def create_agent(agent_id: str, destination: str | Path | None = None) -> Path:
     name = agent_id.replace("-", " ").title()
     skill_root = root / "skills" / "request-structurer"
     reference_root = skill_root / "references"
-    subagent_root = root / "agents" / "validator"
     reference_root.mkdir(parents=True)
-    subagent_root.mkdir(parents=True)
     files = {
         root / "SPEC.md": SPEC_TEMPLATE.format(agent_id=agent_id, name=name),
         root / "AGENTS.md": AGENTS_TEMPLATE,
         root / "README.md": _agent_readme(agent_id),
         skill_root / "SKILL.md": EXAMPLE_SKILL,
         reference_root / "guidelines.md": EXAMPLE_REFERENCE,
-        subagent_root / "AGENTS.md": EXAMPLE_SUBAGENT,
         root / ".gitignore": ".aops/\n.agents/\n.codex/\n",
     }
     for path, content in files.items():
@@ -517,6 +500,8 @@ def _agent_readme(agent_id: str) -> str:
         # {title}
 
         이 폴더 하나가 Skill-based Agent의 개발·테스트·등록 단위입니다.
+        `request-structurer`는 입력·절차·출력 형식을 보여주는 기본 예시 Skill입니다.
+        `SPEC.md`를 수정해도 Skill 내용이 자동으로 생성되지는 않습니다.
 
         ## 수정할 파일
 
@@ -525,6 +510,31 @@ def _agent_readme(agent_id: str) -> str:
         - `skills/*/SKILL.md`: 재사용 가능한 업무 절차
         - `skills/*/references/*.md`: Skill 참고자료
         - `agents/*/AGENTS.md`: 선택적인 Sub-agent 정의
+
+        실제 업무에 맞게 `skills/request-structurer/`를 수정·복사·이름 변경하거나 새 Skill을 추가하세요.
+        폴더명과 `SKILL.md`의 `name`을 일치시키고, `description`에는 사용 조건을 적습니다.
+        기본 폴더에는 Sub-agent가 없습니다. 필요할 때만 `agents/<이름>/AGENTS.md`를 추가하세요.
+        예를 들어 검증 담당자가 필요한 경우 `agents/validator/AGENTS.md`를 다음과 같이 만듭니다.
+        `skills`에는 실제로 존재하는 Skill 폴더 이름을 적고, 루트 `AGENTS.md`에도 위임 조건을 작성하세요.
+
+        ```markdown
+        ---
+        name: validator
+        description: 결과의 누락과 요구사항 충족 여부를 독립적으로 확인할 때 사용합니다.
+        sandbox_mode: read-only
+        skills:
+          - request-structurer
+        ---
+
+        # Validator
+
+        결과의 누락과 오류를 확인하고 수정 방향을 제시합니다. 파일은 수정하지 않습니다.
+        ```
+
+        `sandbox_mode`는 부모 Codex 세션의 보안 설정을 강화하거나 재정의하지 않습니다.
+        작성 후 `aops validate`를 실행하면 참조한 Skill을 확인하고 실행 구성을 재생성합니다.
+        이전에 받은 폴더에 `agents/validator/`가 있다면 불필요할 때 삭제한 뒤 다시 검증하세요.
+        이미 등록한 버전은 바뀌지 않으므로 수정한 내용을 게시하려면 SPEC.md와 `--version`을 함께 올립니다.
 
         ## 실행
 
@@ -541,6 +551,11 @@ def _agent_readme(agent_id: str) -> str:
         aops load {agent_id} --version 1.0.0
         ```
 
+        `aops register`와 `aops list`는 Skill 원본 Registry를 사용합니다. 통합 포털의 개발 목록은
+        별도 Delta Registry이므로 포털에서 **에이전트 등록 → Skill-based → Registry 릴리스 연결**로
+        이미 게시한 ID·버전을 연결해야 나타납니다. 파일과 UC Skill을 다시 등록하는 것은 아닙니다.
+        운영 목록은 이후 Gate 승인과 운영 지정이 필요합니다.
+
         `.agents/`, `.codex/`와 `.aops/`는 `aops`가 생성하는 런타임 파일입니다.
         """
     )
@@ -555,10 +570,10 @@ def calculate_definition_checksums(root: str | Path) -> DefinitionChecksums:
     ]
     agents_root = manifest.root / "agents"
     if agents_root.is_dir():
-        harness_paths.extend(sorted(path for path in agents_root.rglob("*") if path.is_file()))
+        harness_paths.extend(sorted(path for path in agents_root.rglob("*") if path.is_file() and not is_os_metadata_file(path)))
     harness = _hash_files(manifest.root, harness_paths)
     skills_root = manifest.root / "skills"
-    skill_files = sorted(path for path in skills_root.rglob("*") if path.is_file())
+    skill_files = sorted(path for path in skills_root.rglob("*") if path.is_file() and not is_os_metadata_file(path))
     skills = {
         path.relative_to(manifest.root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in skill_files
@@ -631,12 +646,14 @@ def _validate_source_tree(root: Path) -> None:
             continue
         if path.is_symlink():
             raise ManifestError(f"Symbolic links are not allowed in Agent source: {path}")
+        if is_os_metadata_file(path):
+            continue
         if path.is_file() and path.name not in allowed_files:
             raise ManifestError(f"Agent 루트에는 표준 Markdown 파일만 허용합니다: {path}")
         if path.is_dir() and path.name not in {"skills", "agents", "eval"}:
             raise ManifestError(f"Agent 루트에는 skills/, agents/와 eval/만 허용합니다: {path}")
         if path.is_dir() and path.name == "eval":
-            if any(item.is_symlink() or not item.is_file() or item.name != "eval_dataset.json"
+            if any(not is_os_metadata_file(item) and (item.is_symlink() or not item.is_file() or item.name != "eval_dataset.json")
                    for item in path.iterdir()):
                 raise ManifestError(f"eval/에는 eval_dataset.json만 허용합니다: {path}")
 

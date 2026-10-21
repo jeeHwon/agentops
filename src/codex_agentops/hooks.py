@@ -14,7 +14,7 @@ from .events import from_hook_payload
 from .manifest import ManifestError, find_agent_root, load_manifest
 from .outbox import Outbox
 from .paths import heartbeat_path, outbox_path, uploader_log_path
-from .usage import parse_transcript_usage, parse_transcript_usages
+from .usage import parse_transcript_usage, parse_transcript_usages, parse_transcript_websearch
 
 
 def handle_hook(raw: dict[str, Any], *, launch_uploader: bool = True) -> dict[str, Any]:
@@ -50,8 +50,12 @@ def handle_hook(raw: dict[str, Any], *, launch_uploader: bool = True) -> dict[st
         outbox.append(event)
         if event.terminal:
             _record_transcript_usage(raw, event, outbox)
+            _record_transcript_websearch(raw.get("transcript_path"), event.session_id, outbox)
         elif event.event_name == "SubagentStop":
             _record_subagent_transcript_usage(raw, event, outbox)
+            _record_transcript_websearch(
+                raw.get("agent_transcript_path"), str(raw.get("agent_id") or ""), outbox
+            )
         _write_heartbeat(event.event_name, manifest.agent_id)
         previous_failures = outbox.stats()["failed"]
         if event.terminal and launch_uploader:
@@ -176,6 +180,30 @@ def reconcile_session_transcript(
         ):
             inserted += 1
     return inserted
+
+
+def reconcile_session_websearch(transcript_path: str, session_id: str, outbox: Outbox) -> int:
+    return _record_transcript_websearch(transcript_path, session_id, outbox)
+
+
+def _record_transcript_websearch(
+    transcript_path: Any, session_id: str, outbox: Outbox
+) -> int:
+    if not transcript_path or not session_id:
+        return 0
+    try:
+        calls = parse_transcript_websearch(str(transcript_path), session_id=session_id)
+    except (OSError, ValueError):
+        return 0
+    return sum(
+        outbox.append_transcript_websearch(
+            session_id=session_id,
+            turn_id=call.turn_id,
+            call_id=call.call_id,
+            observed_ns=call.completed_ns,
+        )
+        for call in calls
+    )
 
 
 def _launch_reconciler(transcript_path: str, session_id: str) -> None:

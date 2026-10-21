@@ -17,6 +17,7 @@ from .manifest import (
     VERSION_RE,
     ManifestError,
     calculate_definition_checksums,
+    is_os_metadata_file,
     load_manifest,
     load_skills,
     load_subagents,
@@ -274,7 +275,7 @@ def hash_skill_directory(path: str | Path) -> str:
     if symbolic_link is not None:
         raise ReleaseError(f"Symbolic links are not allowed in Skill bundles: {symbolic_link}")
     digest = hashlib.sha256()
-    for file in (entry for entry in entries if entry.is_file()):
+    for file in (entry for entry in entries if entry.is_file() and not is_os_metadata_file(entry)):
         digest.update(file.relative_to(root).as_posix().encode("utf-8"))
         digest.update(b"\0")
         digest.update(file.read_bytes())
@@ -304,69 +305,88 @@ class UcSkillPublisher:
             prepared.append((skill, source, self._exists(skill.uc_name)))
 
         published: list[PublishedSkill] = []
-        for skill, source, existed in prepared:
-            if skill.publication_mode == "shared-reference":
-                if not existed:
-                    raise ReleaseError(f"Referenced UC Skill does not exist: {skill.uc_name}")
-                published.append(
-                    PublishedSkill(
-                        alias=skill.alias,
-                        uc_name=skill.uc_name,
-                        sha256=skill.sha256,
-                        action="referenced",
+        created: list[str] = []
+        try:
+            for skill, source, existed in prepared:
+                if skill.publication_mode == "shared-reference":
+                    if not existed:
+                        raise ReleaseError(f"Referenced UC Skill does not exist: {skill.uc_name}")
+                    published.append(
+                        PublishedSkill(
+                            alias=skill.alias,
+                            uc_name=skill.uc_name,
+                            sha256=skill.sha256,
+                            action="referenced",
+                        )
                     )
-                )
-                continue
-            catalog, schema, leaf = skill.uc_parts
-            if not existed:
-                parent = quote(f"schemas/{catalog}.{schema}", safe="./")
-                skill_id = quote(leaf, safe="-_")
+                    continue
+                catalog, schema, leaf = skill.uc_parts
+                if not existed:
+                    parent = quote(f"schemas/{catalog}.{schema}", safe="./")
+                    skill_id = quote(leaf, safe="-_")
+                    self._checked(
+                        [
+                            "databricks",
+                            "api",
+                            "post",
+                            f"/api/2.1/unity-catalog/skills?parent={parent}&skill_id={skill_id}",
+                            "-p",
+                            self.profile,
+                            "--json",
+                            "{}",
+                        ],
+                        f"create UC Skill {skill.uc_name}",
+                    )
+                    created.append(skill.uc_name)
+                remote_root = f"dbfs:/Skills/{catalog}/{schema}/{leaf}"
+                files = sorted(file for file in source.rglob("*") if file.is_file() and not is_os_metadata_file(file))
+                directories = {source} | {file.parent for file in files}
+                for directory in sorted(directories, key=lambda item: (len(item.parts), item)):
+                    relative = directory.relative_to(source).as_posix()
+                    target = remote_root if relative == "." else f"{remote_root}/{relative}"
+                    self._checked(
+                        ["databricks", "fs", "mkdir", target, "-p", self.profile],
+                        f"create UC Skill directory {skill.uc_name}",
+                    )
+                for file in files:
+                    target = f"{remote_root}/{file.relative_to(source).as_posix()}"
+                    self._checked(
+                        ["databricks", "fs", "cp", str(file), target,
+                         "--overwrite", "-p", self.profile],
+                        f"upload UC Skill file {skill.uc_name}",
+                    )
                 self._checked(
                     [
                         "databricks",
                         "api",
                         "post",
-                        f"/api/2.1/unity-catalog/skills?parent={parent}&skill_id={skill_id}",
+                        f"/api/2.1/unity-catalog/skills/{quote(skill.uc_name, safe='.')}/finalize",
                         "-p",
                         self.profile,
-                        "--json",
-                        "{}",
                     ],
-                    f"create UC Skill {skill.uc_name}",
+                    f"finalize UC Skill {skill.uc_name}",
                 )
-            self._checked(
-                [
-                    "databricks",
-                    "fs",
-                    "cp",
-                    str(source),
-                    f"dbfs:/Skills/{catalog}/{schema}/{leaf}/",
-                    "--recursive",
-                    "--overwrite",
-                    "-p",
-                    self.profile,
-                ],
-                f"upload UC Skill bundle {skill.uc_name}",
-            )
-            self._checked(
-                [
-                    "databricks",
-                    "api",
-                    "post",
-                    f"/api/2.1/unity-catalog/skills/{quote(skill.uc_name, safe='.')}/finalize",
-                    "-p",
-                    self.profile,
-                ],
-                f"finalize UC Skill {skill.uc_name}",
-            )
-            published.append(
-                PublishedSkill(
-                    alias=skill.alias,
-                    uc_name=skill.uc_name,
-                    sha256=skill.sha256,
-                    action="updated" if existed else "created",
+                published.append(
+                    PublishedSkill(
+                        alias=skill.alias,
+                        uc_name=skill.uc_name,
+                        sha256=skill.sha256,
+                        action="updated" if existed else "created",
+                    )
                 )
-            )
+        except ReleaseError as exc:
+            cleanup_errors = []
+            for full_name in reversed(created):
+                result = self.runner(
+                    ["databricks", "api", "delete",
+                     f"/api/2.1/unity-catalog/skills/{quote(full_name, safe='.')}",
+                     "-p", self.profile]
+                )
+                if result.returncode != 0:
+                    cleanup_errors.append(f"{full_name}: {_command_message(result)}")
+            if cleanup_errors:
+                raise ReleaseError(f"{exc}; UC Skill cleanup failed: {', '.join(cleanup_errors)}") from exc
+            raise
         return tuple(published)
 
     def publish_release(
@@ -416,7 +436,14 @@ class UcSkillPublisher:
     def _checked(self, command: Sequence[str], action: str) -> None:
         result = self.runner(command)
         if result.returncode != 0:
-            raise ReleaseError(f"Cannot {action}: {_command_message(result)}")
+            message = _command_message(result)
+            if "not supported for this skill's storage location" in message.lower():
+                raise ReleaseError(
+                    f"Cannot {action}: this UC Skill storage location does not support /Skills "
+                    f"file operations in this workspace. Select a Skill schema backed by a "
+                    f"supported managed storage location, then retry. Server error: {message}"
+                )
+            raise ReleaseError(f"Cannot {action}: {message}")
 
 
 class CodexRuntimeBuilder:
@@ -442,7 +469,7 @@ class CodexRuntimeBuilder:
             for name, skill in skills.items():
                 destination = agents_staging / "skills" / name
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(skill.root, destination)
+                shutil.copytree(skill.root, destination, ignore=shutil.ignore_patterns(".DS_Store"))
             (codex_staging / "agents").mkdir(parents=True, exist_ok=True)
             (codex_staging / "config.toml").write_text(
                 _codex_project_config(manifest.model_service),

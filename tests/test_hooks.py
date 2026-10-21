@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from codex_agentops.config import Settings, save_settings
-from codex_agentops.hooks import handle_hook
+from codex_agentops.hooks import handle_hook, reconcile_session_websearch
 from codex_agentops.manifest import create_agent
 from codex_agentops.outbox import Outbox
 from codex_agentops.paths import outbox_path
@@ -86,6 +86,32 @@ def test_stop_hook_attaches_exact_transcript_token_record(tmp_path, monkeypatch)
     assert turn.token_usage_source == "transcript"
     assert turn.token_usage is not None
     assert turn.token_usage.total_tokens == 120
+
+
+def test_stop_reconciles_hosted_websearch_without_query_or_token_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
+    save_settings(Settings("test-profile", "https://example.cloud.databricks.com", otel_mode="external"))
+    root = create_agent("test-agent", tmp_path / "agent")
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(json.dumps({"type": "event_msg", "payload": {
+        "type": "item_completed", "thread_id": "s", "turn_id": "t",
+        "completed_at_ms": 1700000000000,
+        "item": {"type": "WebSearch", "id": "search-1", "query": "secret"},
+    }}) + "\n", encoding="utf-8")
+    assert handle_hook({"hook_event_name": "Stop", "session_id": "s", "turn_id": "t",
+                        "cwd": str(root), "transcript_path": str(transcript)},
+                       launch_uploader=False) == {}
+    outbox = Outbox(outbox_path())
+    assert reconcile_session_websearch(str(transcript), "s", outbox) == 0
+    turn = outbox.claim()
+    assert turn is not None
+    assert turn.token_usage is None
+    tools = [event for event in turn.events if event.event_name == "PostToolUse"]
+    assert len(tools) == 1
+    assert tools[0].payload["tool_use_id"] == "search-1"
+    assert tools[0].payload["agentops.capture_source"] == "codex-transcript"
+    assert "secret" not in str(tools[0].payload)
 
 
 def test_subagent_hooks_attach_child_usage_to_root_turn(tmp_path, monkeypatch):

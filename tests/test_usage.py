@@ -4,7 +4,32 @@ import json
 
 from codex_agentops.collector import ingest_otlp_logs, parse_otlp_logs, parse_otlp_tool_results
 from codex_agentops.outbox import Outbox
-from codex_agentops.usage import parse_transcript_usage, parse_transcript_usages
+from codex_agentops.usage import (
+    parse_transcript_usage, parse_transcript_usages, parse_transcript_websearch,
+)
+
+
+def test_websearch_parser_only_accepts_completed_matching_calls(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    def item(thread, turn, call, kind="WebSearch", event="item_completed"):
+        return {"type": "event_msg", "payload": {
+            "type": event, "thread_id": thread, "turn_id": turn,
+            "completed_at_ms": 1700000000000,
+            "item": {"type": kind, "id": call, "query": "private query", "results": "private"},
+        }}
+    transcript.write_text("\n".join(json.dumps(row) for row in [
+        item("s", "t", "search-1"), item("s", "t", "search-1"),
+        item("another", "t", "search-2"), item("s", "t", "search-3", event="item_started"),
+        item("s", "t", "search-4", kind="CommandExecution"),
+        {"type": "event_msg", "payload": {"type": "item_completed", "thread_id": "s",
+            "turn_id": "t", "item": {"type": "WebSearch", "id": "no-time"}}},
+        ]), encoding="utf-8")
+
+    calls = parse_transcript_websearch(transcript, session_id="s")
+    assert [(call.turn_id, call.call_id, call.completed_ns) for call in calls] == [
+        ("t", "search-1", 1700000000000000000)
+    ]
+    assert "private" not in repr(calls)
 
 
 def _otlp_payload(session_id: str = "session-1"):

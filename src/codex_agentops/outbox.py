@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -221,6 +222,51 @@ class Outbox:
             ).fetchone()
         return row is not None
 
+    def call_inventory(self, session_id: str) -> tuple[dict[str, Any], ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT t.turn_key, t.session_id, t.turn_id, t.status, t.trace_id,
+                       e.event_name, e.created_ns, e.payload_json
+                FROM turn_uploads AS t
+                JOIN outbox_events AS e ON e.turn_key = t.turn_key
+                WHERE t.session_id = ?
+                  AND e.event_name IN ('PostToolUse', 'SubagentStart', 'SubagentStop')
+                ORDER BY e.created_ns, e.event_id
+                """,
+                (session_id,),
+            ).fetchall()
+        result = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            call_id = (
+                payload.get("tool_use_id") if row["event_name"] == "PostToolUse"
+                else payload.get("codex_agent_id")
+            )
+            if not call_id:
+                continue
+            runtime_agent_id = payload.get("codex_agent_id") or "root"
+            key = (row["turn_key"], row["event_name"], runtime_agent_id, call_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append({
+                "turn_key": row["turn_key"],
+                "session_id": row["session_id"],
+                "turn_id": row["turn_id"],
+                "event": row["event_name"],
+                "call_id": call_id,
+                "runtime_agent_id": runtime_agent_id,
+                "tool_name": payload.get("tool_name") if row["event_name"] == "PostToolUse" else None,
+                "observed_ns": row["created_ns"],
+                "capture_source": payload.get("agentops.capture_source") or "codex-plugin-hooks",
+                "upload_status": row["status"],
+                "trace_id": row["trace_id"],
+                "trace_linkage": payload.get("agentops.trace_linkage") or "unverified",
+            })
+        return tuple(result)
+
     def append_token_usage(
         self,
         *,
@@ -312,6 +358,61 @@ class Outbox:
                     max(0.0, duration_ms),
                     int(success),
                 ),
+            )
+            return cursor.rowcount == 1
+
+    def append_transcript_websearch(
+        self, *, session_id: str, turn_id: str, call_id: str, observed_ns: int
+    ) -> bool:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            turn = connection.execute(
+                "SELECT turn_key, status FROM turn_uploads WHERE session_id = ? AND turn_id = ?",
+                (session_id, turn_id),
+            ).fetchone()
+            runtime_agent_id = None
+            if turn is None:
+                turn = connection.execute(
+                    """
+                    SELECT t.turn_key, t.status FROM runtime_agents AS r
+                    JOIN turn_uploads AS t ON t.turn_key = r.root_turn_key
+                    WHERE r.runtime_agent_id = ? AND r.turn_id = ?
+                    """,
+                    (session_id, turn_id),
+                ).fetchone()
+                runtime_agent_id = session_id if turn is not None else None
+            if turn is None:
+                return False
+            rows = connection.execute(
+                "SELECT payload_json FROM outbox_events WHERE turn_key = ? AND event_name = 'PostToolUse'",
+                (turn["turn_key"],),
+            ).fetchall()
+            for row in rows:
+                payload = json.loads(row["payload_json"])
+                if payload.get("tool_use_id") == call_id:
+                    return False
+            event_id = hashlib.sha256(
+                f"transcript-websearch\x1f{session_id}\x1f{turn_id}\x1f{call_id}".encode()
+            ).hexdigest()
+            payload = {
+                "tool_name": "WebSearch",
+                "tool_use_id": call_id,
+                "tool_failed": False,
+                "tool_input": None,
+                "tool_response": None,
+                "codex_agent_id": runtime_agent_id,
+                "agentops.capture_source": "codex-transcript",
+                "agentops.trace_linkage": (
+                    "late" if turn["status"] in {"uploading", "uploaded"} else "pre_upload"
+                ),
+            }
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO outbox_events(
+                    event_id, turn_key, event_name, created_ns, payload_json
+                ) VALUES (?, ?, 'PostToolUse', ?, ?)
+                """,
+                (event_id, turn["turn_key"], observed_ns, json.dumps(payload, sort_keys=True)),
             )
             return cursor.rowcount == 1
 
@@ -426,6 +527,26 @@ class Outbox:
                         now,
                     ),
                 )
+            call_id = event.payload.get("tool_use_id") if event.event_name == "PostToolUse" else None
+            if call_id:
+                synthetic_id = hashlib.sha256(
+                    f"transcript-websearch\x1f{runtime_agent_id or event.session_id}"
+                    f"\x1f{event.turn_id}\x1f{call_id}".encode()
+                ).hexdigest()
+                connection.execute(
+                    """
+                    DELETE FROM outbox_events WHERE event_id = ? AND turn_key = ?
+                    AND (SELECT status FROM turn_uploads WHERE turn_key = ?) IN ('pending', 'failed')
+                    """,
+                    (synthetic_id, root_turn_key, root_turn_key),
+                )
+            payload = event.payload
+            if event.event_name in {"PostToolUse", "SubagentStart", "SubagentStop"}:
+                status = connection.execute(
+                    "SELECT status FROM turn_uploads WHERE turn_key = ?", (root_turn_key,)
+                ).fetchone()["status"]
+                if status in {"uploading", "uploaded"}:
+                    payload = {**payload, "agentops.trace_linkage": "late"}
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO outbox_events(
@@ -437,7 +558,7 @@ class Outbox:
                     root_turn_key,
                     event.event_name,
                     event.created_ns,
-                    json.dumps(event.payload, ensure_ascii=False, sort_keys=True, default=str),
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
                 ),
             )
             return cursor.rowcount == 1

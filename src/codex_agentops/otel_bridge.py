@@ -50,10 +50,13 @@ class OtelTraceAssembler:
     ``sys_session_send`` conversation id.
     """
 
-    def __init__(self, *, grace_seconds: float = 0.0) -> None:
+    def __init__(
+        self, *, grace_seconds: float = 0.0, link_wait_seconds: float = 30.0
+    ) -> None:
         self._spans: dict[str, dict[str, OtelSpan]] = defaultdict(dict)
         self._root_seen_ns: dict[str, int] = {}
         self._grace_ns = int(grace_seconds * 1_000_000_000)
+        self._link_wait_ns = int(link_wait_seconds * 1_000_000_000)
         self._session_trace: dict[str, str] = {}
         self._subagents: dict[str, _SubagentLink] = {}
         self._emitted: set[str] = set()
@@ -99,10 +102,23 @@ class OtelTraceAssembler:
                     # Parent turn has not ended yet. Hold the child so the
                     # resulting MLflow trace contains the full Agent tree.
                     continue
+                unresolved = any(
+                    link.parent_trace_id == trace_id and not self._child_root(link.child_session_id)
+                    for link in self._subagents.values()
+                )
+                if unresolved and now - first_seen < self._link_wait_ns:
+                    continue
                 combined, consumed = self._assemble(trace_id)
                 ready.append(tuple(combined))
                 self._drop(consumed)
             return tuple(ready)
+
+    def _child_root(self, session_id: str) -> bool:
+        trace_id = self._session_trace.get(session_id)
+        return bool(
+            trace_id and trace_id in self._spans
+            and _root_agent_span(self._spans[trace_id].values())
+        )
 
     def _assemble(self, trace_id: str) -> tuple[list[OtelSpan], tuple[str, ...]]:
         root = _root_agent_span(self._spans[trace_id].values())
@@ -110,14 +126,18 @@ class OtelTraceAssembler:
             return [], ()
         combined = list(self._spans[trace_id].values())
         consumed = [trace_id]
+        linked = 0
+        missing = 0
         for link in tuple(self._subagents.values()):
             if link.parent_trace_id != trace_id:
                 continue
             child_trace_id = self._session_trace.get(link.child_session_id)
             if not child_trace_id or child_trace_id not in self._spans:
+                missing += 1
                 continue
             child_root = _root_agent_span(self._spans[child_trace_id].values())
             if child_root is None:
+                missing += 1
                 continue
             for span in self._spans[child_trace_id].values():
                 if span.span_id == child_root.span_id:
@@ -132,6 +152,20 @@ class OtelTraceAssembler:
                     span = replace(span, parent_span_id=root.span_id, attributes=attrs)
                 combined.append(span)
             consumed.append(child_trace_id)
+            linked += 1
+        if linked or missing:
+            combined = [
+                replace(
+                    span,
+                    attributes={
+                        **span.attributes,
+                        "agentops.subagent.trace_coverage": "partial" if missing else "linked",
+                        "agentops.subagent.linked_count": linked,
+                        "agentops.subagent.unjoined_count": missing,
+                    },
+                ) if span.span_id == root.span_id and span.trace_id == trace_id else span
+                for span in combined
+            ]
         return combined, tuple(consumed)
 
     def _drop(self, trace_ids: Iterable[str]) -> None:
@@ -294,10 +328,19 @@ class OtelMlflowExporter:
             "agentops.subagent_count": subagent_count,
             "agentops.session_send_calls": session_send_calls,
             "agentops.subagent_span_coverage": (
-                "observed" if subagent_count else "unverified" if session_send_calls else "not_requested"
+                "partial" if root.attributes.get("agentops.subagent.unjoined_count")
+                else "observed" if subagent_count else "unverified" if session_send_calls
+                else "not_requested"
             ),
             **usage,
         }
+        for key in (
+            "agentops.subagent.trace_coverage",
+            "agentops.subagent.linked_count",
+            "agentops.subagent.unjoined_count",
+        ):
+            if key in root.attributes:
+                root_attributes[key] = root.attributes[key]
         for key in (
             "agentops.harness_checksum",
             "agentops.skills_checksum",

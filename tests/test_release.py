@@ -117,8 +117,78 @@ def test_publish_creates_missing_uc_skills_with_explicit_profile():
     assert [item.action for item in published] == ["created", "created"]
     assert sum(command[1:3] == ["api", "get"] for command in commands) == 2
     assert sum("/finalize" in " ".join(command) for command in commands) == 2
-    assert sum(command[1:3] == ["fs", "cp"] for command in commands) == 2
+    uploads = [command for command in commands if command[1:3] == ["fs", "cp"]]
+    assert len(uploads) == 4
+    assert all("--recursive" not in command for command in uploads)
+    assert {Path(command[3]).name for command in uploads} == {
+        "SKILL.md", "guidelines.md", "checklist.md",
+    }
+    assert sum(command[1:3] == ["fs", "mkdir"] for command in commands) == 4
     assert all("test-profile" in command for command in commands)
+
+
+def test_publish_cleans_new_uc_skills_when_storage_does_not_support_files():
+    commands: list[list[str]] = []
+
+    def runner(command):
+        command = list(command)
+        commands.append(command)
+        if command[1:3] == ["api", "get"]:
+            return _result(command, 1, stderr="RESOURCE_DOES_NOT_EXIST")
+        if command[1:3] == ["fs", "mkdir"]:
+            return _result(
+                command, 1,
+                stderr="The requested operation is not supported for this skill's storage location.",
+            )
+        return _result(command)
+
+    release = build_release(SAMPLE, "1.0.0", "poc_catalog.agentops_test")
+    with pytest.raises(ReleaseError, match="does not support /Skills file operations"):
+        UcSkillPublisher("test-profile", runner=runner).publish(release)
+
+    assert sum(command[1:3] == ["api", "post"] for command in commands) == 1
+    assert sum(command[1:3] == ["api", "delete"] for command in commands) == 1
+    assert not any("/finalize" in " ".join(command) for command in commands)
+
+
+def test_publish_rolls_back_all_new_skills_on_later_upload_failure():
+    commands: list[list[str]] = []
+
+    def runner(command):
+        command = list(command)
+        commands.append(command)
+        if command[1:3] == ["api", "get"]:
+            return _result(command, 1, stderr="RESOURCE_DOES_NOT_EXIST")
+        if command[1:3] == ["fs", "cp"] and "release-validation" in command[4]:
+            return _result(command, 1, stderr="upload failed")
+        return _result(command)
+
+    release = build_release(SAMPLE, "1.0.0", "poc_catalog.agentops_test")
+    with pytest.raises(ReleaseError, match="upload failed"):
+        UcSkillPublisher("test-profile", runner=runner).publish(release)
+
+    deleted = [command[3] for command in commands if command[1:3] == ["api", "delete"]]
+    assert deleted == [
+        "/api/2.1/unity-catalog/skills/poc_catalog.agentops_test.release-sample-agent-release-validation",
+        "/api/2.1/unity-catalog/skills/poc_catalog.agentops_test.release-sample-agent-release-summary",
+    ]
+
+
+def test_publish_never_deletes_preexisting_skill_on_failure():
+    commands: list[list[str]] = []
+
+    def runner(command):
+        command = list(command)
+        commands.append(command)
+        if command[1:3] == ["fs", "mkdir"]:
+            return _result(command, 1, stderr="upload failed")
+        return _result(command, 0, stdout="{}")
+
+    release = build_release(SAMPLE, "1.0.0", "poc_catalog.agentops_test")
+    with pytest.raises(ReleaseError, match="upload failed"):
+        UcSkillPublisher("test-profile", runner=runner).publish(release)
+
+    assert not any(command[1:3] == ["api", "delete"] for command in commands)
 
 
 def test_publish_updates_existing_uc_skill_but_release_keeps_snapshot_hash(tmp_path):

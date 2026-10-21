@@ -8,8 +8,8 @@ Agent 폴더 작성
   → Release Artifact를 UC Volume에 저장
   → Release 메타데이터를 Delta Registry에 등록
   → Agent 목록 조회·로드
-  → Codex 또는 Omnigent에서 실행
-  → 매 Turn MLflow Trace, 입력·출력이 있는 경우 Scorer 결과 확인
+  → Codex에서 실행
+  → 수집된 Turn의 MLflow Trace, 입력·출력이 있는 경우 Scorer 결과 확인
 ```
 
 Agent 자체를 MCP 서버로 배포하는 기능은 포함하지 않습니다. Web UI나 사내 플랫폼은 `AgentOpsService` Python API를 사용하고, 터미널 사용자는 `aops` CLI를 사용합니다.
@@ -56,10 +56,20 @@ aops configure \
 
 기존 공유 실험에 서로 다른 scorer 필터가 있으면 이를 자동 덮어쓰지 않고 설정을 중단합니다. 필터 변경 시 태그가 없는 기존 Trace의 Safety 평가 범위가 줄어들 수 있으므로 실험 소유자가 먼저 검토해야 합니다.
 
-관리자는 Registry마다 한 번 초기화합니다.
+이미 다른 환경에서 모니터링 중이고 **Registry 조회·로드만** 별도 환경으로 전환하려면, 모니터링에 영향을 주는 `configure` 대신 다음을 최초 한 번 실행합니다. Databricks Profile은 직접 지정해야 합니다.
 
 ```bash
-aops registry-init
+aops use --profile <profile> --registry <catalog.schema> --warehouse-id <warehouse-id>
+aops list
+aops load <agent-id> --version <version>
+```
+
+`use`는 사용자별 조회·로드(`list`, `load`, `catalog-export`) 기본값만 저장하고 MLflow Experiment, Scorer, Codex 전역 설정이나 등록 명령의 대상을 변경하지 않습니다. **게시할 때는 `aops register . --version <version> --profile <profile> --registry <catalog.schema> --warehouse-id <warehouse-id>`로 대상을 명시하세요.** `use`의 선택과 `configure`의 게시 대상이 다르면 인자 없는 `register`/`registry-init`은 잘못된 환경에 쓰지 않도록 중단됩니다. 생략한 Warehouse는 선택한 Profile의 기본 Warehouse를 조회합니다. `load`는 권한·체크섬·Agent 구조를 검증하므로 다운로드 후 다시 `aops validate`할 필요는 없습니다. 다른 Registry로 전환할 때만 `use`를 다시 실행합니다.
+
+관리자는 Registry마다 한 번 초기화합니다. `aops use`로 조회 환경만 바꿨다면 기존 모니터링 설정의 Registry를 잘못 초기화하지 않도록 **쓰기 대상 전체를 명시**합니다.
+
+```bash
+aops registry-init --profile <profile> --registry <catalog.schema> --warehouse-id <warehouse-id>
 ```
 
 ## 새 Agent 개발
@@ -82,14 +92,11 @@ my-agent/
 ├── AGENTS.md
 ├── README.md
 ├── SPEC.md
-├── skills/
-│   └── request-structurer/
-│       ├── SKILL.md
-│       └── references/
-│           └── guidelines.md
-└── agents/
-    └── validator/
-        └── AGENTS.md
+└── skills/
+    └── request-structurer/
+        ├── SKILL.md
+        └── references/
+            └── guidelines.md
 ```
 
 사용자가 수정하는 파일은 위 Markdown 파일뿐입니다.
@@ -101,9 +108,31 @@ my-agent/
 | `README.md` | Agent 사용 방법과 예시 |
 | `skills/<name>/SKILL.md` | 하나의 재사용 가능한 업무 능력과 수행 절차 |
 | `skills/<name>/references/*.md` | Skill이 필요할 때 읽는 세부 기준과 참고자료 |
-| `agents/<name>/AGENTS.md` | Sub-agent 역할, 위임 조건, 사용할 Skill과 제약사항 |
+| `agents/<name>/AGENTS.md` | 필요한 경우에만 추가하는 Sub-agent 역할, 위임 조건과 사용할 Skill |
 
 `.agents/`, `.codex/`, `.aops/`는 `aops`가 실행환경에 맞게 생성하므로 직접 수정하지 않습니다.
+
+### 선택적으로 Sub-agent 추가
+
+`aops init`은 Sub-agent를 기본 생성하지 않습니다. Skill만으로 충분하면 `agents/` 폴더가 없어도 `aops validate`와 `aops register`를 사용할 수 있습니다. 독립 검증이 필요할 때만 `agents/validator/AGENTS.md`를 만듭니다.
+
+```markdown
+---
+name: validator
+description: 결과의 누락과 요구사항 충족 여부를 독립적으로 확인할 때 사용합니다.
+sandbox_mode: read-only
+skills:
+  - request-structurer
+---
+
+# Validator
+
+결과의 누락과 오류를 확인하고 수정 방향을 제시합니다. 파일은 수정하지 않습니다.
+```
+
+`skills`에는 해당 Agent에 실제 존재하는 Skill 폴더명을 적고, 루트 `AGENTS.md`에는 언제 위임할지 명시합니다. Skill 이름을 바꾸면 참조도 함께 바꾸세요. `aops validate`는 선택적으로 작성한 Sub-agent의 형식과 Skill 참조를 검사하며, `.codex/agents/`를 재생성합니다. `sandbox_mode`를 적어도 부모 Codex 세션의 샌드박스·승인 정책을 재정의하지는 못하므로 접근 통제 수단으로 사용하지 마세요.
+
+예전에 내려받은 폴더에 `agents/validator/`가 있다면, 필요 없을 때 그 폴더를 삭제하고 `aops validate`를 다시 실행하세요. 이미 게시한 Release는 불변이므로 변경된 폴더를 등록하려면 `SPEC.md`의 `agent_version`과 `aops register --version`을 함께 새 버전으로 올려야 합니다.
 
 ## Skill 작성 규칙
 
@@ -157,6 +186,10 @@ aops register . --version 1.0.0
 ```
 
 `register`는 구조 검증, UC Skill 생성 또는 갱신, Release manifest 생성, Artifact 압축·해시, UC Volume 업로드와 Delta Registry 등록을 순서대로 수행합니다. 같은 Agent ID와 버전은 덮어쓰지 않습니다.
+
+`aops list`는 **Skill 원본 Registry**(예: `<catalog>.<skill_schema>`)의 등록 여부를 보여줍니다. 통합 포털의 목록은 별도 Delta Registry(예: `<catalog>.<portal_schema>`)에서 읽으므로 `aops register`만으로 포털에 자동 표시되지 않습니다. 포털에서 **개발 → Skill → 원본 Skill · 포털 연결 대기** 목록의 같은 ID·버전을 선택해 **개발 목록에 연결**하세요. 이는 UC Skill이나 Volume 원본을 다시 게시하는 작업이 아닙니다. 운영 목록에는 별도 Gate 승인과 운영 지정이 필요합니다.
+
+UC Skill 게시에는 Registry 스키마의 관리형 스토리지에서 `/Skills` Files API 쓰기가 실제로 지원되어야 합니다. 게시기는 공식 절차대로 디렉터리를 만들고 파일을 개별 업로드한 뒤 finalize하며, 게시 중 실패하면 **이번 시도에서 생성한** UC Skill만 삭제합니다. 관리형 Volume 생성 성공은 Skill 파일 업로드 성공의 증거가 아닙니다. 어떤 기본 스토리지 위치에서는 Skill 생성 후에도 `/Skills` 쓰기가 `The requested operation is not supported for this skill's storage location`로 거부되었습니다. 같은 워크스페이스에서 별도 클라우드 스토리지에 관리형 위치가 지정된 카탈로그의 전용 스키마를 사용하자 Skill 게시·finalize, Artifact Volume 업로드, Registry 등록·로드가 모두 성공했습니다. 이 관찰을 모든 기본/외부 스토리지의 지원 여부로 일반화하지 말고 대상 스키마에서 실제 파일 업로드를 시험하십시오. [Skill 저장소 요건](https://docs.databricks.com/aws/en/ai-gateway/govern-skills), [게시 절차](https://docs.databricks.com/aws/en/ai-gateway/skill-reference)를 참고하십시오.
 
 ```bash
 aops list
@@ -218,6 +251,17 @@ aops flush
 
 CLI와 동일한 코어 로직은 `codex_agentops.service.AgentOpsService`로 제공합니다.
 
+`agentops`는 Skill 생성·검증·원본 게시·로드 및 Codex 관측의 정본으로 단독 동작합니다. 별도 `agentops-portal`은 Skill/Code/Genie 통합 목록과 심사 UI를 제공하는 선택적 계층입니다. `aops register`만으로 원본 A안 Registry에 게시되고, 포털 개발 목록까지 관리하려면 그곳에서 **이미 게시된 ID·버전을 연결**합니다. 이 연결은 원본 Skill이나 릴리스를 다시 게시하지 않습니다.
+
+통합 Delta 카탈로그에 A안 릴리스를 연결하려면 현재 사용자가 UC Skill 원문을 읽을 수 있는 릴리스의 메타데이터만 내보내십시오. 이 명령은 Skill 본문이나 Volume 다운로드 주소를 포함하지 않습니다.
+
+```bash
+aops catalog-export --all-versions --profile <profile> \
+  --registry <catalog.schema> --warehouse-id <warehouse-id>
+```
+
+외부 플랫폼에서 사용할 때는 `AgentOpsService.export_catalog(all_versions=True)`가 동일한 공개 메타데이터를 반환합니다. 각 사용자는 여전히 자신의 OAuth 프로필로 `aops load`하여 UC Skill 권한과 릴리스 체크섬을 검증해야 합니다.
+
 ```python
 from codex_agentops.service import AgentOpsService
 
@@ -229,8 +273,6 @@ path, release = service.load_agent("my-agent", version="1.0.0", target="./worksp
 플랫폼은 사용자별 작업 디렉터리를 만든 뒤 이 API로 Agent를 로드하고 해당 디렉터리에서 `codex` 세션을 실행하면 됩니다.
 
 운영 Web 환경에서는 최종 사용자에게 공용 Artifact Volume 직접 읽기 권한을 주지 않고, 사용자 자격증명 또는 OBO로 UC Skill 권한을 먼저 확인하는 Loader Backend를 통해 Release를 전달해야 합니다.
-
-Omnigent 실행은 별도 `agentops-omnigent` 어댑터를 사용합니다. 두 방식은 같은 Agent 소스, Registry, Release와 MLflow `agent.turn` 계약을 공유합니다.
 
 ## 예제와 테스트
 

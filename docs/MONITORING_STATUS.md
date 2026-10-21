@@ -1,6 +1,6 @@
-# Skill-based Agent — 최종 검증 결과
+# 기존 A/B 관측 비교 (현행 Skill-based Agent는 A안)
 
-2026-10-16 기준. **A**는 Codex Hook, **B**는 Omnigent 어댑터입니다. `됨`은 **명시한 조건에서 관측 또는 테스트됨**, `안됨`은 **동작하지 않거나 전수/운영 수준으로 증명되지 않음**을 뜻합니다. `안됨`을 토큰 0개나 모든 실행의 실패로 해석하지 않습니다. 실제 모델 Trace, 격리 실험의 재조회, 합성 OTLP/Hook, 로컬 회귀 테스트를 구분했습니다. 테스트용 환경과 기존 공유 Registry·scorer·권한은 변경하지 않았습니다.
+2026-10-16 비교 실험 기록입니다. **현재 AgentOps·포털에서 Skill-based Agent라 부르는 것은 A(Codex Hook)뿐**이며 B(Omnigent)는 연동·시연 범위가 아닙니다. 아래 B 결과는 과거 검증 사실을 보존한 것이고 현재 배포의 보증이나 구현 요구사항이 아닙니다. `됨`은 **명시한 조건에서 관측 또는 테스트됨**, `안됨`은 **동작하지 않거나 전수/운영 수준으로 증명되지 않음**을 뜻합니다. `안됨`을 토큰 0개나 모든 실행의 실패로 해석하지 않습니다. 실제 모델 Trace, 격리 실험의 재조회, 합성 OTLP/Hook, 로컬 회귀 테스트를 구분했습니다. 테스트용 환경과 기존 공유 Registry·scorer·권한은 변경하지 않았습니다.
 
 ## 됨
 
@@ -19,6 +19,9 @@
 | B | OTLP 배치의 재시작·순서 복구 | Tool 선도착 → Collector 재시작 → Agent root 후도착을 한 Trace로 복구하고 동일 배치 재전송 중복을 방지. A의 Hook 경로와 구별. |
 | B | 미연결 Tool span의 **가시성** | `/health`의 `otel_spool.waiting_for_root`와 24시간 기준 `waiting_for_root_overdue`를 로컬 회귀 테스트와 격리 Collector에서 확인. 실제 미연결 span이 spool에 남았으며, 새 지표는 알림 발송/자동 삭제가 아님. |
 | A·B | 본문 있는 합성 입력의 assessment | 격리된 자동 평가에서 비고객 합성 입력·출력에 대한 assessment 적재/조회. 업무 품질 합격의 근거는 아님. |
+| A | 호스티드 WebSearch 완료 호출 재조정 | 로컬 Codex transcript의 완료된 WebSearch 196건(7개 세션)을 본문·검색어 없이 `(thread_id, turn_id, item.id)`로 파싱. Hook 완료 시점에 알려진 Turn에 중복 없이 합치고 격리된 실험의 합성 Trace에서 ID만 있는 Tool span을 재조회. 실제 196건을 원격 전송한 것은 아님. |
+| A | 실행별 관측 호출 목록 | `aops audit-calls --session-id SESSION_ID`가 로컬 Outbox의 하위 Agent 시작/종료 및 Tool/WebSearch 완료 호출 ID·출처·업로드 상태·Trace ID만 JSONL로 표시. 원문은 출력하지 않음. Hook/완료 transcript 자체가 없는 호출은 분모에 포함되지 않으며, `trace_linkage=late`는 이미 업로드된 Trace와 다를 수 있음. |
+| B | 늦은 자식 root의 제한적 연결 | 자식 ID가 있는 부모 root를 최대 30초 기다리도록 보완. 자식 선/후도착·재시작·시간 초과를 로컬 테스트하고, 격리된 실험에 합성 부모/자식 한 Trace를 기록·재조회. 실제 Omnigent 전수 연결 검증은 아님. |
 
 ## 안됨
 
@@ -29,8 +32,8 @@
 | B | 모든 성공/재개 Turn에서 사용량 확보 | 실제 재개 Turn의 사용량이 `None`이었고 **추가 재시험에서는 첫 Turn과 재개 Turn 모두** MLflow `usage=None`, `coverage=unknown`; 같은 세션의 로컬 Omnigent 사용량도 비어 있었음. 누락은 재개에만 한정되지 않음. |
 | B | 누락 사용량 원인의 확정·복구 | Omnigent 0.17의 `run_turn`은 `thread/tokenUsage/updated`에서 사용량을 채우지만 `final_answer` 항목 완료나 `turn/completed`에서 즉시 반환함. 이벤트 선후관계가 가능한 원인이나 이번 실행의 **원시 Codex 이벤트 순서는 보존되지 않아 확정 불가**. 이전 Turn 값을 복사하거나 합성 수치를 만들지 않음. |
 | A·B | 실제 Turn 중단 시 서버 취소·정확한 상태/사용량 | A는 실제 중단 미재현(합성 Hook의 `ERROR`/토큰 보존만 확인). B Ctrl-C 시 원격 root가 `OK`였고, 세션별 interrupt API 두 번은 해당 Turn이 이미 완료된 후 요청됨; HTTP `202 {"queued":false}`는 라우트 구현상 성공적인 실제 중단 증거가 아님. 실행 중 취소와 잔여 사용량은 입증하지 못함. |
-| B | 모든 부모·자식의 동일 Trace 연결 | 실제 위임에서 연결된 경우와 자식이 별도 최상위 Trace가 된 경우가 모두 있음. 자식 ID가 있어도 부모가 먼저 확정되면 별도 저장되는 순서 문제를 로컬에서 재현. 자식 ID가 없는 경우도 있어 새 실행의 연결은 보장되지 않음. 별도 Trace의 부모·자식 토큰을 자동 합산하지 않음. |
-| A | 모든 Tool 호출 및 오류 Turn의 Trace | 완료된 호스티드 WebSearch가 Hook/Tool span에 빠진 실제 사례가 있음. 종료 Hook이 없는 오류 Turn도 MLflow에 Trace가 생성되지 않았음. Codex 공식 Hook 문서는 호스티드 WebSearch가 Tool Hook을 거치지 않는다고 명시. |
+| B | 모든 부모·자식의 동일 Trace 연결 | 실제 위임에서 연결된 경우와 자식이 별도 최상위 Trace가 된 경우가 모두 있음. 자식 ID가 있고 root가 30초 안에 도착하는 경우의 순서 문제를 보완했으나, ID 누락·부모보다 너무 늦은 자식·먼저 확정된 자식 등은 분리될 수 있음. 별도 Trace의 부모·자식 토큰을 자동 합산하지 않음. |
+| A | 모든 Tool 호출 및 오류 Turn의 Trace | 호스티드 WebSearch는 Hook을 거치지 않아 알려진 Turn의 완료된 transcript 이벤트만 재조정. Stop/SessionEnd 누락, transcript 누락, 이미 업로드된 Turn의 늦은 이벤트는 원격 Trace에 반영할 수 없음(로컬 이벤트는 `agentops.trace_linkage=late`). 종료 Hook이 없는 오류 Turn도 Trace가 없음. |
 | B | 관리형 실행 밖 Codex-native Tool 전수 | 조사한 프로젝트 밖 세션에서 실제 Bash 호출은 있었지만 해당 Tool span은 없었음. 관리형 프로젝트의 카드·span 건수 일치를 전체 Codex 세션 커버리지로 확대할 수 없음. |
 | A | 실제 Tool 오류와 Agent 복구 구분 | 합성 Hook 오류는 확인했지만 실제 Tool 실패·복구 Turn의 원격 조회는 미검증. |
 | A·B | 외부 MCP/Tool 서버 내부 호출 및 그 모델 사용량 | 외부 서버의 자체 계측과 trace context 전달 없음. 현재 Tool span은 경계 호출만 뜻함. |
@@ -43,6 +46,6 @@
 | A·B | MLflow Trace의 UC 테이블 저장 | 확인한 실험의 `trace_location=None`. UC Agent/Skill Registry는 UC Trace 테이블과 별도. 기존 공유 실험의 저장소·권한 변경은 수행하지 않음. |
 | A·B | 민감 Skill을 원문 비공개로 실행만 허용 | 현재 A/B는 Skill 원문을 로컬 실행 환경에 복사하므로 실행 사용자에게 원문을 강제로 숨길 수 없음. 고객의 별도 권한/격리 결정 전에는 지원하지 않음. |
 
-검증: A `pytest -q`, B `PYTHONPATH=../agentops/src:src ../agentops/.venv/bin/pytest -q`, B UI `node tests/test_web_ui.mjs`. 실측 Trace ID·계정·원문·수치·workspace 주소는 공개 저장소에 기록하지 않았습니다. Unity Gateway 연결은 이번 범위에서 제외했습니다.
+추가 검증: A `pytest -q`, B `PYTHONPATH=../agentops/src:src ../agentops/.venv/bin/python -m pytest -q`, B UI `node tests/test_web_ui.mjs`. `PYTHONPATH=src .venv/bin/python scripts/verify_remote_monitoring.py --profile YOUR_PROFILE`는 개인 격리 실험에 **고객 데이터 없는 합성 Trace 두 개**만 쓰고 다시 읽습니다. 기존 공유 실험·Registry·권한에는 쓰지 않았습니다. 실측 Trace ID·계정·원문·수치·workspace 주소는 공개 저장소에 기록하지 않았습니다. Unity Gateway 연결은 이번 범위에서 제외했습니다.
 
 공식 구현/문서: [Codex Hook 범위](https://learn.chatgpt.com/docs/hooks), [MLflow 토큰·비용](https://mlflow.org/docs/latest/genai/tracing/token-usage-cost/), [MLflow 집계 구현](https://github.com/mlflow/mlflow/blob/master/mlflow/tracing/utils/__init__.py), [Omnigent Codex 이벤트 처리](https://github.com/omnigent-ai/omnigent/blob/main/omnigent/inner/codex_executor.py), [Codex App Server 토큰 이벤트 스키마](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/json/v2/ThreadTokenUsageUpdatedNotification.json), [Codex Python SDK Turn 처리](https://github.com/openai/codex/blob/main/sdk/python/src/openai_codex/_run.py), [Databricks UC Trace](https://docs.databricks.com/aws/en/mlflow3/genai/tracing/trace-unity-catalog).

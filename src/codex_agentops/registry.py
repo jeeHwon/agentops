@@ -22,6 +22,7 @@ from databricks.sdk.service.sql import StatementParameterListItem
 from .manifest import (
     AGENT_ID_RE, SKILL_BASED_AGENT_TYPE, SPEC_SCHEMA_VERSION, VERSION_RE,
     calculate_definition_checksums,
+    is_os_metadata_file,
     require_source_distribution_allowed, validate_agent,
 )
 from .release import (
@@ -750,7 +751,7 @@ def build_agent_archive(root: str | Path) -> AgentArchive:
         manifest.root / ".aops" / "release.json",
     ]
     for directory in (manifest.root / "skills", manifest.root / "agents"):
-        files.extend(sorted(path for path in directory.rglob("*") if path.is_file()))
+        files.extend(sorted(path for path in directory.rglob("*") if path.is_file() and not is_os_metadata_file(path)))
     entries = [*files]
     symbolic_link = next((path for path in entries if path.is_symlink()), None)
     if symbolic_link is not None:

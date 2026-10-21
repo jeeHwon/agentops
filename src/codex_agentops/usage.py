@@ -48,6 +48,48 @@ class TokenUsage:
         )
 
 
+@dataclass(frozen=True)
+class CompletedWebSearch:
+    turn_id: str
+    call_id: str
+    completed_ns: int
+
+
+def parse_transcript_websearch(
+    path: str | Path, *, session_id: str
+) -> tuple[CompletedWebSearch, ...]:
+    """Read completed hosted calls by ID without retaining queries or results."""
+    result: dict[tuple[str, str], CompletedWebSearch] = {}
+    with Path(path).expanduser().resolve().open("r", encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(row, dict) or row.get("type") != "event_msg":
+                continue
+            payload = row.get("payload")
+            if not isinstance(payload, dict) or payload.get("type") != "item_completed":
+                continue
+            if payload.get("thread_id") != session_id:
+                continue
+            item = payload.get("item")
+            if not isinstance(item, dict) or item.get("type") != "WebSearch":
+                continue
+            turn_id, call_id = payload.get("turn_id"), item.get("id")
+            completed_ms = payload.get("completed_at_ms")
+            if (
+                not isinstance(turn_id, str) or not turn_id
+                or not isinstance(call_id, str) or not call_id
+                or not isinstance(completed_ms, int) or completed_ms <= 0
+            ):
+                continue
+            result[(turn_id, call_id)] = CompletedWebSearch(
+                turn_id, call_id, completed_ms * 1_000_000
+            )
+    return tuple(result.values())
+
+
 def parse_transcript_usage(
     path: str | Path, *, session_id: str, turn_id: str
 ) -> TokenUsage | None:

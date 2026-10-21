@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings, load_settings
+from .catalog import catalog_record
 from .manifest import AgentManifest, create_agent, load_manifest, read_release_metadata, validate_agent
 from .registry import AgentVersion, RegistryClient, RegistryError, parse_registry
 from .release import AssemblyResult, CodexRuntimeBuilder
@@ -55,6 +56,13 @@ class AgentOpsService:
             all_versions=all_versions,
             authorized_only=authorized_only,
         )
+
+    def export_catalog(self, *, all_versions: bool = False) -> list[dict[str, Any]]:
+        registry = self.registry
+        return [
+            catalog_record(release, registry.location)
+            for release in registry.list(all_versions=all_versions, authorized_only=True)
+        ]
 
     def load_agent(
         self,

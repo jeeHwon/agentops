@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import __version__
 from .codex_config import configure_otel, remove_otel_config, validate_codex_config
+from .catalog import catalog_record
 from .collector import ensure_collector, serve_collector
 from .config import (
     DEFAULT_EXPERIMENT,
@@ -28,13 +29,14 @@ from .databricks import (
     validate_profile,
 )
 from .doctor import run_doctor
-from .hooks import handle_hook, reconcile_session_transcript
+from .hooks import handle_hook, reconcile_session_transcript, reconcile_session_websearch
 from .manifest import ManifestError, create_agent, find_agent_root, validate_agent
 from .mlflow_exporter import MlflowTurnExporter, export_pending
 from .monitoring import configure_turn_monitoring
 from .outbox import Outbox
 from .paths import outbox_path
 from .registry import RegistryClient, RegistryError, parse_registry
+from .registry_context import RegistryContext, load_registry_context, save_registry_context
 from .release import CodexRuntimeBuilder, ReleaseError
 
 
@@ -45,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="command",
         required=True,
         metavar=(
-            "{configure,init,validate,registry-init,list,register,load,doctor,status,flush}"
+            "{configure,use,init,validate,registry-init,list,catalog-export,register,load,doctor,status,flush}"
         ),
     )
 
@@ -71,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
     configure.add_argument("--capture-content", action="store_true", help="민감정보가 없는 경우에만 Prompt·응답 본문 수집을 허용합니다")
     configure.add_argument("--otel-port", type=int, default=DEFAULT_OTEL_PORT, help="로컬 Codex OTel Port")
 
+    use = commands.add_parser("use", help="Registry 조회·로드 기본값만 선택합니다 (모니터링 설정 변경 없음)")
+    use.add_argument("--profile", required=True, help="사용자가 선택한 Databricks CLI Profile")
+    use.add_argument("--registry", required=True, help="Agent Registry 위치: <catalog>.<schema>")
+    use.add_argument("--warehouse-id", help="SQL Warehouse ID (생략 시 기본 Warehouse 확인)")
+
     init = commands.add_parser("init", help="표준 Agent 폴더를 생성합니다")
     init.add_argument("agent_id")
     init.add_argument("--path", type=Path, help="생성 경로 (기본값: ./<agent-id>)")
@@ -92,6 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="관리자 점검용으로 UC Skill 권한이 없는 Agent도 표시합니다",
     )
 
+    catalog_export = commands.add_parser(
+        "catalog-export", help="접근 가능한 Skill 릴리스의 통합 카탈로그 메타데이터를 JSON으로 내보냅니다"
+    )
+    _add_registry_arguments(catalog_export)
+    catalog_export.add_argument("--all-versions", action="store_true")
+
     register = commands.add_parser("register", help="Agent 폴더를 불변 버전으로 등록합니다")
     register.add_argument("path", nargs="?", type=Path, default=Path.cwd())
     register.add_argument("--version", required=True, help="새 Agent 버전")
@@ -107,6 +120,8 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--write-test-trace", action="store_true")
 
     commands.add_parser("status", help="로컬 Outbox 상태를 표시합니다")
+    audit_calls = commands.add_parser("audit-calls", help="세션별 관측 호출 ID를 본문 없이 표시합니다")
+    audit_calls.add_argument("--session-id", required=True)
     flush = commands.add_parser("flush", help="전송 대기 Trace를 다시 업로드합니다")
     flush.add_argument("--limit", type=int, default=100)
 
@@ -127,6 +142,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "configure":
             return _configure(args)
+        if args.command == "use":
+            profile = get_profile(args.profile, list_profiles())
+            validate_profile(profile)
+            parse_registry(args.registry)
+            warehouse_id = args.warehouse_id or get_default_warehouse(profile.name)
+            save_registry_context(RegistryContext(profile.name, profile.host, args.registry, warehouse_id))
+            print(f"Registry 선택 완료: {args.registry} ({profile.name})")
+            print("이제 aops list / aops load <agent-id>를 사용하세요. MLflow·Codex 설정은 변경하지 않았습니다.")
+            return 0
         if args.command == "init":
             target = args.path or Path.cwd() / args.agent_id
             root = create_agent(args.agent_id, target)
@@ -134,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Agent 생성 완료: {root}")
             print(f"편집 안내: {root / 'README.md'}")
             print(f"Skill 템플릿: {root / 'skills/request-structurer/SKILL.md'}")
-            print(f"다음 단계: cd {root} && codex (Unity Gateway model_provider/인증을 먼저 설정하세요)")
+            print(f"다음 단계: cd {root} && codex (Codex 모델 공급자와 인증을 먼저 확인하세요)")
             return 0
         if args.command == "validate":
             manifest = validate_agent(_agent_root(args.path))
@@ -163,6 +187,17 @@ def main(argv: list[str] | None = None) -> int:
                     f"skills={','.join(item.skill_names)}\tregistered_by={item.registered_by}"
                 )
             return 0
+        if args.command == "catalog-export":
+            registry = _registry_client(args)
+            records = [
+                catalog_record(release, registry.location)
+                for release in registry.list(
+                    all_versions=args.all_versions,
+                    authorized_only=True,
+                )
+            ]
+            print(json.dumps(records, ensure_ascii=False, sort_keys=True))
+            return 0
         if args.command == "register":
             registry = _registry_client(args)
             item = registry.register(_agent_root(args.path), args.version)
@@ -181,8 +216,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Agent 로드 완료: {item.agent_id}@{item.version}")
             print(f"Local Path: {target}")
             print(f"UC Skill 권한 및 Release 체크섬 검증 완료: {len(item.skill_names)}개")
-            print(f"검증: cd {target} && aops validate")
-            print(f"실행: cd {target} && codex (Unity Gateway model_provider/인증을 먼저 설정하세요)")
+            print(f"실행: cd {target} && codex (Codex 모델 공급자와 인증을 먼저 확인하세요)")
             return 0
         if args.command == "doctor":
             checks = run_doctor(write_test_trace=args.write_test_trace)
@@ -193,6 +227,10 @@ def main(argv: list[str] | None = None) -> int:
             stats = Outbox(outbox_path()).stats()
             for key, value in stats.items():
                 print(f"{key}: {value}")
+            return 0
+        if args.command == "audit-calls":
+            for call in Outbox(outbox_path()).call_inventory(args.session_id):
+                print(json.dumps(call, ensure_ascii=False, sort_keys=True))
             return 0
         if args.command == "flush":
             outbox = Outbox(outbox_path())
@@ -217,8 +255,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "_reconcile":
             outbox = Outbox(outbox_path())
             inserted = reconcile_session_transcript(args.transcript_path, args.session_id, outbox)
+            calls = reconcile_session_websearch(args.transcript_path, args.session_id, outbox)
             result = _upload_with_usage_wait(100, 2)
-            print(f"token_records={inserted} uploaded={result.uploaded} failed={result.failed}")
+            print(f"token_records={inserted} websearch_calls={calls} uploaded={result.uploaded} failed={result.failed}")
             return 1 if result.failed else 0
     except (
         DatabricksError,
@@ -242,36 +281,63 @@ def _agent_root(path: Path) -> Path:
 
 
 def _add_registry_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--profile", help="configure에 저장된 Profile 대신 사용할 값")
-    parser.add_argument("--registry", help="configure에 저장된 Registry 대신 사용할 <catalog>.<schema>")
-    parser.add_argument("--warehouse-id", help="configure에 저장된 SQL Warehouse 대신 사용할 ID")
+    parser.add_argument("--profile", help="aops use/configure에서 선택한 Profile 대신 사용할 값")
+    parser.add_argument("--registry", help="aops use/configure에서 선택한 Registry 대신 사용할 <catalog>.<schema>")
+    parser.add_argument("--warehouse-id", help="aops use/configure에서 선택한 SQL Warehouse 대신 사용할 ID")
     parser.add_argument("--volume", default="agent_artifacts", help="Artifact Volume 이름")
 
 
 def _registry_client(args: argparse.Namespace) -> RegistryClient:
+    selected = (
+        load_registry_context()
+        if args.command in {"list", "load", "catalog-export"}
+        and not (args.profile and args.registry and args.warehouse_id)
+        else None
+    )
+    selected_write = (
+        load_registry_context()
+        if args.command in {"register", "registry-init"} and not (args.profile and args.registry)
+        else None
+    )
     settings = None
-    if not args.profile or not args.registry:
-        settings = load_settings()
-    elif not args.warehouse_id:
+    if not args.profile or not args.registry or not args.warehouse_id:
         try:
             settings = load_settings()
         except ConfigError:
-            pass
+            if not selected and (not args.profile or not args.registry):
+                raise
 
-    profile_name = args.profile or settings.profile
-    registry_name = args.registry or settings.registry
+    if selected_write and (
+        settings is None
+        or settings.profile != selected_write.profile
+        or settings.registry != selected_write.registry
+    ):
+        raise ConfigError(
+            "`aops use`로 선택한 Registry와 `aops configure`의 게시 대상이 다릅니다. "
+            "쓰기 명령에 --profile 및 --registry를 모두 명시하거나, "
+            "의도한 환경에서 `aops configure`를 다시 실행하세요."
+        )
+
+    profile_name = args.profile or (selected.profile if selected else settings.profile)
+    selected_for_profile = selected if selected and selected.profile == profile_name else None
+    configured_for_profile = settings if settings and settings.profile == profile_name else None
+    registry_name = args.registry or (
+        selected_for_profile.registry if selected_for_profile else
+        configured_for_profile.registry if configured_for_profile else ""
+    )
     if not registry_name:
         raise RegistryError(
             "Agent Registry가 설정되지 않았습니다. "
-            "`aops configure --registry <catalog.schema>`를 실행하세요."
+            "`aops use --profile <profile> --registry <catalog.schema>`를 실행하세요."
         )
 
     profile = get_profile(profile_name, list_profiles())
     validate_profile(profile)
+    if selected_for_profile and profile.host != selected_for_profile.host:
+        raise ConfigError("선택된 Profile의 Workspace URL이 달라졌습니다. `aops use`를 다시 실행하세요.")
     configured_warehouse = (
-        settings.warehouse_id
-        if settings and settings.profile == profile.name
-        else ""
+        selected_for_profile.warehouse_id if selected_for_profile else
+        configured_for_profile.warehouse_id if configured_for_profile else ""
     )
     warehouse_id = args.warehouse_id or configured_warehouse or get_default_warehouse(profile.name)
     location = parse_registry(registry_name, volume=args.volume)

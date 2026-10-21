@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -54,6 +55,79 @@ def test_outbox_deduplicates_events_and_claims_only_completed_turns(tmp_path):
     outbox.mark_uploaded(turn.turn_key, "tr-test")
     assert outbox.stats()["uploaded"] == 1
     assert outbox.uploaded_trace_id(turn.turn_key) == "tr-test"
+
+
+def test_transcript_call_deduplicates_hook_and_records_late_arrivals(tmp_path):
+    root = create_agent("test-agent", tmp_path / "agent")
+    outbox = Outbox(tmp_path / "outbox.db")
+    outbox.append(_event(root, "UserPromptSubmit", 100))
+    outbox.append(_event(root, "PostToolUse", 150,
+                         tool_name="WebSearch", tool_use_id="hook-call"))
+    outbox.append(_event(root, "Stop", 300))
+    assert not outbox.append_transcript_websearch(
+        session_id="session-1", turn_id="turn-1", call_id="hook-call", observed_ns=200
+    )
+    assert outbox.append_transcript_websearch(
+        session_id="session-1", turn_id="turn-1", call_id="hosted-call", observed_ns=250
+    )
+    assert not outbox.append_transcript_websearch(
+        session_id="session-1", turn_id="turn-1", call_id="hosted-call", observed_ns=250
+    )
+    turn = outbox.claim()
+    assert [event.payload["tool_use_id"] for event in turn.events
+            if event.event_name == "PostToolUse"] == ["hook-call", "hosted-call"]
+    outbox.mark_uploaded(turn.turn_key, "tr-test")
+    assert outbox.append_transcript_websearch(
+        session_id="session-1", turn_id="turn-1", call_id="late-call", observed_ns=260
+    )
+    outbox.append(_event(root, "PostToolUse", 400,
+                         tool_name="WebSearch", tool_use_id="hosted-call"))
+    assert outbox.claim() is None
+    inventory = outbox.call_inventory("session-1")
+    assert [call["call_id"] for call in inventory] == ["hook-call", "hosted-call", "late-call"]
+    assert inventory[1]["capture_source"] == "codex-transcript"
+    assert inventory[1]["trace_id"] == "tr-test"
+    assert inventory[2]["trace_linkage"] == "late"
+    with outbox._connect() as connection:
+        late = connection.execute(
+            "SELECT payload_json FROM outbox_events WHERE turn_key = ? AND created_ns = 260",
+            (turn.turn_key,),
+        ).fetchone()
+    assert json.loads(late["payload_json"])["agentops.trace_linkage"] == "late"
+
+
+def test_transcript_child_call_attaches_to_parent_turn(tmp_path):
+    root = create_agent("test-agent", tmp_path / "agent")
+    outbox = Outbox(tmp_path / "outbox.db")
+    outbox.append(_event(root, "UserPromptSubmit", 100))
+    outbox.append(_event(root, "SubagentStart", 150, agent_id="child-1",
+                         turn_id="child-turn", agent_type="explorer"))
+    outbox.append(_event(root, "Stop", 300))
+    assert outbox.append_transcript_websearch(
+        session_id="child-1", turn_id="child-turn", call_id="child-call", observed_ns=200
+    )
+    assert not outbox.append_transcript_websearch(
+        session_id="unknown", turn_id="child-turn", call_id="stranger", observed_ns=200
+    )
+    turn = outbox.claim()
+    child = next(event for event in turn.events if event.event_name == "PostToolUse")
+    assert child.payload["codex_agent_id"] == "child-1"
+
+
+def test_late_hook_replaces_pending_transcript_call(tmp_path):
+    root = create_agent("test-agent", tmp_path / "agent")
+    outbox = Outbox(tmp_path / "outbox.db")
+    outbox.append(_event(root, "UserPromptSubmit", 100))
+    assert outbox.append_transcript_websearch(
+        session_id="session-1", turn_id="turn-1", call_id="search-1", observed_ns=150
+    )
+    outbox.append(_event(root, "PostToolUse", 160, tool_name="WebSearch",
+                         tool_use_id="search-1"))
+    outbox.append(_event(root, "Stop", 300))
+    turn = outbox.claim()
+    calls = [event for event in turn.events if event.event_name == "PostToolUse"]
+    assert len(calls) == 1
+    assert calls[0].payload.get("agentops.capture_source") is None
 
 
 def test_outbox_prefers_otel_usage_and_falls_back_to_transcript(tmp_path):

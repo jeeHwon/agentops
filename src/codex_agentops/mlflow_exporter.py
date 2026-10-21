@@ -344,6 +344,8 @@ class MlflowTurnExporter:
             attributes={
                 "agentops.tool_name": tool_name,
                 "agentops.tool_use_id": payload.get("tool_use_id") or "unknown",
+                "agentops.capture_source": payload.get("agentops.capture_source") or "codex-plugin-hooks",
+                "agentops.trace_linkage": payload.get("agentops.trace_linkage") or "hook",
                 "agentops.tool_index": index,
                 "agentops.tool_error": failed,
                 "agentops.runtime_agent_id": payload.get("codex_agent_id") or "root",

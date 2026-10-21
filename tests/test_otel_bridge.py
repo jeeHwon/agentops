@@ -337,6 +337,100 @@ def test_assembler_waits_for_late_tool_without_collecting_content():
     assert len(groups[0]) == 2
 
 
+def _linked_subagent_spans():
+    root, _ = parse_otlp_traces(_payload())
+    launch = OtelSpan(
+        trace_id=root.trace_id, span_id="77" * 8, parent_span_id=root.span_id,
+        name="tool:sys_session_send", start_ns=root.start_ns + 10,
+        end_ns=root.start_ns + 20, status="OK",
+        attributes={"openinference.span.kind": "TOOL", "tool.name": "sys_session_send",
+                    "session.id": "conv-1", "agentops.subagent.child_session_id": "child-1",
+                    "agentops.subagent.name": "validator"}, resource=root.resource,
+    )
+    child = replace(root, trace_id="55" * 16, span_id="66" * 8,
+                    attributes={**root.attributes, "session.id": "child-1"})
+    return root, launch, child
+
+
+def test_late_child_root_joins_parent_within_bounded_wait():
+    root, launch, child = _linked_subagent_spans()
+    assembler = OtelTraceAssembler(grace_seconds=2, link_wait_seconds=5)
+    assert assembler.ingest([launch, root], now_ns=1_000_000_000) == ()
+    assert assembler.ingest((), now_ns=3_000_000_000) == ()
+    groups = assembler.ingest([child], now_ns=4_000_000_000)
+    assert len(groups) == 1
+    assert len(groups[0]) == 3
+    assembled_root = next(span for span in groups[0] if span.span_id == root.span_id)
+    assembled_child = next(span for span in groups[0] if span.span_id == child.span_id)
+    assert assembled_root.attributes["agentops.subagent.trace_coverage"] == "linked"
+    assert assembled_child.parent_span_id == root.span_id
+
+
+def test_link_timeout_marks_parent_partial_and_child_stays_separate():
+    root, launch, child = _linked_subagent_spans()
+    assembler = OtelTraceAssembler(grace_seconds=2, link_wait_seconds=5)
+    assert assembler.ingest([launch, root], now_ns=1_000_000_000) == ()
+    groups = assembler.ingest((), now_ns=6_000_000_000)
+    assert len(groups) == 1
+    assert len(groups[0]) == 2
+    assembled_root = next(span for span in groups[0] if span.span_id == root.span_id)
+    assert assembled_root.attributes["agentops.subagent.trace_coverage"] == "partial"
+    assert assembled_root.attributes["agentops.subagent.unjoined_count"] == 1
+    assert assembler.ingest([child], now_ns=7_000_000_000) == ()
+    assert len(assembler.ingest((), now_ns=9_000_000_000)) == 1
+
+
+def test_restart_rehydrates_link_and_waits_for_child():
+    root, launch, child = _linked_subagent_spans()
+    before_restart = OtelTraceAssembler(grace_seconds=2, link_wait_seconds=5)
+    assert before_restart.ingest([launch], now_ns=1_000_000_000) == ()
+    restored = OtelTraceAssembler(grace_seconds=2, link_wait_seconds=5)
+    assert restored.ingest([launch, root], now_ns=2_000_000_000) == ()
+    assert restored.ingest((), now_ns=4_000_000_000) == ()
+    groups = restored.ingest([child], now_ns=5_000_000_000)
+    assert len(groups) == 1
+    assert len(groups[0]) == 3
+
+
+def test_no_child_id_cannot_be_reconciled():
+    root, launch, _ = _linked_subagent_spans()
+    launch = replace(launch, attributes={
+        "openinference.span.kind": "TOOL", "tool.name": "sys_session_send",
+        "session.id": "conv-1",
+    })
+    assembler = OtelTraceAssembler(grace_seconds=2, link_wait_seconds=5)
+    assert assembler.ingest([launch, root], now_ns=1_000_000_000) == ()
+    groups = assembler.ingest((), now_ns=3_000_000_000)
+    assert len(groups) == 1
+    assert len(groups[0]) == 2
+    assert "agentops.subagent.trace_coverage" not in groups[0][0].attributes
+
+
+def test_reconciled_child_appears_in_one_local_mlflow_trace(tmp_path, monkeypatch):
+    import mlflow
+    from mlflow import MlflowClient
+
+    root, launch, child = _linked_subagent_spans()
+    assembler = OtelTraceAssembler(grace_seconds=2, link_wait_seconds=5)
+    assert assembler.ingest([root, launch], now_ns=1_000_000_000) == ()
+    groups = assembler.ingest([child], now_ns=4_000_000_000)
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    tracking_uri = str(tmp_path / "mlruns")
+    mlflow.set_tracking_uri(tracking_uri)
+    client = MlflowClient(tracking_uri=tracking_uri)
+    experiment_id = client.create_experiment("linked-child-local")
+    monkeypatch.setattr(MlflowTurnExporter, "_client_and_experiment",
+                        lambda self: (client, experiment_id))
+
+    exporter = OtelMlflowExporter(Settings("test-profile", "https://example.cloud.databricks.com"))
+    trace = client.get_trace(exporter.export(groups[0]))
+    root_span = next(span for span in trace.data.spans if span.name == "agent.turn")
+    child_span = next(span for span in trace.data.spans if span.name == "agent.subagent.validator")
+    assert child_span.parent_id == root_span.span_id
+    assert root_span.attributes["agentops.subagent.trace_coverage"] == "linked"
+    assert len(client.search_traces([experiment_id])) == 1
+
+
 def test_usage_prefers_generation_spans_and_distinguishes_missing_counts():
     root, tool = parse_otlp_traces(_payload())
     llm = replace(root, span_id="33" * 8, attributes={
