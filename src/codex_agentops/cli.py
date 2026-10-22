@@ -171,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
     audit_calls.add_argument("--session-id", required=True)
     flush = commands.add_parser("flush", help="전송 대기 Trace를 다시 업로드합니다")
     flush.add_argument("--limit", type=int, default=100)
+    discard = commands.add_parser(
+        "discard-failed",
+        help="대상 Experiment가 사라지는 등 재시도해도 실패하는 업로드를 재시도 대상에서 제외합니다",
+    )
+    discard.add_argument("--session-id", help="이 세션의 실패만 제외합니다 (기본값: 전체)")
 
     commands.add_parser("_hook")
     upload = commands.add_parser("_upload")
@@ -310,6 +315,12 @@ def main(argv: list[str] | None = None) -> int:
             for trace_id in result.trace_ids:
                 print(f"trace_id={trace_id}")
             return 1 if result.failed else 0
+        if args.command == "discard-failed":
+            discarded = Outbox(outbox_path()).discard_failed(args.session_id)
+            for kind, identifier, error in discarded:
+                print(f"discarded {kind}={identifier} error={error}")
+            print(f"discarded={len(discarded)}")
+            return 0
         if args.command == "_hook":
             return _hook_command()
         if args.command == "_upload":

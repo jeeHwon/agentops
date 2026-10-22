@@ -329,3 +329,31 @@ def test_partial_otel_does_not_override_transcript_and_missing_usage_settles(tmp
     second.append(_event(root, "Stop", 300))
     assert second.claim(now_ns=400, require_usage=True) is None
     assert second.claim(now_ns=300 + 60_000_000_000, require_usage=True).token_usage is None
+
+
+def test_discard_failed_stops_retries_and_keeps_rows(tmp_path):
+    root = create_agent("test-agent", tmp_path / "agent")
+    outbox = Outbox(tmp_path / "outbox.db")
+    outbox.append(_event(root, "UserPromptSubmit", 1, prompt="hello"))
+    outbox.append(_event(root, "Stop", 2, last_assistant_message="world"))
+    turn = outbox.claim(now_ns=10)
+    outbox.mark_failed(turn.turn_key, "MLflow experiment is not active.", retry_after_seconds=0)
+    for session_id in ("session-1", "session-2"):
+        outbox.record_session(session_id=session_id, agent_id="test-agent",
+                              agent_root=str(root), observed_ns=20, ended=True)
+        outbox.mark_session_failed(session_id, "MLflow experiment is not active.",
+                                   retry_after_seconds=0)
+
+    discarded = outbox.discard_failed("session-1")
+
+    assert discarded == [
+        ("turn", turn.turn_key, "MLflow experiment is not active."),
+        ("session", "session-1", "MLflow experiment is not active."),
+    ]
+    stats = outbox.stats()
+    assert (stats["failed"], stats["discarded"]) == (0, 1)
+    assert (stats["session_failed"], stats["session_discarded"]) == (1, 1)
+    outbox.requeue_failed()
+    assert outbox.claim(now_ns=30) is None
+    assert outbox.claim_session(now_ns=30).session_id == "session-2"
+    assert outbox.discard_failed("session-1") == []

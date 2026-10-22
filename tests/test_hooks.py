@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from codex_agentops.cli import main
 from codex_agentops.config import Settings, save_settings
 from codex_agentops.hooks import handle_hook, reconcile_session_websearch
 from codex_agentops.manifest import create_agent
@@ -354,3 +355,24 @@ def test_subagent_hooks_attach_child_usage_to_root_turn(tmp_path, monkeypatch):
     assert child.agent_type == "explorer"
     assert child.token_usage is not None
     assert child.token_usage.total_tokens == 40
+
+
+def test_hook_warns_about_failed_uploads_until_discarded(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
+    save_settings(Settings("test-profile", "https://example.cloud.databricks.com", codex_enabled=True))
+    root = create_agent("test-agent", tmp_path / "agent")
+    outbox = Outbox(outbox_path())
+    outbox.record_session(session_id="old-session", agent_id="test-agent",
+                          agent_root=str(root), ended=True)
+    outbox.mark_session_failed("old-session", "MLflow experiment is not active.",
+                               retry_after_seconds=0)
+    prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "s", "turn_id": "t",
+              "cwd": str(root), "prompt": "hello"}
+
+    warning = handle_hook(prompt, launch_uploader=False)["systemMessage"]
+    assert "1 failed MLflow upload(s)" in warning
+    assert "aops discard-failed" in warning
+
+    assert main(["discard-failed", "--session-id", "old-session"]) == 0
+    assert handle_hook({**prompt, "turn_id": "t2"}, launch_uploader=False) == {}

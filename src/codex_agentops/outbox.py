@@ -1044,11 +1044,38 @@ class Outbox:
             )
             return cursor.rowcount + sessions.rowcount
 
+    def discard_failed(self, session_id: str | None = None) -> list[tuple[str, str, str]]:
+        """Stop retrying failed uploads; the rows and their last error stay for auditing."""
+        now = time.time_ns()
+        discarded: list[tuple[str, str, str]] = []
+        with self._connect() as connection:
+            for kind, table, key in (
+                ("turn", "turn_uploads", "turn_key"),
+                ("session", "session_uploads", "session_id"),
+            ):
+                rows = connection.execute(
+                    f"""
+                    SELECT {key} AS id, last_error FROM {table}
+                    WHERE status = 'failed' AND (? IS NULL OR session_id = ?)
+                    """,
+                    (session_id, session_id),
+                ).fetchall()
+                connection.executemany(
+                    f"""
+                    UPDATE {table} SET status = 'discarded', lease_until_ns = 0, updated_ns = ?
+                    WHERE {key} = ? AND status = 'failed'
+                    """,
+                    [(now, row["id"]) for row in rows],
+                )
+                discarded.extend((kind, row["id"], row["last_error"] or "unknown error") for row in rows)
+        return discarded
+
     def stats(self) -> dict[str, int]:
         result = {
             "pending": 0,
             "uploading": 0,
             "failed": 0,
+            "discarded": 0,
             "uploaded": 0,
             "open": 0,
             "token_events": 0,
@@ -1056,6 +1083,7 @@ class Outbox:
             "session_pending": 0,
             "session_uploading": 0,
             "session_failed": 0,
+            "session_discarded": 0,
             "session_uploaded": 0,
         }
         with self._connect() as connection:

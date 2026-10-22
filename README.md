@@ -273,7 +273,10 @@ aops status
 aops collector-restart  # Collector 구버전일 때, 진행 중인 실행이 없는 경우에만
 aops audit-calls --session-id <session-id>
 aops flush
+aops discard-failed --session-id <session-id>  # 재시도해도 실패하는 업로드만, 기록은 유지
 ```
+
+`flush`는 실패한 업로드를 다시 시도합니다. 이벤트는 기록 시점의 Experiment에 고정되므로 그 Experiment를 삭제했다면 재시도해도 계속 실패하고 Hook 경고도 반복됩니다. 이때 `discard-failed`로 재시도 대상에서 제외합니다. 행과 마지막 오류는 `status`의 `discarded`/`session_discarded`로 남으며 MLflow에는 올라가지 않습니다.
 
 ## 통합 카탈로그
 
