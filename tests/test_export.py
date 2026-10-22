@@ -356,9 +356,9 @@ def test_real_mlflow_trace_nests_subagent_tools_and_aggregates_tokens(tmp_path, 
         "input_tokens": 30,
         "output_tokens": 10,
         "total_tokens": 40,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
+    assert subagent.attributes["agentops.token_usage.cache_read_available"] is False
+    assert subagent.attributes["agentops.token_usage.cache_creation_available"] is False
     assert child_tool.attributes["agentops.duration.available"] is True
     assert child_tool.attributes["agentops.duration.ms"] == 25.0
     assert child_tool.end_time_ns - child_tool.start_time_ns == 25_000_000

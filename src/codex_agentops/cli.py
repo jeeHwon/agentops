@@ -12,7 +12,7 @@ from pathlib import Path
 from . import __version__
 from .codex_config import configure_otel, remove_otel_config, validate_codex_config
 from .catalog import catalog_record
-from .collector import ensure_collector, serve_collector
+from .collector import ensure_collector, restart_collector, serve_collector
 from .config import (
     DEFAULT_EXPERIMENT,
     DEFAULT_OTEL_PORT,
@@ -166,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--write-test-trace", action="store_true")
 
     commands.add_parser("status", help="로컬 Outbox 상태를 표시합니다")
+    commands.add_parser("collector-restart", help="진행 중 수집·업로드가 없을 때 OTel Collector를 안전하게 재시작합니다")
     audit_calls = commands.add_parser("audit-calls", help="세션별 관측 호출 ID를 본문 없이 표시합니다")
     audit_calls.add_argument("--session-id", required=True)
     flush = commands.add_parser("flush", help="전송 대기 Trace를 다시 업로드합니다")
@@ -282,6 +283,10 @@ def main(argv: list[str] | None = None) -> int:
             for key, value in stats.items():
                 print(f"{key}: {value}")
             return 0
+        if args.command == "collector-restart":
+            restart_collector(load_settings())
+            print("AgentOps OTel collector restarted.")
+            return 0
         if args.command == "audit-calls":
             for call in Outbox(outbox_path()).call_inventory(args.session_id):
                 print(json.dumps(call, ensure_ascii=False, sort_keys=True))
@@ -289,7 +294,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "flush":
             outbox = Outbox(outbox_path())
             outbox.requeue_failed()
-            result = export_pending(outbox, load_settings(), limit=args.limit, require_usage=False)
+            settings = load_settings()
+            turn_result = export_pending(outbox, settings, limit=args.limit, require_usage=False)
+            from .session_exporter import export_pending_sessions
+
+            session_result = export_pending_sessions(outbox, settings, limit=args.limit)
+            from .mlflow_exporter import ExportResult
+
+            result = ExportResult(
+                turn_result.uploaded + session_result.uploaded,
+                turn_result.failed + session_result.failed,
+                turn_result.trace_ids + session_result.trace_ids,
+            )
             print(f"uploaded={result.uploaded} failed={result.failed}")
             for trace_id in result.trace_ids:
                 print(f"trace_id={trace_id}")
@@ -568,11 +584,14 @@ def _upload_with_usage_wait(limit: int, wait_seconds: float):
             break
         time.sleep(0.25)
     from .mlflow_exporter import ExportResult
+    from .session_exporter import export_pending_sessions
+
+    session_result = export_pending_sessions(outbox, settings, limit=limit)
 
     return ExportResult(
-        uploaded,
-        failed,
-        tuple(trace_ids),
+        uploaded + session_result.uploaded,
+        failed + session_result.failed,
+        tuple(trace_ids) + session_result.trace_ids,
     )
 
 

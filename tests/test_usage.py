@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import json
 
-from codex_agentops.collector import ingest_otlp_logs, parse_otlp_logs, parse_otlp_tool_results
+import pytest
+from google.protobuf.json_format import ParseDict
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
+
+from codex_agentops.collector import (
+    ingest_otlp_logs, parse_otlp_log_payload, parse_otlp_logs, parse_otlp_tool_results,
+)
 from codex_agentops.outbox import Outbox
 from codex_agentops.usage import (
-    parse_transcript_usage, parse_transcript_usages, parse_transcript_websearch,
+    TokenUsage, parse_transcript_usage, parse_transcript_usages, parse_transcript_websearch,
 )
 
 
@@ -115,6 +121,75 @@ def test_parses_exact_otel_token_fields():
     assert event.usage.cache_write_input_tokens == 40
     assert event.usage.reasoning_output_tokens == 5
     assert event.usage.total_tokens == 120
+    assert event.usage.cache_read_available
+    assert event.usage.cache_creation_available
+
+
+def test_binary_otel_log_has_same_token_usage_as_json():
+    payload = _otlp_payload()
+    record = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
+    record.pop("traceId")
+    record.pop("spanId")
+    encoded = ParseDict(payload, ExportLogsServiceRequest()).SerializeToString()
+
+    binary = parse_otlp_log_payload(encoded, "application/x-protobuf")
+    observed = parse_otlp_logs(binary)[0]
+
+    assert observed.session_id == "session-1"
+    assert (observed.usage.input_tokens, observed.usage.output_tokens) == (100, 20)
+    assert (observed.usage.cached_input_tokens, observed.usage.cache_write_input_tokens) == (30, 40)
+    with pytest.raises(ValueError, match="Invalid OTLP logs protobuf"):
+        parse_otlp_log_payload(b"\xff", "application/x-protobuf")
+
+
+def test_json_otel_log_with_protobuf_content_type_is_parsed():
+    payload = parse_otlp_log_payload(
+        json.dumps(_otlp_payload()).encode(), "application/x-protobuf"
+    )
+
+    assert parse_otlp_logs(payload)[0].usage.total_tokens == 120
+
+
+def test_aggregate_cache_reports_partial_values_as_unavailable():
+    observed = TokenUsage.from_dict({"input_tokens": 10, "output_tokens": 2,
+                                     "cached_input_tokens": 3, "cache_write_input_tokens": 0})
+    missing = TokenUsage.from_dict({"input_tokens": 4, "output_tokens": 1})
+    combined = observed + missing
+    assert combined.cached_input_tokens == 3
+    assert combined.cache_read_available is False
+    assert combined.cache_creation_available is False
+    assert (observed + TokenUsage.from_dict({"input_tokens": 1, "output_tokens": 1,
+                                             "cached_input_tokens": 0,
+                                             "cache_write_input_tokens": 0})).cache_creation_available
+
+
+def test_unreported_cache_is_distinct_from_explicit_zero(tmp_path):
+    outbox = Outbox(tmp_path / "cache.db")
+    outbox.record_session(session_id="session-1", agent_id="test", agent_root=str(tmp_path))
+    for index, raw in enumerate((
+        {"input_tokens": 2, "output_tokens": 1},
+        {"input_tokens": 2, "output_tokens": 1, "cached_input_tokens": 0,
+         "cache_write_input_tokens": 0},
+    )):
+        usage = TokenUsage.from_dict(raw)
+        assert outbox.append_token_usage(
+            event_id=f"cache-{index}", session_id="session-1", turn_id=f"turn-{index}",
+            observed_ns=index + 1, source="transcript", usage=usage,
+        )
+        with outbox._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM token_usage_events WHERE event_id = ?", (f"cache-{index}",)
+            ).fetchone()
+        from codex_agentops.outbox import _usage_from_row
+        persisted = _usage_from_row(row)
+        assert persisted.cache_read_available is bool(index)
+        assert persisted.cache_creation_available is bool(index)
+
+    assert not (
+        TokenUsage.from_dict({"input_tokens": 1, "output_tokens": 1})
+        + TokenUsage.from_dict({"input_tokens": 1, "output_tokens": 1,
+                                "cached_input_tokens": 0, "cache_write_input_tokens": 0})
+    ).cache_creation_available
 
 
 def test_parses_exact_otel_tool_result_fields():
@@ -137,6 +212,7 @@ def test_otel_ingest_only_accepts_registered_agent_sessions(tmp_path, monkeypatc
     assert ingest_otlp_logs(_otlp_payload(), outbox) == 1
     assert ingest_otlp_logs(_otlp_payload(), outbox) == 0
     assert outbox.stats()["token_events"] == 1
+    assert outbox.stats()["otel_token_events"] == 1
 
 
 def test_otel_tool_result_accepts_registered_runtime_agent(tmp_path, monkeypatch):

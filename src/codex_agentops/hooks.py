@@ -35,21 +35,41 @@ def handle_hook(raw: dict[str, Any], *, launch_uploader: bool = True) -> dict[st
             session_id = str(raw.get("session_id") or "").strip()
             if not session_id:
                 raise ValueError("Hook payload must include session_id.")
+            custom_metrics: dict[str, float] = {}
+            custom_tags: dict[str, str] = {}
+            summary_invalid = False
+            if event_name == "SessionEnd":
+                from .session_exporter import _run_summary
+
+                try:
+                    custom_metrics, custom_tags = _run_summary(
+                        str(manifest.root),
+                        capture_content=settings.capture_content and settings.content_capture_consent,
+                    )
+                except (OSError, ValueError):
+                    summary_invalid = True
+                    custom_tags["agentops.run_summary_status"] = "invalid"
             outbox.record_session(
                 session_id=session_id,
                 agent_id=manifest.agent_id,
                 agent_root=str(manifest.root),
                 model=str(raw.get("model") or "") or None,
                 ended=event_name == "SessionEnd",
+                end_reason=str(raw.get("reason") or "other"),
+                custom_metrics=custom_metrics,
+                custom_tags=custom_tags,
             )
             if event_name == "SessionStart":
                 ensure_collector(settings)
             elif event_name == "SessionEnd":
                 transcript_path = raw.get("transcript_path")
-                if launch_uploader and transcript_path:
-                    _launch_reconciler(str(transcript_path), session_id)
+                if launch_uploader:
+                    if transcript_path:
+                        _launch_reconciler(str(transcript_path), session_id)
+                    else:
+                        _launch_uploader(wait_for_usage_seconds=2)
             _write_heartbeat(event_name, manifest.agent_id)
-            return {}
+            return {"systemMessage": "Codex AgentOps: invalid run_summary.json ignored."} if summary_invalid else {}
         event = from_hook_payload(raw, manifest, settings)
         outbox.append(event)
         if event.terminal:
@@ -61,7 +81,8 @@ def handle_hook(raw: dict[str, Any], *, launch_uploader: bool = True) -> dict[st
                 raw.get("agent_transcript_path"), str(raw.get("agent_id") or ""), outbox
             )
         _write_heartbeat(event.event_name, manifest.agent_id)
-        previous_failures = outbox.stats()["failed"]
+        counts = outbox.stats()
+        previous_failures = counts["failed"] + counts["session_failed"]
         if event.terminal and launch_uploader:
             _launch_uploader(wait_for_usage_seconds=5)
         if previous_failures:

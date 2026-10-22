@@ -61,6 +61,32 @@ class PendingTurn:
     tool_observations: tuple[ToolObservation, ...] = ()
 
 
+@dataclass(frozen=True)
+class SessionTurn:
+    turn_id: str
+    trace_id: str
+    events: tuple[StoredEvent, ...]
+    runtime_agents: tuple[RuntimeAgent, ...]
+    tool_observations: tuple[ToolObservation, ...]
+    token_usage: TokenUsage | None
+    token_usage_source: str | None
+    token_usage_complete: bool
+
+
+@dataclass(frozen=True)
+class PendingSession:
+    session_id: str
+    agent_id: str
+    agent_root: str
+    started_ns: int
+    ended_ns: int
+    end_reason: str
+    attempts: int
+    turns: tuple[SessionTurn, ...]
+    custom_metrics: dict[str, float]
+    custom_tags: dict[str, str]
+
+
 class Outbox:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -138,6 +164,19 @@ class Outbox:
                     ended_ns INTEGER,
                     updated_ns INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS session_uploads (
+                    session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id),
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_ns INTEGER NOT NULL DEFAULT 0,
+                    lease_until_ns INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    trace_id TEXT,
+                    end_reason TEXT NOT NULL,
+                    summary_metrics_json TEXT NOT NULL DEFAULT '{}',
+                    summary_tags_json TEXT NOT NULL DEFAULT '{}',
+                    updated_ns INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS token_usage_events (
                     event_id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -183,6 +222,29 @@ class Outbox:
                     ON tool_observations(call_id);
                 """
             )
+            existing_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(token_usage_events)")
+            }
+            for column in ("cache_read_reported", "cache_creation_reported"):
+                if column not in existing_columns:
+                    connection.execute(
+                        f"ALTER TABLE token_usage_events ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                    )
+                    source_column = (
+                        "cached_input_tokens" if column == "cache_read_reported"
+                        else "cache_write_input_tokens"
+                    )
+                    connection.execute(
+                        f"UPDATE token_usage_events SET {column} = 1 WHERE {source_column} > 0"
+                    )
+            session_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(session_uploads)")
+            }
+            for column in ("summary_metrics_json", "summary_tags_json"):
+                if column not in session_columns:
+                    connection.execute(
+                        f"ALTER TABLE session_uploads ADD COLUMN {column} TEXT NOT NULL DEFAULT '{{}}'"
+                    )
             connection.execute(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -197,6 +259,9 @@ class Outbox:
         model: str | None = None,
         observed_ns: int | None = None,
         ended: bool = False,
+        end_reason: str = "SessionEnd",
+        custom_metrics: dict[str, float] | None = None,
+        custom_tags: dict[str, str] | None = None,
     ) -> None:
         now = observed_ns or time.time_ns()
         with self._connect() as connection:
@@ -214,6 +279,157 @@ class Outbox:
                 """,
                 (session_id, agent_id, agent_root, model, now, now if ended else None, now),
             )
+            if ended:
+                connection.execute(
+                    """
+                    INSERT INTO session_uploads(
+                        session_id, end_reason, summary_metrics_json, summary_tags_json, updated_ns
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET
+                        end_reason = excluded.end_reason,
+                        summary_metrics_json = excluded.summary_metrics_json,
+                        summary_tags_json = excluded.summary_tags_json,
+                        updated_ns = excluded.updated_ns
+                    WHERE session_uploads.status != 'uploaded'
+                    """,
+                    (session_id, end_reason[:128], json.dumps(custom_metrics or {}),
+                     json.dumps(custom_tags or {}, ensure_ascii=False), now),
+                )
+
+    def claim_session(self, *, now_ns: int | None = None) -> PendingSession | None:
+        now = now_ns or time.time_ns()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            sessions = connection.execute(
+                """
+                SELECT s.*, u.status, u.attempts, u.end_reason,
+                       u.summary_metrics_json, u.summary_tags_json
+                FROM session_uploads AS u
+                JOIN agent_sessions AS s ON s.session_id = u.session_id
+                WHERE s.ended_ns IS NOT NULL
+                  AND ((u.status IN ('pending', 'failed') AND u.next_attempt_ns <= ?)
+                       OR (u.status = 'uploading' AND u.lease_until_ns <= ?))
+                ORDER BY u.updated_ns, s.started_ns LIMIT 100
+                """,
+                (now, now),
+            ).fetchall()
+            for session in sessions:
+                turns = connection.execute(
+                    """
+                    SELECT * FROM turn_uploads WHERE session_id = ?
+                    ORDER BY updated_ns, turn_key
+                    """,
+                    (session["session_id"],),
+                ).fetchall()
+                if any(
+                    turn["terminal_event"] is None or turn["status"] != "uploaded"
+                    for turn in turns
+                ):
+                    continue
+                updated = connection.execute(
+                    """
+                    UPDATE session_uploads SET status = 'uploading', lease_until_ns = ?, updated_ns = ?
+                    WHERE session_id = ? AND status = ?
+                    """,
+                    (now + LEASE_NS, now, session["session_id"], session["status"]),
+                )
+                if updated.rowcount != 1:
+                    continue
+                observations: list[SessionTurn] = []
+                for turn in turns:
+                    event_rows = connection.execute(
+                        """
+                        SELECT event_id, event_name, created_ns, payload_json
+                        FROM outbox_events WHERE turn_key = ?
+                        ORDER BY created_ns, event_id
+                        """,
+                        (turn["turn_key"],),
+                    ).fetchall()
+                    agent_rows = connection.execute(
+                        """
+                        SELECT * FROM runtime_agents WHERE root_turn_key = ?
+                        ORDER BY started_ns, runtime_agent_id
+                        """,
+                        (turn["turn_key"],),
+                    ).fetchall()
+                    usage, usage_source, runtime_usage, usage_complete = self._usage_for_turn(
+                        connection, turn, event_rows, agent_rows
+                    )
+                    conversation_ids = [turn["session_id"]] + [
+                        item["runtime_agent_id"] for item in agent_rows
+                    ]
+                    placeholders = ",".join("?" for _ in conversation_ids)
+                    tool_rows = connection.execute(
+                        f"""
+                        SELECT * FROM tool_observations
+                        WHERE conversation_id IN ({placeholders})
+                        ORDER BY observed_ns, event_id
+                        """,
+                        conversation_ids,
+                    ).fetchall()
+                    observations.append(SessionTurn(
+                        turn_id=turn["turn_id"],
+                        trace_id=turn["trace_id"],
+                        events=tuple(StoredEvent(
+                            event_id=item["event_id"], event_name=item["event_name"],
+                            created_ns=item["created_ns"], payload=json.loads(item["payload_json"]),
+                        ) for item in event_rows),
+                        runtime_agents=tuple(RuntimeAgent(
+                            agent_id=item["runtime_agent_id"], agent_type=item["agent_type"],
+                            turn_id=item["turn_id"], started_ns=item["started_ns"],
+                            ended_ns=item["ended_ns"],
+                            token_usage=runtime_usage[item["runtime_agent_id"]][0],
+                            token_usage_source=runtime_usage[item["runtime_agent_id"]][1],
+                        ) for item in agent_rows),
+                        tool_observations=tuple(ToolObservation(
+                            conversation_id=item["conversation_id"], call_id=item["call_id"],
+                            tool_name=item["tool_name"], observed_ns=item["observed_ns"],
+                            duration_ms=float(item["duration_ms"]), success=bool(item["success"]),
+                        ) for item in tool_rows),
+                        token_usage=usage,
+                        token_usage_source=usage_source,
+                        token_usage_complete=usage_complete,
+                    ))
+                return PendingSession(
+                    session_id=session["session_id"], agent_id=session["agent_id"],
+                    agent_root=session["agent_root"], started_ns=session["started_ns"],
+                    ended_ns=session["ended_ns"], end_reason=session["end_reason"],
+                    attempts=session["attempts"], turns=tuple(observations),
+                    custom_metrics=json.loads(session["summary_metrics_json"]),
+                    custom_tags=json.loads(session["summary_tags_json"]),
+                )
+        return None
+
+    def mark_session_uploaded(self, session_id: str, trace_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE session_uploads SET status = 'uploaded', trace_id = ?, last_error = NULL,
+                    lease_until_ns = 0, updated_ns = ? WHERE session_id = ?
+                """,
+                (trace_id, time.time_ns(), session_id),
+            )
+
+    def mark_session_failed(self, session_id: str, error: str, *, retry_after_seconds: float) -> None:
+        now = time.time_ns()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE session_uploads SET status = 'failed', attempts = attempts + 1,
+                    next_attempt_ns = ?, lease_until_ns = 0, last_error = ?, updated_ns = ?
+                WHERE session_id = ?
+                """,
+                (now + int(retry_after_seconds * 1_000_000_000),
+                 error.replace("\n", " ")[:1000], now, session_id),
+            )
+
+    def session_trace_id(self, session_id: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT trace_id FROM session_uploads WHERE session_id = ? AND status = 'uploaded'",
+                (session_id,),
+            ).fetchone()
+        return row["trace_id"] if row else None
 
     def has_agent_session(self, session_id: str) -> bool:
         with self._connect() as connection:
@@ -227,23 +443,31 @@ class Outbox:
             rows = connection.execute(
                 """
                 SELECT t.turn_key, t.session_id, t.turn_id, t.status, t.trace_id,
-                       e.event_name, e.created_ns, e.payload_json
+                       e.event_id, e.event_name, e.created_ns, e.payload_json
                 FROM turn_uploads AS t
                 JOIN outbox_events AS e ON e.turn_key = t.turn_key
                 WHERE t.session_id = ?
-                  AND e.event_name IN ('PostToolUse', 'SubagentStart', 'SubagentStop')
+                  AND e.event_name IN ('PreToolUse', 'PostToolUse', 'SubagentStart', 'SubagentStop')
                 ORDER BY e.created_ns, e.event_id
                 """,
                 (session_id,),
             ).fetchall()
-        result = []
+        from .call_metrics import observed_calls
+
+        result: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str, str]] = set()
+        tools: dict[str, list[StoredEvent]] = {}
+        turn_rows: dict[str, sqlite3.Row] = {}
         for row in rows:
             payload = json.loads(row["payload_json"])
-            call_id = (
-                payload.get("tool_use_id") if row["event_name"] == "PostToolUse"
-                else payload.get("codex_agent_id")
-            )
+            if row["event_name"] in {"PreToolUse", "PostToolUse"}:
+                tools.setdefault(row["turn_key"], []).append(StoredEvent(
+                    event_id=row["event_id"], event_name=row["event_name"],
+                    created_ns=row["created_ns"], payload=payload,
+                ))
+                turn_rows[row["turn_key"]] = row
+                continue
+            call_id = payload.get("codex_agent_id")
             if not call_id:
                 continue
             runtime_agent_id = payload.get("codex_agent_id") or "root"
@@ -258,14 +482,35 @@ class Outbox:
                 "event": row["event_name"],
                 "call_id": call_id,
                 "runtime_agent_id": runtime_agent_id,
-                "tool_name": payload.get("tool_name") if row["event_name"] == "PostToolUse" else None,
+                "tool_name": None,
                 "observed_ns": row["created_ns"],
                 "capture_source": payload.get("agentops.capture_source") or "codex-plugin-hooks",
                 "upload_status": row["status"],
                 "trace_id": row["trace_id"],
                 "trace_linkage": payload.get("agentops.trace_linkage") or "unverified",
             })
-        return tuple(result)
+        for turn_key, events in tools.items():
+            row = turn_rows[turn_key]
+            for prior, post in observed_calls(tuple(events)):
+                payload = (post or prior).payload
+                call_id = payload.get("tool_use_id") or prior.payload.get("tool_use_id")
+                result.append({
+                    "turn_key": turn_key,
+                    "session_id": row["session_id"],
+                    "turn_id": row["turn_id"],
+                    "event": "PostToolUse" if post else "PreToolUse",
+                    "call_id": call_id or prior.event_id,
+                    "id_observed": bool(call_id),
+                    "result_observed": post is not None,
+                    "runtime_agent_id": payload.get("codex_agent_id") or "root",
+                    "tool_name": payload.get("tool_name") or prior.payload.get("tool_name"),
+                    "observed_ns": prior.created_ns,
+                    "capture_source": payload.get("agentops.capture_source") or "codex-plugin-hooks",
+                    "upload_status": row["status"],
+                    "trace_id": row["trace_id"],
+                    "trace_linkage": payload.get("agentops.trace_linkage") or "unverified",
+                })
+        return tuple(sorted(result, key=lambda item: (item["observed_ns"], item["call_id"])))
 
     def append_token_usage(
         self,
@@ -298,8 +543,9 @@ class Outbox:
                 INSERT OR IGNORE INTO token_usage_events(
                     event_id, session_id, turn_id, observed_ns, source, model,
                     input_tokens, output_tokens, cached_input_tokens,
-                    cache_write_input_tokens, reasoning_output_tokens, total_tokens
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cache_write_input_tokens, reasoning_output_tokens, total_tokens,
+                    cache_read_reported, cache_creation_reported
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_id,
@@ -314,6 +560,8 @@ class Outbox:
                     usage.cache_write_input_tokens,
                     usage.reasoning_output_tokens,
                     usage.total_tokens,
+                    int(usage.cache_read_available),
+                    int(usage.cache_creation_available),
                 ),
             )
             return cursor.rowcount == 1
@@ -511,7 +759,8 @@ class Outbox:
                         root_session_id = excluded.root_session_id,
                         root_turn_key = excluded.root_turn_key,
                         turn_id = excluded.turn_id,
-                        agent_type = excluded.agent_type,
+                        agent_type = CASE WHEN excluded.agent_type = 'default'
+                            THEN runtime_agents.agent_type ELSE excluded.agent_type END,
                         started_ns = MIN(runtime_agents.started_ns, excluded.started_ns),
                         ended_ns = COALESCE(excluded.ended_ns, runtime_agents.ended_ns),
                         updated_ns = excluded.updated_ns
@@ -541,7 +790,7 @@ class Outbox:
                     (synthetic_id, root_turn_key, root_turn_key),
                 )
             payload = event.payload
-            if event.event_name in {"PostToolUse", "SubagentStart", "SubagentStop"}:
+            if event.event_name in {"PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop"}:
                 status = connection.execute(
                     "SELECT status FROM turn_uploads WHERE turn_key = ?", (root_turn_key,)
                 ).fetchone()["status"]
@@ -722,7 +971,8 @@ class Outbox:
         runtime_usage: dict[str, tuple[TokenUsage | None, str | None]] = {}
         sources = {root_source} if root_source else set()
         total = root_usage
-        complete = root_usage is not None
+        incomplete_sources = {"otel-transcript-mismatch"}
+        complete = root_usage is not None and root_source not in incomplete_sources
         for agent in agent_rows:
             agent_usage, agent_source = _usage_for_conversation(
                 connection,
@@ -734,9 +984,10 @@ class Outbox:
             runtime_usage[agent["runtime_agent_id"]] = (agent_usage, agent_source)
             if agent_source:
                 sources.add(agent_source)
-            if agent_usage is None:
-                if agent["ended_ns"] is not None:
+                if agent_source in incomplete_sources:
                     complete = False
+            if agent_usage is None:
+                complete = False
                 continue
             total = agent_usage if total is None else total + agent_usage
         source = None
@@ -783,7 +1034,15 @@ class Outbox:
                 """,
                 (time.time_ns(),),
             )
-            return cursor.rowcount
+            sessions = connection.execute(
+                """
+                UPDATE session_uploads SET status = 'pending', next_attempt_ns = 0,
+                    lease_until_ns = 0, updated_ns = ?
+                WHERE status IN ('failed', 'uploading')
+                """,
+                (time.time_ns(),),
+            )
+            return cursor.rowcount + sessions.rowcount
 
     def stats(self) -> dict[str, int]:
         result = {
@@ -793,6 +1052,11 @@ class Outbox:
             "uploaded": 0,
             "open": 0,
             "token_events": 0,
+            "otel_token_events": 0,
+            "session_pending": 0,
+            "session_uploading": 0,
+            "session_failed": 0,
+            "session_uploaded": 0,
         }
         with self._connect() as connection:
             rows = connection.execute(
@@ -801,11 +1065,19 @@ class Outbox:
             result["token_events"] = connection.execute(
                 "SELECT COUNT(*) FROM token_usage_events"
             ).fetchone()[0]
+            result["otel_token_events"] = connection.execute(
+                "SELECT COUNT(*) FROM token_usage_events WHERE source = 'otel'"
+            ).fetchone()[0]
+            session_rows = connection.execute(
+                "SELECT status, COUNT(*) AS count FROM session_uploads GROUP BY status"
+            ).fetchall()
         for row in rows:
             if row["terminal_event"] is None:
                 result["open"] += row["count"]
             else:
                 result[row["status"]] = result.get(row["status"], 0) + row["count"]
+        for row in session_rows:
+            result[f"session_{row['status']}"] = row["count"]
         return result
 
     def uploaded_trace_id(self, turn_key: str) -> str | None:
@@ -837,6 +1109,8 @@ def _usage_from_row(row: sqlite3.Row) -> TokenUsage:
         cache_write_input_tokens=row["cache_write_input_tokens"],
         reasoning_output_tokens=row["reasoning_output_tokens"],
         total_tokens=row["total_tokens"],
+        cache_read_reported=bool(row["cache_read_reported"]),
+        cache_creation_reported=bool(row["cache_creation_reported"]),
     )
 
 
@@ -867,8 +1141,8 @@ def _usage_for_conversation(
     ).fetchone()
     transcript = _usage_from_row(transcript_row) if transcript_row is not None else None
     if otel_rows:
-        usage = TokenUsage(0, 0)
-        for item in otel_rows:
+        usage = _usage_from_row(otel_rows[0])
+        for item in otel_rows[1:]:
             usage += _usage_from_row(item)
         if transcript is not None:
             if transcript.total_tokens > usage.total_tokens:

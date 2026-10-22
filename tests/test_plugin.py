@@ -17,6 +17,7 @@ def test_plugin_manifest_and_hook_contract_are_wired():
     assert set(hooks["hooks"]) == {
         "SessionStart",
         "UserPromptSubmit",
+        "PreToolUse",
         "PostToolUse",
         "SubagentStart",
         "SubagentStop",

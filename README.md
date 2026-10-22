@@ -243,24 +243,37 @@ Release Artifact에는 등록 시점의 Skill-based Agent 정의, Skill과 Sub-a
 
 ## Codex 실행과 MLflow
 
-Agent 루트에서 평소와 같이 `codex`를 실행합니다. Plugin Hook은 응답이 끝나는 `Stop` 이벤트에서 Turn을 완성하고, Codex OTel과 transcript 보정 결과를 로컬 Outbox에서 결합해 백그라운드로 MLflow에 전송합니다.
+Agent 루트에서 평소와 같이 `codex`를 실행합니다. Plugin Hook은 응답이 끝나는 `Stop` 이벤트에서 Turn을 완성하고, Codex OTel과 transcript 보정 결과를 로컬 Outbox에서 결합해 백그라운드로 MLflow에 전송합니다. `SessionEnd` 뒤에는 완료된 턴을 한 화면에서 보는 별도의 `agent.session` 요약 Trace도 생성합니다. 평가용 `agent.turn`과 요약 Trace를 **둘 다 토큰 합계에 더하지 마세요**. Hook/OTel이 빠진 실행의 사용량은 0으로 취급하지 않습니다.
 
 **OTel은 프로젝트 `.codex/config.toml`에서 설정하지 않습니다.** Codex는 프로젝트 범위의 `[otel]` 설정을 읽지 않습니다. `aops configure --codex`는 충돌이 없으면 사용자 전역 `~/.codex/config.toml`에 로컬 Collector exporter를 설치합니다. 기존 전역 exporter가 있으면 보존하고 경고하므로 `aops doctor`의 `codex-otel-config`와 실제 Token 수집 여부를 확인하십시오. 기존 exporter를 변경할 수 없으면 해당 Collector로 전달하거나 실행 시 Codex `-c` 설정을 명시해야 합니다.
+Collector의 `/v1/logs`는 OTLP/HTTP **JSON과 protobuf binary**를 모두 받습니다. 일부 Codex 실행에서는 `Content-Type: application/x-protobuf` 헤더와 JSON 본문이 함께 관측되어 둘을 안전하게 구분해 파싱합니다. 형식이 지원되더라도 Codex가 토큰 로그를 실제 발송했는지는 세션별로 별도 검증해야 합니다. 기존 전역 exporter를 보존하는 설치에서 로컬 Collector로 토큰 로그를 보내려면 다음처럼 **해당 실행에만** 지정할 수 있습니다(포트는 설정값에 맞게 변경).
+
+```bash
+codex -c 'otel.exporter={otlp-http={endpoint="http://127.0.0.1:4319/v1/logs",protocol="json"}}' \
+  -c 'otel.log_user_prompt=false'
+```
+
+`aops status`의 `otel_token_events`는 **실제 OTel 토큰 로그**의 누적 건수이고 `token_events`는 transcript를 포함한 전체 건수입니다. `aops doctor`의 OTel Trace 수신은 토큰 수신 증거가 아닙니다. 두 수치는 과거 누적치이므로 특정 실행의 토큰 여부는 해당 세션의 `agent.turn`/`agent.session` Trace에서 `agentops.token_usage.available`과 원천을 확인하십시오. `codex exec --ephemeral`처럼 transcript가 없는 실행에서는 OTel 로그가 수집되면 토큰이 기록되지만, exporter 연결이 없거나 요청별 로그가 빠지면 CLI 출력에 usage가 있어도 MLflow 토큰은 비어 있을 수 있습니다.
+
+업데이트 뒤 `aops doctor`에서 실행 중인 Collector의 **구버전**이 감지되면 `aops collector-restart`를 실행합니다. 진행 중인 Turn·업로드·OTel 대기 데이터가 있거나 PID가 AgentOps 프로세스가 아니면 안전을 위해 재시작을 거부합니다. 같은 버전의 코드를 다시 설치한 경우에도 Collector는 자동 재시작되지 않으므로 필요 시 이 명령을 실행하십시오.
 
 ```text
-UserPromptSubmit → 사용자 입력 저장
-PostToolUse      → Tool 입력·출력 저장
+UserPromptSubmit → 사용자 턴 기록 (본문 기본 비수집)
+PreToolUse      → 지원되는 Tool 호출 시작과 입력 관측
+PostToolUse      → Tool 결과·오류 기록 (본문 기본 비수집)
 SubagentStart/Stop → Sub-agent 계층과 결과 저장
 Codex OTel       → 관측된 Token·Tool 시간 저장 (결측·부분집계 표시)
 Stop             → agent.turn 완성 및 즉시 업로드
-SessionEnd       → 누락 Token 사후 보정과 재전송
+SessionEnd       → 선택적 run_summary.json 스냅샷, 누락 Token 보정 및 세션 Trace 업로드
 ```
 
-각 `agent.turn`에는 Agent ID·Release, 성공 여부, 지연시간, 모델, 관측된 Token, Tool, Sub-agent와 Skill 체크섬을 기록합니다. 입력·출력 원문은 기본 비수집이며 `aops configure --capture-content`를 명시한 경우에만 패턴 마스킹 후 수집합니다. 100% 모델 호출 커버리지와 완전한 비식별화는 보장하지 않습니다.
+각 `agent.turn`에는 Agent ID·Release, 성공 여부, 지연시간, 모델, 관측된 Token, Tool, Sub-agent와 Skill 체크섬을 기록합니다. `agent.session`에는 관측된 턴·Tool·하위 Agent별 집계와 종료 시 스냅샷한 `run_summary.json` 숫자 지표를 남깁니다. 입력·출력 원문은 기본 비수집이며 `aops configure --capture-content`를 명시한 경우에만 패턴 마스킹 후 수집합니다. 100% 모델 호출 커버리지와 완전한 비식별화는 보장하지 않습니다. Plugin이나 CLI를 업데이트했다면 Codex의 `/hooks`에서 새 `PreToolUse` Hook의 신뢰 상태를 확인하세요.
 
 ```bash
 aops doctor --write-test-trace
 aops status
+aops collector-restart  # Collector 구버전일 때, 진행 중인 실행이 없는 경우에만
+aops audit-calls --session-id <session-id>
 aops flush
 ```
 

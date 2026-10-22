@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .config import ConfigError, load_settings
 from .codex_config import is_otel_configured
-from .collector import collector_health
+from .collector import collector_health, collector_info
 from .databricks import get_profile, list_profiles, validate_profile
 from .mlflow_exporter import MlflowTurnExporter
 from .outbox import Outbox
@@ -44,7 +44,7 @@ def run_doctor(*, write_test_trace: bool = False) -> list[Check]:
             Check(
                 "OK" if collector_health(settings.otel_port) else "FAIL",
                 "otel-collector",
-                f"127.0.0.1:{settings.otel_port}",
+                _collector_detail(settings.otel_port),
             )
         )
         checks.append(_otel_signal_check())
@@ -61,7 +61,7 @@ def run_doctor(*, write_test_trace: bool = False) -> list[Check]:
             Check(
                 "OK" if collector_health(settings.otel_port) else "FAIL",
                 "otel-collector",
-                f"127.0.0.1:{settings.otel_port}",
+                _collector_detail(settings.otel_port),
             )
         )
         checks.append(_otel_signal_check())
@@ -90,7 +90,7 @@ def run_doctor(*, write_test_trace: bool = False) -> list[Check]:
 
     if settings.codex_enabled:
         stats = Outbox(outbox_path()).stats()
-        level = "WARN" if stats["failed"] else "OK"
+        level = "WARN" if stats["failed"] or stats["session_failed"] else "OK"
         checks.append(Check(level, "outbox", ", ".join(f"{key}={value}" for key, value in stats.items())))
     return checks
 
@@ -151,12 +151,23 @@ def _otel_signal_check() -> Check:
         raw = json.loads(target.read_text(encoding="utf-8"))
         observed_ns = int(raw["observed_at_ns"])
         age_seconds = max(0, int((time.time_ns() - observed_ns) / 1_000_000_000))
+        token_rows = Outbox(outbox_path()).stats()["otel_token_events"]
         return Check(
-            "OK",
+            "OK" if token_rows else "WARN",
             "codex-otel-signal",
-            f"last={raw.get('signal')}, token_events={raw.get('token_events_inserted')}, age={age_seconds}s",
+            f"last={raw.get('signal')}, last_records={raw.get('records_inserted', raw.get('token_events_inserted', 0))}, "
+            f"otel_token_rows_total={token_rows}, age={age_seconds}s; historical count, not per-session coverage",
         )
     except FileNotFoundError:
         return Check("WARN", "codex-otel-signal", "no OTel payload observed; start a new Codex session")
     except Exception as exc:
         return Check("WARN", "codex-otel-signal", f"cannot read OTel heartbeat: {exc}")
+
+
+def _collector_detail(port: int) -> str:
+    from . import __version__
+
+    active = collector_info(port)
+    if active is not None and active.get("version") != __version__:
+        return f"127.0.0.1:{port} is version {active.get('version')} (expected {__version__}); run `aops collector-restart`"
+    return f"127.0.0.1:{port}"

@@ -11,5 +11,4 @@ build/
 mlruns/
 **/.runtime/
 **/.aops/
-docs/OBSERVABILITY_SECURITY.md
-docs/UNITY_GATEWAY_CODEX.md
+docs/

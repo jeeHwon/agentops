@@ -14,6 +14,18 @@ class TokenUsage:
     cache_write_input_tokens: int = 0
     reasoning_output_tokens: int = 0
     total_tokens: int = 0
+    cache_read_reported: bool | None = None
+    cache_creation_reported: bool | None = None
+
+    @property
+    def cache_read_available(self) -> bool:
+        return (self.cached_input_tokens > 0 if self.cache_read_reported is None
+                else self.cache_read_reported)
+
+    @property
+    def cache_creation_available(self) -> bool:
+        return (self.cache_write_input_tokens > 0 if self.cache_creation_reported is None
+                else self.cache_creation_reported)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "TokenUsage":
@@ -35,6 +47,12 @@ class TokenUsage:
                 raw.get("reasoning_output_tokens", raw.get("reasoning_token_count"))
             ),
             total_tokens=total_tokens,
+            cache_read_reported=any(
+                raw.get(key) is not None for key in ("cached_input_tokens", "cached_token_count")
+            ),
+            cache_creation_reported=any(
+                raw.get(key) is not None for key in ("cache_write_input_tokens", "cache_write_token_count")
+            ),
         )
 
     def __add__(self, other: "TokenUsage") -> "TokenUsage":
@@ -45,6 +63,8 @@ class TokenUsage:
             cache_write_input_tokens=self.cache_write_input_tokens + other.cache_write_input_tokens,
             reasoning_output_tokens=self.reasoning_output_tokens + other.reasoning_output_tokens,
             total_tokens=self.total_tokens + other.total_tokens,
+            cache_read_reported=self.cache_read_available and other.cache_read_available,
+            cache_creation_reported=self.cache_creation_available and other.cache_creation_available,
         )
 
 

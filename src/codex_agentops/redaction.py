@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
 
 MAX_BODY_CHARS = 15_000
+MAX_CONFIGURED_BODY_CHARS = 65_536
+MIN_CONFIGURED_BODY_CHARS = 64
 REDACTED = "[REDACTED]"
 
 
@@ -36,13 +39,24 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
-def redact_text(value: str, *, limit: int = MAX_BODY_CHARS) -> str:
+def trace_maxlen() -> int:
+    raw = os.getenv("AGENTOPS_TRACE_MAXLEN", "")
+    try:
+        configured = int(raw) if raw else MAX_BODY_CHARS
+    except ValueError:
+        return MAX_BODY_CHARS
+    return (configured if MIN_CONFIGURED_BODY_CHARS <= configured <= MAX_CONFIGURED_BODY_CHARS
+            else MAX_BODY_CHARS)
+
+
+def redact_text(value: str, *, limit: int | None = None) -> str:
+    limit = trace_maxlen() if limit is None else limit
     redacted = value
     for pattern, replacement in _PATTERNS:
         redacted = pattern.sub(replacement, redacted)
     if len(redacted) > limit:
-        omitted = len(redacted) - limit
-        redacted = f"{redacted[:limit]}\n[TRUNCATED {omitted} CHARS]"
+        suffix = f"[TRUNCATED {len(redacted) - limit} CHARS]"
+        redacted = f"{redacted[:limit - len(suffix)]}{suffix}" if len(suffix) < limit else redacted[:limit]
     return redacted
 
 
@@ -65,13 +79,20 @@ def redact_value(value: Any) -> Any:
     return value
 
 
-def redact_json_body(value: Any, *, limit: int = MAX_BODY_CHARS) -> Any:
+def redact_json_body(value: Any, *, limit: int | None = None) -> Any:
     """Redact recursively and cap the serialized body without parsing transcripts."""
+    limit = trace_maxlen() if limit is None else limit
     redacted = redact_value(value)
     serialized = json.dumps(redacted, ensure_ascii=False, sort_keys=True, default=str)
     if len(serialized) <= limit:
         return redacted
-    return {
-        "truncated": True,
-        "content": redact_text(serialized, limit=limit),
-    }
+    overhead = len(json.dumps({"truncated": True, "content": ""}, ensure_ascii=False))
+    if limit < overhead:
+        return redact_text(serialized, limit=limit)
+    budget = max(0, limit - overhead)
+    while True:
+        result = {"truncated": True, "content": redact_text(serialized, limit=budget)}
+        excess = len(json.dumps(result, ensure_ascii=False)) - limit
+        if excess <= 0:
+            return result
+        budget = max(0, budget - excess)

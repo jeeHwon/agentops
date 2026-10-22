@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from .config import Settings
+from .call_metrics import metric_name, observed_calls
 from .events import CONTENT_CAPTURE_DISABLED, tool_failed
 from .outbox import Outbox, PendingTurn, RuntimeAgent, StoredEvent, ToolObservation
 from . import __version__
@@ -127,8 +129,12 @@ class MlflowTurnExporter:
         prompt_event = _first(turn.events, "UserPromptSubmit")
         stop_event = _last(turn.events, "Stop")
         interrupt_event = _last(turn.events, "Interrupt")
-        tool_events = tuple(item for item in turn.events if item.event_name == "PostToolUse")
+        calls = observed_calls(turn.events)
+        tool_events = tuple(post for _, post in calls if post is not None)
         has_tool_error = any(_tool_event_failed(turn, item) for item in tool_events)
+        by_tool = Counter(metric_name(str((post or prior).payload.get("tool_name") or "unknown"))
+                          for prior, post in calls)
+        by_agent = Counter(metric_name(agent.agent_type) for agent in turn.runtime_agents)
         status_name = "cancelled" if interrupt_event else ("error" if has_tool_error else "ok")
         mlflow_status = "ERROR" if status_name in {"cancelled", "error"} else "OK"
         prompt = prompt_event.payload.get("prompt") if prompt_event else None
@@ -146,6 +152,10 @@ class MlflowTurnExporter:
         skill_checksums = _first_present(turn.events, "skill_checksums") or {}
         release_version = _first_present(turn.events, "release_version") or "working"
         runtime = _first_present(turn.events, "runtime") or "codex"
+        subagent_defs = next((item.payload["subagent_defs"] for item in turn.events
+                              if "subagent_defs" in item.payload), None)
+        subagent_defs_tag = (json.dumps(subagent_defs, ensure_ascii=False)
+                             if isinstance(subagent_defs, list) else "unknown")
         matched_observations = tuple(
             observation
             for event in tool_events
@@ -176,8 +186,18 @@ class MlflowTurnExporter:
                 "agentops.status": status_name,
                 "agentops.evaluation_inputs_available": evaluation_inputs_available,
                 "agentops.tool_count": len(tool_events),
+                "agentops.tool_calls_observed": len(calls),
+                "agentops.tool_calls_unfinished": sum(post is None for _, post in calls),
                 "agentops.tool_error_count": sum(_tool_event_failed(turn, item) for item in tool_events),
                 "agentops.subagent_count": len(turn.runtime_agents),
+                **{f"agentops.metrics.toolcall.{name}": count for name, count in by_tool.items()},
+                **{f"agentops.metrics.subagent.{name}": count for name, count in by_agent.items()},
+                "agentops.trace_role": "canonical_turn",
+                "agentops.project": _first_present(turn.events, "project") or turn.agent_id,
+                "agentops.git_commit": _first_present(turn.events, "git_commit") or "unknown",
+                "agentops.subagent_defs": subagent_defs_tag,
+                "agentops.end_reason": turn.terminal_event,
+                "agentops.source": _first_present(turn.events, "source") or "codex-plugin-hooks",
                 "agentops.telemetry_source": "codex-plugin-hooks",
                 "agentops.adapter_version": __version__,
                 "agentops.agent_version": _first_present(turn.events, "agent_version") or release_version,
@@ -241,6 +261,12 @@ class MlflowTurnExporter:
                 "agentops.runtime": runtime,
                 "agentops.session_id": turn.session_id,
                 "agentops.turn_id": turn.turn_id,
+                "agentops.trace_role": "canonical_turn",
+                "agentops.project": _first_present(turn.events, "project") or turn.agent_id,
+                "agentops.git_commit": _first_present(turn.events, "git_commit") or "unknown",
+                "agentops.subagent_defs": subagent_defs_tag,
+                "agentops.end_reason": turn.terminal_event,
+                "agentops.source": _first_present(turn.events, "source") or "codex-plugin-hooks",
                 "agentops.turn_key": turn.turn_key,
                 "agentops.status": status_name,
                 "agentops.evaluation_inputs_available": str(evaluation_inputs_available).lower(),
@@ -282,19 +308,18 @@ class MlflowTurnExporter:
                 )
                 agent_spans[agent.agent_id] = agent_span
 
-            for index, event in enumerate(tool_events, start=1):
+            for index, (prior, post) in enumerate(calls, start=1):
+                event = post or prior
                 runtime_agent_id = str(event.payload.get("codex_agent_id") or "")
                 parent = agent_spans.get(runtime_agent_id, root)
-                observation = _tool_observation(turn, event)
-                self._write_tool_span(client, root, parent, event, observation, index)
+                observation = _tool_observation(turn, post) if post else None
+                self._write_tool_span(client, root, parent, prior, post, observation, index)
 
             for agent in reversed(turn.runtime_agents):
                 span = agent_spans[agent.agent_id]
                 agent_events = _events_for_agent(turn.events, agent.agent_id)
                 stop = _last(agent_events, "SubagentStop")
-                child_tools = tuple(
-                    item for item in agent_events if item.event_name == "PostToolUse"
-                )
+                child_tools = tuple(item for _, item in observed_calls(agent_events) if item is not None)
                 failed = any(
                     _tool_event_failed(turn, item)
                     for item in child_tools
@@ -347,15 +372,20 @@ class MlflowTurnExporter:
         client: Any,
         root: Any,
         parent: Any,
-        event: StoredEvent,
+        prior: StoredEvent,
+        post: StoredEvent | None,
         observation: ToolObservation | None,
         index: int,
     ) -> None:
+        event = post or prior
         payload = event.payload
-        failed = tool_failed(payload) or (observation is not None and not observation.success)
+        failed = post is not None and (tool_failed(payload) or
+                                       (observation is not None and not observation.success))
         tool_name = str(payload.get("tool_name") or "unknown")
-        start_ns = _tool_start_ns(observation) if observation else event.created_ns
-        end_ns = observation.observed_ns if observation else event.created_ns + 1
+        start_ns = _tool_start_ns(observation) if observation else prior.created_ns
+        end_ns = observation.observed_ns if observation else (
+            post.created_ns if post else start_ns + 1
+        )
         duration_attributes: dict[str, Any]
         if observation is None:
             duration_attributes = {"agentops.duration.available": False}
@@ -371,7 +401,7 @@ class MlflowTurnExporter:
             trace_id=root.trace_id,
             parent_id=parent.span_id,
             span_type="TOOL",
-            inputs=payload.get("tool_input"),
+            inputs=prior.payload.get("tool_input"),
             attributes={
                 "agentops.tool_name": tool_name,
                 "agentops.tool_use_id": payload.get("tool_use_id") or "unknown",
@@ -379,6 +409,18 @@ class MlflowTurnExporter:
                 "agentops.trace_linkage": payload.get("agentops.trace_linkage") or "hook",
                 "agentops.tool_index": index,
                 "agentops.tool_error": failed,
+                "agentops.is_error": failed,
+                "agentops.tool_result_observed": post is not None,
+                "agentops.result_status": (
+                    "error" if failed else "observed" if post else "unobserved"
+                ),
+                "agentops.hook_start_ns": prior.created_ns,
+                "agentops.call_linkage": (
+                    "id" if prior.event_name == "PreToolUse" and post is not None
+                    and prior.payload.get("tool_use_id") == post.payload.get("tool_use_id")
+                    and post.payload.get("tool_use_id") else "heuristic"
+                    if prior.event_name == "PreToolUse" and post is not None else "unpaired"
+                ),
                 "agentops.runtime_agent_id": payload.get("codex_agent_id") or "root",
                 **duration_attributes,
             },
@@ -387,9 +429,9 @@ class MlflowTurnExporter:
         client.end_span(
             trace_id=root.trace_id,
             span_id=span.span_id,
-            outputs=payload.get("tool_response"),
+            outputs=post.payload.get("tool_response") if post else None,
             attributes={"agentops.tool_error": failed},
-            status="ERROR" if failed else "OK",
+            status="ERROR" if failed else "OK" if post else "UNSET",
             end_time_ns=max(end_ns, start_ns + 1),
         )
 
@@ -459,20 +501,27 @@ def _token_attributes(usage: Any, source: str | None, *, include_mlflow: bool) -
             ),
             "agentops.tokens.input": usage.input_tokens,
             "agentops.tokens.output": usage.output_tokens,
-            "agentops.tokens.cached_input": usage.cached_input_tokens,
-            "agentops.tokens.cache_write_input": usage.cache_write_input_tokens,
+            "agentops.token_usage.cache_read_available": usage.cache_read_available,
+            "agentops.token_usage.cache_creation_available": usage.cache_creation_available,
             "agentops.tokens.reasoning_output": usage.reasoning_output_tokens,
             "agentops.tokens.total": usage.total_tokens,
         }
     )
+    if usage.cache_read_available:
+        attributes["agentops.tokens.cached_input"] = usage.cached_input_tokens
+    if usage.cache_creation_available:
+        attributes["agentops.tokens.cache_write_input"] = usage.cache_write_input_tokens
     if include_mlflow:
-        attributes["mlflow.chat.tokenUsage"] = {
+        reported_usage = {
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,
             "total_tokens": usage.total_tokens,
-            "cache_read_input_tokens": usage.cached_input_tokens,
-            "cache_creation_input_tokens": usage.cache_write_input_tokens,
         }
+        if usage.cache_read_available:
+            reported_usage["cache_read_input_tokens"] = usage.cached_input_tokens
+        if usage.cache_creation_available:
+            reported_usage["cache_creation_input_tokens"] = usage.cache_write_input_tokens
+        attributes["mlflow.chat.tokenUsage"] = reported_usage
     return attributes
 
 

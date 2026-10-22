@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +16,7 @@ from .redaction import redact_json_body
 
 SUPPORTED_EVENTS = {
     "UserPromptSubmit",
+    "PreToolUse",
     "PostToolUse",
     "SubagentStart",
     "SubagentStop",
@@ -104,7 +107,15 @@ def from_hook_payload(
         "owner": manifest.owner or None,
         "owner_group": manifest.owner_group or None,
         "runtime": "codex",
+        "project": manifest.agent_id,
+        "source": "codex-plugin-hooks",
     }
+    if event_name == "UserPromptSubmit":
+        common["git_commit"] = _git_commit(manifest.root)
+        agents_root = manifest.root / "agents"
+        common["subagent_defs"] = sorted(
+            item.name for item in agents_root.iterdir() if item.is_dir()
+        ) if agents_root.is_dir() else []
     if tracing.get("experiment_id"):
         common["tracing"] = tracing
     runtime_agent_id = str(raw.get("agent_id", "")).strip()
@@ -130,7 +141,7 @@ def from_hook_payload(
             "last_assistant_message": _safe_body(raw.get("last_assistant_message"), settings),
             "stop_hook_active": bool(raw.get("stop_hook_active", False)),
         }
-    else:
+    elif event_name in {"PreToolUse", "PostToolUse"}:
         specific = {
             "tool_name": str(raw.get("tool_name", "unknown")),
             "tool_use_id": str(raw.get("tool_use_id", "")) or None,
@@ -138,6 +149,10 @@ def from_hook_payload(
             "tool_input": _safe_body(raw.get("tool_input"), settings),
             "tool_response": _safe_body(raw.get("tool_response"), settings),
         }
+    else:
+        specific = {}
+    if event_name in TERMINAL_EVENTS:
+        specific["end_reason"] = event_name
     payload = {**common, **specific}
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
     discriminator = str(raw.get("tool_use_id", ""))
@@ -164,13 +179,37 @@ def tool_failed(payload: dict[str, Any]) -> bool:
         return True
     if isinstance(response, str):
         lowered = response.lower()
-        return "exit code: 1" in lowered or lowered.startswith("error:")
+        exit_codes = re.findall(
+            r"(?im)^\s*(?:exit\s*code|exitcode|return\s*code|"
+            r"(?:process|command)\s+exited\s+with\s+code)\s*[:=]?\s*(-?\d+)\s*$",
+            response,
+        )
+        return any(int(code) != 0 for code in exit_codes) or lowered.startswith("error:")
     return False
+
+
+def _git_commit(root: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=0.5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _contains_error(value: Any) -> bool:
     if isinstance(value, dict):
         if value.get("isError") is True or value.get("is_error") is True:
+            return True
+        status = value.get("status")
+        if value.get("success") is False or (
+            isinstance(status, str) and status.lower() in {"error", "failed"}
+        ):
             return True
         exit_code = value.get("exit_code", value.get("exitCode"))
         if isinstance(exit_code, int) and exit_code != 0:

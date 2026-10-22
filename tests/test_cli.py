@@ -29,6 +29,7 @@ def test_supported_commands_match_harness_lifecycle():
         "load": ["test-agent"],
         "doctor": [],
         "status": [],
+        "collector-restart": [],
         "audit-calls": ["--session-id", "synthetic-session"],
         "flush": [],
         "deploy": [],

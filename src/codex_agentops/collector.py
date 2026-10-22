@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -28,6 +29,7 @@ from .otel_bridge import (
 )
 from .otel_spool import OtelSpool
 from .mlflow_exporter import export_pending
+from .session_exporter import export_pending_sessions
 
 
 MAX_REQUEST_BYTES = 10 * 1024 * 1024
@@ -54,7 +56,13 @@ class OtelToolResultEvent:
 
 
 def ensure_collector(settings: Settings, *, wait_seconds: float = 2.0) -> None:
-    if collector_health(settings.otel_port):
+    active = collector_info(settings.otel_port)
+    if active is not None and active.get("version") != __version__:
+        raise RuntimeError(
+            f"AgentOps OTel collector is version {active.get('version')} (installed: {__version__}). "
+            "Run `aops collector-restart` when no AgentOps sessions are active."
+        )
+    if active is not None:
         return
     log_path = collector_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,12 +84,53 @@ def ensure_collector(settings: Settings, *, wait_seconds: float = 2.0) -> None:
 
 
 def collector_health(port: int) -> bool:
+    active = collector_info(port)
+    return active is not None and active.get("version") == __version__
+
+
+def collector_info(port: int) -> dict[str, Any] | None:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=0.3) as response:
             payload = json.loads(response.read())
-        return response.status == 200 and payload.get("service") == "codex-agentops-otel"
+        if isinstance(payload, dict) and response.status == 200 and payload.get("service") == "codex-agentops-otel":
+            return payload
     except (OSError, ValueError, urllib.error.URLError):
-        return False
+        pass
+    return None
+
+
+def restart_collector(settings: Settings, *, wait_seconds: float = 5.0) -> None:
+    active = collector_info(settings.otel_port)
+    if active is not None:
+        spool = active.get("otel_spool") or {}
+        if any(spool.get(key, 0) for key in (
+            "pending_batches", "pending_spans", "retry_traces", "waiting_for_root"
+        )):
+            raise RuntimeError("Collector has pending OTel records; retry when they are exported.")
+        stats = Outbox(outbox_path()).stats()
+        if stats["open"] or stats["uploading"] or stats["session_uploading"]:
+            raise RuntimeError("AgentOps has active turns or uploads; retry when they finish.")
+        pid_file = collector_pid_path()
+        if pid_file.is_symlink() or not pid_file.is_file() or pid_file.stat().st_uid != os.getuid():
+            raise RuntimeError("Collector PID file is missing or not owned by this user.")
+        pid = int(pid_file.read_text().strip())
+        if pid <= 0:
+            raise RuntimeError("Invalid collector PID.")
+        process = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="], capture_output=True,
+            text=True, check=False, timeout=3,
+        )
+        if process.returncode != 0 or " -m codex_agentops.cli _collector" not in process.stdout:
+            raise RuntimeError("Collector PID does not belong to AgentOps; refusing to stop it.")
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            if collector_info(settings.otel_port) is None:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("Previous collector did not stop; refusing to start a second one.")
+    ensure_collector(settings, wait_seconds=wait_seconds)
 
 
 def serve_collector(settings: Settings | None = None) -> None:
@@ -161,6 +210,24 @@ def parse_otlp_logs(payload: dict[str, Any]) -> tuple[OtelUsageEvent, ...]:
                     )
                 )
     return tuple(events)
+
+
+def parse_otlp_log_payload(raw: bytes, content_type: str) -> dict[str, Any]:
+    if "protobuf" in content_type.lower() and not raw.lstrip().startswith(b"{"):
+        from google.protobuf.json_format import MessageToDict
+        from google.protobuf.message import DecodeError
+        from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import ExportLogsServiceRequest
+
+        request = ExportLogsServiceRequest()
+        try:
+            request.ParseFromString(raw)
+        except DecodeError as exc:
+            raise ValueError("Invalid OTLP logs protobuf") from exc
+        return MessageToDict(request)
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("OTLP payload must be an object")
+    return payload
 
 
 def parse_otlp_tool_results(payload: dict[str, Any]) -> tuple[OtelToolResultEvent, ...]:
@@ -271,17 +338,25 @@ def _handler(
                     self._send_protobuf(200, b"")
                     wake.set()
                     return
-                if "json" not in self.headers.get("content-type", "").lower():
-                    self._send(415, {"error": "json_required"})
-                    return
-                payload = json.loads(raw)
-                if not isinstance(payload, dict):
-                    raise ValueError("OTLP payload must be an object")
                 if self.path == "/v1/logs":
+                    content_type = self.headers.get("content-type", "").lower()
+                    if "json" not in content_type and "protobuf" not in content_type:
+                        self._send(415, {"error": "json_or_protobuf_required"})
+                        return
+                    payload = parse_otlp_log_payload(raw, content_type)
                     inserted = ingest_otlp_logs(payload, outbox)
                     if inserted:
                         _launch_uploader()
+                    if "protobuf" in content_type:
+                        self._send_protobuf(200, b"")
+                        return
                 else:
+                    if "json" not in self.headers.get("content-type", "").lower():
+                        self._send(415, {"error": "json_required"})
+                        return
+                    payload = json.loads(raw)
+                    if not isinstance(payload, dict):
+                        raise ValueError("OTLP payload must be an object")
                     _write_heartbeat("metrics", 0)
                 self._send(200, {})
             except (json.JSONDecodeError, ValueError, OtelBridgeError):
@@ -340,8 +415,10 @@ def _otel_worker(
         try:
             _drain_otel_spool(spool, assembler, settings)
             if time.monotonic() >= next_turn_scan:
-                export_pending(Outbox(outbox_path()), settings, limit=100, require_usage=True,
+                outbox = Outbox(outbox_path())
+                export_pending(outbox, settings, limit=100, require_usage=True,
                                attempts_per_turn=1)
+                export_pending_sessions(outbox, settings, limit=100)
                 next_turn_scan = time.monotonic() + 30
         except Exception as exc:
             print(f"ERROR: OTel worker failed: {type(exc).__name__}", file=sys.stderr)
@@ -402,7 +479,7 @@ def _write_heartbeat(signal: str, inserted: int) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         json.dumps(
-            {"signal": signal, "token_events_inserted": inserted, "observed_at_ns": time.time_ns()}
+            {"signal": signal, "records_inserted": inserted, "observed_at_ns": time.time_ns()}
         )
         + "\n",
         encoding="utf-8",

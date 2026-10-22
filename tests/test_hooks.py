@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 from codex_agentops.config import Settings, save_settings
 from codex_agentops.hooks import handle_hook, reconcile_session_websearch
 from codex_agentops.manifest import create_agent
 from codex_agentops.outbox import Outbox
 from codex_agentops.paths import outbox_path
+
+
+def test_tool_failure_recognizes_actual_exit_and_structured_errors():
+    from codex_agentops.events import tool_failed
+
+    assert tool_failed({"tool_response": "Process exited with code 2"})
+    assert tool_failed({"tool_response": {"success": False}})
+    assert tool_failed({"tool_response": {"status": "error"}})
+    assert not tool_failed({"tool_response": "Process exited with code 0"})
 
 
 def test_hook_ignores_non_agent_folder(tmp_path, monkeypatch):
@@ -76,6 +89,95 @@ def test_hook_records_supported_event_in_agent_folder(tmp_path, monkeypatch):
     assert result == {}
     stats = Outbox(outbox_path()).stats()
     assert stats["open"] == 1
+
+
+def test_cli_hook_subprocess_collects_subagent_and_tool_without_content(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
+    save_settings(Settings("test-profile", "https://example.cloud.databricks.com",
+                           codex_enabled=True, otel_mode="external"))
+    root = create_agent("test-agent", tmp_path / "agent")
+    project_root = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(project_root / "src")
+    environment["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{environment['PATH']}"
+    hook_script = project_root / "plugins" / "codex-agentops" / "scripts" / "hook.sh"
+    command = (["sh", str(hook_script)] if Path(sys.executable).with_name("aops").is_file()
+               else [sys.executable, "-m", "codex_agentops.cli", "_hook"])
+    for name, details in (
+        ("UserPromptSubmit", {"prompt": "sensitive text"}),
+        ("SubagentStart", {"agent_id": "child-1", "agent_type": "explorer"}),
+        ("PreToolUse", {"agent_id": "child-1", "tool_name": "Bash",
+                        "tool_use_id": "call-1", "tool_input": {"command": "sensitive text"}}),
+        ("PostToolUse", {"agent_id": "child-1", "tool_name": "Bash",
+                         "tool_use_id": "call-1", "tool_response": "Process exited with code 2"}),
+        ("SubagentStop", {"agent_id": "child-1", "agent_type": "explorer"}),
+    ):
+        result = subprocess.run(
+            command,
+            input=json.dumps({"hook_event_name": name, "session_id": "synthetic-session",
+                              "turn_id": "turn-1", "cwd": str(root), **details}),
+            text=True, capture_output=True, check=True, env=environment,
+        )
+        assert json.loads(result.stdout) == {}
+    calls = Outbox(outbox_path()).call_inventory("synthetic-session")
+    assert len(calls) == 3
+    tool = next(item for item in calls if item["tool_name"] == "Bash")
+    assert tool["call_id"] == "call-1"
+    assert tool["result_observed"] is True
+    assert tool["runtime_agent_id"] == "child-1"
+    assert "sensitive text" not in json.dumps(calls)
+
+
+def test_session_end_without_transcript_schedules_session_upload(tmp_path, monkeypatch):
+    import codex_agentops.hooks as hooks
+
+    monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
+    save_settings(Settings("test-profile", "https://example.cloud.databricks.com",
+                           codex_enabled=True))
+    root = create_agent("test-agent", tmp_path / "agent")
+    uploads = []
+    monkeypatch.setattr(hooks, "_launch_uploader", lambda **options: uploads.append(options))
+    assert handle_hook({"hook_event_name": "SessionEnd", "session_id": "synthetic-session",
+                        "cwd": str(root), "reason": "other"}) == {}
+    assert uploads == [{"wait_for_usage_seconds": 2}]
+    assert Outbox(outbox_path()).stats()["session_pending"] == 1
+
+
+def test_invalid_optional_summary_does_not_lose_session_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
+    save_settings(Settings("test-profile", "https://example.cloud.databricks.com",
+                           codex_enabled=True))
+    root = create_agent("test-agent", tmp_path / "agent")
+    (root / "run_summary.json").write_text("not-json", encoding="utf-8")
+    warning = handle_hook({"hook_event_name": "SessionEnd", "session_id": "synthetic-session",
+                           "cwd": str(root)}, launch_uploader=False)
+    assert "run_summary.json" in warning["systemMessage"]
+    session = Outbox(outbox_path()).claim_session()
+    assert session is not None
+    assert session.custom_tags["agentops.run_summary_status"] == "invalid"
+
+
+def test_session_end_snapshots_numeric_summary_and_masks_consented_tag(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
+    save_settings(Settings("test-profile", "https://example.cloud.databricks.com",
+                           codex_enabled=True, capture_content=True,
+                           content_capture_consent=True))
+    root = create_agent("test-agent", tmp_path / "agent")
+    (root / "run_summary.json").write_text(
+        '{"checks_passed": 2, "note": "user@example.com", "employee_id": 123456}',
+        encoding="utf-8",
+    )
+    assert handle_hook({"hook_event_name": "SessionEnd", "session_id": "synthetic-session",
+                        "cwd": str(root), "reason": "other"}, launch_uploader=False) == {}
+    session = Outbox(outbox_path()).claim_session()
+    assert session is not None
+    assert session.custom_metrics["agentops.metrics.custom.checks_passed"] == 2
+    assert "agentops.metrics.custom.employee_id" not in session.custom_metrics
+    assert session.custom_tags["custom.note"] == "[REDACTED_EMAIL]"
 
 
 def test_stop_hook_attaches_exact_transcript_token_record(tmp_path, monkeypatch):
