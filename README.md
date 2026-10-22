@@ -62,15 +62,13 @@ aops load <agent-id> --version <version>
 
 ### UC 스키마와 테이블
 
-아래 이름은 데모 구성 예시이며, 실제 Catalog·Schema는 `configure`와 앱 배포 설정에서 지정합니다.
+`aops`는 `configure --registry <catalog>.<schema>`로 지정한 **스키마 하나**만 사용합니다. Catalog·Schema 이름에 기본값은 없으며 아래 `agentops_skill_registry`는 예시입니다.
 
 | 스키마 | 저장하는 것 |
 |---|---|
-| `<catalog>.agentops_skill_registry` | `aops` 원본: `agents`(신원), `agent_versions`(불변 버전), `agent_version_skills`(Skill 구성), `release_gates`(등록·심사 증빙), `agent_events`(변경 이력), `agent_production`(운영 버전 선택). `agent_artifacts` Volume에 릴리스 파일을 보관하고 UC Skill도 이 스키마에 등록합니다. |
-| `<catalog>.agentops` | 별도 통합 포털의 Delta 목록: `agents`(공통 신원), `releases`(Skill·Code·Genie 버전), `production`(포털 운영 버전), `gate_events`(포털 심사 이력). `aops` 단독 사용에는 필요하지 않습니다. |
-| `<catalog>.agentops_traces` | 별도 Code 데모의 MLflow UC Trace 저장소. `code_demo_otel_*` 테이블 4개와 `code_demo_trace_*` 뷰 2개는 해당 실험이 관리하며, 모든 `aops` 설치에 필요한 스키마는 아닙니다. 공통 `aops configure`의 Trace 저장소는 위 `aops` Registry 스키마에 연결됩니다. |
+| `<catalog>.agentops_skill_registry` | Registry 테이블: `agents`(신원), `agent_versions`(불변 버전), `agent_version_skills`(Skill 구성), `release_gates`(등록·심사 증빙), `agent_events`(변경 이력), `agent_production`(운영 버전 선택). `agent_artifacts` Volume에 릴리스 파일을 보관하고 UC Skill도 이 스키마에 등록합니다. 공통 MLflow Experiment의 UC Trace 테이블(`<experiment_id>_otel_*`)도 이 스키마에 생성됩니다. |
 
-`agent_production`과 포털의 `production`은 **서로 자동 동기화되지 않습니다.** 예시 행을 직접 넣어도 `aops review`의 독립 심사나 `aops promote`의 승인 절차를 통과했다는 뜻은 아닙니다.
+`agent_production`에 행을 직접 넣어도 `aops review`의 독립 심사나 `aops promote`의 승인 절차를 통과했다는 뜻은 아닙니다.
 
 조회와 쓰기는 같은 설정을 사용합니다. 일회성 `--profile`, `--registry`, `--warehouse-id`는 예외 작업에만 사용합니다. 다른 Workspace로 Profile을 바꾸면 기존 Workspace의 공통 값을 가져오지 않으며, 저장된 Profile의 Workspace URL이 변경되면 재설정을 요구합니다. 같은 Workspace의 다른 인증 Profile은 공통 값을 재사용할 수 있습니다.
 
