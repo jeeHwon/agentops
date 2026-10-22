@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from typing import Any
 from .paths import config_path
 
 
-DEFAULT_EXPERIMENT = "/Shared/codex-agentops"
+DEFAULT_EXPERIMENT = "/Shared/agentops"
 DEFAULT_OTEL_PORT = 4319
 
 
@@ -32,6 +33,19 @@ class Settings:
     otel_port: int = DEFAULT_OTEL_PORT
     otel_mode: str = "auto"
     configured_at: str = ""
+    experiment_id: str = ""
+    codex_enabled: bool = False
+
+    @property
+    def tracing(self) -> dict[str, str]:
+        parts = self.registry.split(".")
+        return {
+            "experiment_id": self.experiment_id,
+            "workspace_host": self.host,
+            "catalog": parts[0] if len(parts) == 2 else "",
+            "schema": parts[1] if len(parts) == 2 else "",
+            "warehouse_id": self.warehouse_id,
+        }
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Settings":
@@ -44,6 +58,15 @@ class Settings:
             raise ConfigError("Databricks host must be an https URL.")
         if not experiment.startswith("/"):
             raise ConfigError("MLflow experiment must be an absolute workspace path.")
+        experiment_id = str(raw.get("experiment_id", "")).strip()
+        if experiment_id and not experiment_id.isdigit():
+            raise ConfigError("MLflow experiment_id must be a numeric Databricks experiment ID.")
+        registry = str(raw.get("registry", "")).strip()
+        if registry and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*", registry):
+            raise ConfigError("Registry must use <catalog>.<schema> format.")
+        warehouse_id = str(raw.get("warehouse_id", "")).strip()
+        if warehouse_id and not re.fullmatch(r"[A-Za-z0-9_-]+", warehouse_id):
+            raise ConfigError("Invalid SQL warehouse ID.")
         otel_port = int(raw.get("otel_port", DEFAULT_OTEL_PORT))
         if not 1024 <= otel_port <= 65535:
             raise ConfigError("OTel collector port must be between 1024 and 65535.")
@@ -54,8 +77,8 @@ class Settings:
             profile=profile,
             host=host,
             user_name=str(raw.get("user_name", "")),
-            warehouse_id=str(raw.get("warehouse_id", "")),
-            registry=str(raw.get("registry", "")).strip(),
+            warehouse_id=warehouse_id,
+            registry=registry,
             experiment=experiment,
             capture_content=(
                 raw.get("capture_content") is True
@@ -65,6 +88,8 @@ class Settings:
             otel_port=otel_port,
             otel_mode=otel_mode,
             configured_at=str(raw.get("configured_at", "")),
+            experiment_id=experiment_id,
+            codex_enabled=raw.get("codex_enabled", True) is True,
         )
 
 
@@ -73,7 +98,7 @@ def load_settings(path: Path | None = None) -> Settings:
     try:
         raw = json.loads(target.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise ConfigError("Codex AgentOps가 설정되지 않았습니다. `aops configure`를 실행하세요.") from exc
+        raise ConfigError("AgentOps가 설정되지 않았습니다. `aops configure`를 실행하세요.") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise ConfigError(f"Cannot read configuration at {target}: {exc}") from exc
     if not isinstance(raw, dict):

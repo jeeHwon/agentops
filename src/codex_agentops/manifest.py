@@ -15,6 +15,11 @@ AGENT_ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 SPEC_SCHEMA_VERSION = 2
 SKILL_BASED_AGENT_TYPE = "skill-based-agent"
+AGENT_TYPES = {
+    "skill": SKILL_BASED_AGENT_TYPE,
+    "code": "code-based-agent",
+    "no-code": "genie-agent",
+}
 SPEC_FIELDS = frozenset({
     "agent_id", "agent_name", "agent_version", "build_type", "serving_type",
     "origin", "owner", "owner_group", "service_criticality", "data_sensitivity",
@@ -75,7 +80,7 @@ class AgentManifest:
 
     @property
     def agent_type(self) -> str:
-        return SKILL_BASED_AGENT_TYPE
+        return AGENT_TYPES[self.build_type]
 
 
 @dataclass(frozen=True)
@@ -217,7 +222,7 @@ def find_agent_root(start: str | Path) -> Path | None:
     if path.is_file():
         path = path.parent
     for candidate in (path, *path.parents):
-        if (candidate / "AGENTS.md").is_file() and any(
+        if any(
             child.name == "SPEC.md" and child.is_file() for child in candidate.iterdir()
         ):
             return candidate
@@ -252,9 +257,11 @@ def load_manifest(root: str | Path) -> AgentManifest:
     criticality = _required_string(metadata, "service_criticality", "SPEC.md")
     sensitivity = _required_string(metadata, "data_sensitivity", "SPEC.md")
     security_level = _required_string(metadata, "security_level", "SPEC.md")
-    if build_type != "skill":
-        raise ManifestError("SPEC.md build_type must be skill for Skill-based Agents.")
-    _enum_value(serving_type, "serving_type", {"apps", "Apps", "SE", "se", "Job", "job"})
+    _enum_value(build_type, "build_type", set(AGENT_TYPES))
+    _enum_value(
+        serving_type, "serving_type",
+        {"genie"} if build_type == "no-code" else {"apps", "Apps", "SE", "se", "Job", "job"},
+    )
     _enum_value(origin, "origin", {"databricks", "innohub"})
     _enum_value(criticality, "service_criticality", {"상", "중", "하"})
     _enum_value(sensitivity, "data_sensitivity", {"공개", "내부", "대외비", "개인정보"})
@@ -309,6 +316,11 @@ def load_manifest(root: str | Path) -> AgentManifest:
 
 def validate_agent(root: str | Path) -> AgentManifest:
     manifest = load_manifest(root)
+    if manifest.build_type != "skill":
+        from .project import validate_project
+
+        validate_project(manifest)
+        return manifest
     for name in ("README.md", "AGENTS.md", "SPEC.md"):
         path = manifest.root / name
         if not path.is_file() or not path.read_text(encoding="utf-8").strip():
@@ -333,13 +345,17 @@ def validate_agent(root: str | Path) -> AgentManifest:
         raise ManifestError("README.md must start with a Markdown heading.")
     if not (manifest.root / "AGENTS.md").read_text(encoding="utf-8").lstrip().startswith("#"):
         raise ManifestError("AGENTS.md must start with a Markdown heading.")
+    if (manifest.root / "aops.yaml").exists():
+        from .project import load_project
+
+        load_project(manifest.root)
     return manifest
 
 
 def require_source_distribution_allowed(data_sensitivity: str, security_level: str) -> None:
     if data_sensitivity not in {"공개", "내부"} or security_level != "일반":
         raise ManifestError(
-            "대외비/개인정보 또는 강화 등급 Skill 원문은 이 로컬 복사형 실행·Registry 경로에 "
+            "대외비/개인정보 또는 강화 등급 Agent 원문은 이 로컬 복사형 실행·Registry 경로에 "
             "게시할 수 없습니다. 별도 서버 측 실행과 서비스 주체 권한이 필요합니다."
         )
 
@@ -551,10 +567,9 @@ def _agent_readme(agent_id: str) -> str:
         aops load {agent_id} --version 1.0.0
         ```
 
-        `aops register`와 `aops list`는 Skill 원본 Registry를 사용합니다. 통합 포털의 개발 목록은
-        별도 Delta Registry이므로 포털에서 **에이전트 등록 → Skill-based → Registry 릴리스 연결**로
-        이미 게시한 ID·버전을 연결해야 나타납니다. 파일과 UC Skill을 다시 등록하는 것은 아닙니다.
-        운영 목록은 이후 Gate 승인과 운영 지정이 필요합니다.
+        `aops register`와 `aops list`는 동일한 통합 Registry를 사용합니다.
+        운영 지정은 평가 증빙을 확인한 별도 심사와 `aops promote`가 필요합니다.
+        포털이나 별도 서버는 필요하지 않습니다.
 
         `.agents/`, `.codex/`와 `.aops/`는 `aops`가 생성하는 런타임 파일입니다.
         """
@@ -563,11 +578,18 @@ def _agent_readme(agent_id: str) -> str:
 
 def calculate_definition_checksums(root: str | Path) -> DefinitionChecksums:
     manifest = load_manifest(root)
+    if manifest.build_type != "skill":
+        from .project import load_project, project_source_files
+
+        files = project_source_files(manifest.root, load_project(manifest.root))
+        return DefinitionChecksums(_hash_files(manifest.root, files), {}, hashlib.sha256(b"").hexdigest())
     harness_paths = [
         manifest.root / "SPEC.md",
         manifest.root / "AGENTS.md",
         manifest.root / "README.md",
     ]
+    if (manifest.root / "aops.yaml").is_file():
+        harness_paths.append(manifest.root / "aops.yaml")
     agents_root = manifest.root / "agents"
     if agents_root.is_dir():
         harness_paths.extend(sorted(path for path in agents_root.rglob("*") if path.is_file() and not is_os_metadata_file(path)))
@@ -640,7 +662,7 @@ def _spec_description(body: str) -> str:
 
 def _validate_source_tree(root: Path) -> None:
     generated = {".aops", ".agents", ".codex", ".git", ".gitignore"}
-    allowed_files = {"AGENTS.md", "README.md", "SPEC.md", ".gitignore"}
+    allowed_files = {"AGENTS.md", "README.md", "SPEC.md", ".gitignore", "aops.yaml"}
     for path in root.iterdir():
         if path.name in generated:
             continue

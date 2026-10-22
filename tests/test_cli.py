@@ -6,16 +6,20 @@ import pytest
 
 import codex_agentops.cli as cli
 from codex_agentops.cli import build_parser
-from codex_agentops.config import Settings
+from codex_agentops.config import Settings, load_settings, save_settings
 from codex_agentops.databricks import Profile
-from codex_agentops.registry_context import RegistryContext, load_registry_context
+
+
+@pytest.fixture(autouse=True)
+def isolated_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
 
 
 def test_supported_commands_match_harness_lifecycle():
     parser = build_parser()
     commands = {
         "configure": [],
-        "use": ["--profile", "test-profile", "--registry", "poc_catalog.agentops_test"],
         "init": ["test-agent"],
         "validate": [],
         "registry-init": [],
@@ -27,11 +31,22 @@ def test_supported_commands_match_harness_lifecycle():
         "status": [],
         "audit-calls": ["--session-id", "synthetic-session"],
         "flush": [],
+        "deploy": [],
+        "link": ["resource"],
+        "run": [],
+        "traces": ["test-agent", "--version", "1.0.0"],
+        "trace": ["test-agent", "trace-id", "--version", "1.0.0"],
+        "evaluate": ["test-agent", "--version", "1.0.0", "--data", "data.json",
+                     "--judge-model", "databricks:/judge"],
+        "review": ["test-agent", "--version", "1.0.0", "--run-id", "run", "--trace-id", "trace"],
+        "production": ["test-agent"],
+        "promote": ["test-agent", "--version", "1.0.0", "--expected-version", "none"],
+        "rollback": ["test-agent", "--version", "1.0.0", "--expected-version", "2.0.0"],
     }
     for command, arguments in commands.items():
         assert parser.parse_args([command, *arguments]).command == command
 
-    for removed in ("publish", "assemble", "deploy"):
+    for removed in ("publish", "assemble", "use", "tracing-configure"):
         with pytest.raises(SystemExit):
             parser.parse_args([removed])
 
@@ -120,7 +135,6 @@ def test_registry_client_uses_configured_defaults(monkeypatch):
         registry="poc_catalog.agentops_test",
     )
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
-    monkeypatch.setattr(cli, "load_registry_context", lambda: None)
     monkeypatch.setattr(
         cli,
         "list_profiles",
@@ -135,101 +149,227 @@ def test_registry_client_uses_configured_defaults(monkeypatch):
     assert client.location.schema_name == "poc_catalog.agentops_test"
 
 
-def test_use_selects_registry_without_changing_monitoring_config(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path))
-    original = '{"profile": "old-profile", "experiment": "/Shared/old"}'
-    (tmp_path / "config.json").write_text(original, encoding="utf-8")
-    monkeypatch.setattr(cli, "list_profiles", lambda: [
-        Profile("test-profile", "https://example.cloud.databricks.com"),
-    ])
-    monkeypatch.setattr(cli, "validate_profile", lambda profile: "user@example.com")
-    assert cli.main(["use", "--profile", "test-profile", "--registry", "poc_catalog.agentops_test",
-                     "--warehouse-id", "warehouse-1"]) == 0
-    assert load_registry_context() == RegistryContext(
-        "test-profile", "https://example.cloud.databricks.com", "poc_catalog.agentops_test", "warehouse-1"
+def shared_environment(monkeypatch):
+    host = "https://example.cloud.databricks.com"
+    settings = Settings(
+        "chosen", host, warehouse_id="warehouse", registry="main.aops", experiment_id="123",
     )
-    assert (tmp_path / "config.json").read_text(encoding="utf-8") == original
-    assert (tmp_path / "registry.json").stat().st_mode & 0o777 == 0o600
-    assert "MLflow·Codex 설정은 변경하지 않았습니다" in capsys.readouterr().out
+    save_settings(settings)
+    monkeypatch.setattr(cli, "list_profiles", lambda: [Profile("chosen", host)])
+    monkeypatch.setattr(cli, "validate_profile", lambda profile: "user@example.com")
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    return settings
 
 
-def test_selected_registry_lists_and_loads_without_monitoring_config(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path))
-    monkeypatch.chdir(tmp_path)
-    host = "https://sandbox.cloud.databricks.com"
-    monkeypatch.setattr(cli, "list_profiles", lambda: [Profile("sandbox", host)])
+def test_configure_is_shared_and_does_not_require_or_modify_codex(monkeypatch, capsys):
+    import codex_agentops.tracing as tracing
+
+    shared_environment(monkeypatch)
+    monkeypatch.setattr(tracing, "configure_tracing", lambda settings: {**settings.tracing, "experiment_id": "321"})
+    monkeypatch.setattr(cli, "MlflowTurnExporter", lambda settings: SimpleNamespace(write_test_trace=lambda: "test-trace"))
+    for name in ("configure_otel", "ensure_collector", "validate_codex_config", "configure_turn_monitoring"):
+        monkeypatch.setattr(cli, name, lambda *args: pytest.fail("Codex integration is opt-in"))
+    assert cli.main(["configure"]) == 0
+    saved = load_settings()
+    assert saved.experiment_id == "321"
+    assert saved.registry == "main.aops"
+    assert saved.warehouse_id == "warehouse"
+    assert saved.codex_enabled is False
+    assert "test-trace" in capsys.readouterr().out
+
+
+def test_configure_failure_keeps_previous_settings(monkeypatch):
+    import codex_agentops.tracing as tracing
+
+    original = shared_environment(monkeypatch)
+    monkeypatch.setattr(tracing, "configure_tracing", lambda settings: {**settings.tracing, "experiment_id": "321"})
+
+    def failed_test():
+        raise RuntimeError("trace validation failed")
+
+    monkeypatch.setattr(cli, "MlflowTurnExporter", lambda settings: SimpleNamespace(write_test_trace=failed_test))
+    assert cli.main(["configure", "--experiment", "/Shared/new"]) == 1
+    assert load_settings().experiment == original.experiment
+    assert load_settings().experiment_id == original.experiment_id
+
+
+def test_first_configure_never_chooses_default_profile_implicitly(monkeypatch):
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(cli, "list_profiles", lambda: [Profile("DEFAULT", "https://example.com")])
+    monkeypatch.setattr(cli, "validate_profile", lambda profile: pytest.fail("no profile was selected"))
+    assert cli.main(["configure", "--registry", "main.aops"]) == 1
+
+
+def test_interactive_configure_collects_common_values_once(monkeypatch):
+    import codex_agentops.tracing as tracing
+
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    profile = Profile("selected-by-user", "https://example.com")
+    monkeypatch.setattr(cli, "list_profiles", lambda: [profile])
+    monkeypatch.setattr(cli, "choose_profile", lambda profiles: profile)
     monkeypatch.setattr(cli, "validate_profile", lambda profile: "user@example.com")
-    release = SimpleNamespace(
-        agent_id="sample-agent", version="1.0.0", name="Sample Agent",
-        skill_names=["sample-skill"], registered_by="example",
+    answers = iter(["main.aops", "/Shared/common", "warehouse"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    monkeypatch.setattr(tracing, "configure_tracing", lambda settings: {**settings.tracing, "experiment_id": "123"})
+    monkeypatch.setattr(cli, "MlflowTurnExporter", lambda settings: SimpleNamespace(write_test_trace=lambda: "trace"))
+    assert cli.main(["configure"]) == 0
+    settings = load_settings()
+    assert (settings.profile, settings.registry, settings.experiment, settings.warehouse_id) == (
+        "selected-by-user", "main.aops", "/Shared/common", "warehouse",
     )
+    assert settings.codex_enabled is False
+
+
+def test_configure_codex_is_optional_and_preserves_common_values(monkeypatch):
+    import codex_agentops.tracing as tracing
+
+    original = shared_environment(monkeypatch)
+    monkeypatch.setattr(tracing, "configure_tracing", lambda settings: original.tracing)
+    monkeypatch.setattr(cli, "MlflowTurnExporter", lambda settings: SimpleNamespace(write_test_trace=lambda: "trace"))
+    calls = []
+    monkeypatch.setattr(cli, "configure_otel", lambda settings: calls.append("otel") or ("local", "/test/codex.toml"))
+    monkeypatch.setattr(cli, "validate_codex_config", lambda: "codex-test")
+    monkeypatch.setattr(cli, "ensure_collector", lambda settings: calls.append("collector"))
+    monkeypatch.setattr(cli, "configure_turn_monitoring", lambda settings: ())
+    assert cli.main(["configure", "--codex", "--capture-content"]) == 0
+    assert load_settings().tracing == original.tracing
+    assert load_settings().codex_enabled is True
+    assert load_settings().content_capture_consent is True
+    assert calls == ["otel", "collector"]
+    assert cli.main(["configure", "--no-codex", "--no-content"]) == 0
+    assert load_settings().codex_enabled is False
+    assert load_settings().capture_content is False
+    assert calls == ["otel", "collector"]
+
+
+def test_configure_reuses_saved_profile_without_prompting_for_common_values(monkeypatch):
+    import codex_agentops.tracing as tracing
+
+    settings = shared_environment(monkeypatch)
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli, "choose_profile", lambda profiles: pytest.fail("Profile was already selected"))
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("Common values were already configured"))
+    monkeypatch.setattr(tracing, "configure_tracing", lambda current: settings.tracing)
+    monkeypatch.setattr(cli, "MlflowTurnExporter", lambda settings: SimpleNamespace(write_test_trace=lambda: "trace"))
+    assert cli.main(["configure", "--no-content"]) == 0
+    assert load_settings().tracing == settings.tracing
+
+
+def test_configure_on_new_workspace_does_not_carry_over_content_consent_or_codex(monkeypatch):
+    from dataclasses import replace
+    import codex_agentops.tracing as tracing
+
+    previous = shared_environment(monkeypatch)
+    save_settings(replace(previous, capture_content=True, content_capture_consent=True, codex_enabled=True))
+    monkeypatch.setattr(cli, "list_profiles", lambda: [Profile("other", "https://other.test")])
+    monkeypatch.setattr(tracing, "configure_tracing", lambda settings: {**settings.tracing, "experiment_id": "456"})
+    monkeypatch.setattr(cli, "MlflowTurnExporter", lambda settings: SimpleNamespace(write_test_trace=lambda: "trace"))
+    monkeypatch.setattr(cli, "configure_otel", lambda settings: pytest.fail("Codex consent is workspace-specific"))
+    assert cli.main([
+        "configure", "--profile", "other", "--registry", "other.registry", "--warehouse-id", "other-warehouse",
+    ]) == 0
+    settings = load_settings()
+    assert settings.profile == "other"
+    assert settings.capture_content is False
+    assert settings.content_capture_consent is False
+    assert settings.codex_enabled is False
+
+
+def test_legacy_registry_selection_file_is_not_a_second_authority(monkeypatch):
+    import json
+
+    shared_environment(monkeypatch)
+    (cli.config_path().parent / "registry.json").write_text(json.dumps({
+        "profile": "other", "host": "https://other.test",
+        "registry": "other.registry", "warehouse_id": "other-warehouse",
+    }))
+    monkeypatch.setattr(cli, "RegistryClient", lambda **kwargs: SimpleNamespace(**kwargs))
+    client = cli._registry_client(build_parser().parse_args(["list"]))
+    assert (client.profile, client.location.schema_name) == ("chosen", "main.aops")
+
+
+@pytest.mark.parametrize("arguments", [
+    ["list"], ["load", "sample-agent"], ["registry-init"],
+    ["register", "--version", "1.0.0"], ["review", "sample-agent", "--version", "1.0.0",
+                                         "--run-id", "run", "--trace-id", "trace"],
+])
+def test_one_environment_drives_both_reads_and_writes(monkeypatch, arguments):
+    settings = shared_environment(monkeypatch)
+    monkeypatch.setattr(cli, "RegistryClient", lambda **kwargs: SimpleNamespace(**kwargs))
+    client = cli._registry_client(build_parser().parse_args(arguments))
+    assert (client.profile, client.warehouse_id, client.location.schema_name) == (
+        "chosen", "warehouse", "main.aops",
+    )
+    assert client.settings.tracing == settings.tracing
+
+
+def test_alternate_identity_in_same_workspace_inherits_common_defaults(monkeypatch):
+    settings = shared_environment(monkeypatch)
+    monkeypatch.setattr(cli, "list_profiles", lambda: [Profile("reviewer", settings.host)])
+    monkeypatch.setattr(cli, "RegistryClient", lambda **kwargs: SimpleNamespace(**kwargs))
+    client = cli._registry_client(build_parser().parse_args(["list", "--profile", "reviewer"]))
+    assert client.profile == "reviewer"
+    assert client.location.schema_name == "main.aops"
+    assert client.warehouse_id == "warehouse"
+
+
+def test_different_workspace_does_not_inherit_registry_or_warehouse(monkeypatch):
+    shared_environment(monkeypatch)
+    monkeypatch.setattr(cli, "list_profiles", lambda: [Profile("other", "https://other.test")])
+    monkeypatch.setattr(cli, "RegistryClient", lambda **kwargs: SimpleNamespace(**kwargs))
+    with pytest.raises(cli.RegistryError, match="aops configure"):
+        cli._registry_client(build_parser().parse_args(["list", "--profile", "other"]))
+    client = cli._registry_client(build_parser().parse_args([
+        "list", "--profile", "other", "--registry", "other.registry", "--warehouse-id", "other-warehouse",
+    ]))
+    assert client.settings is None
+    assert client.warehouse_id == "other-warehouse"
+
+
+def test_configured_profile_rejects_changed_workspace_host(monkeypatch):
+    shared_environment(monkeypatch)
+    monkeypatch.setattr(cli, "list_profiles", lambda: [Profile("chosen", "https://other.test")])
+    with pytest.raises(cli.ConfigError, match="aops configure"):
+        cli._registry_client(build_parser().parse_args(["load", "sample-agent"]))
+
+
+def test_code_init_inherits_selected_profile(monkeypatch, tmp_path):
+    shared_environment(monkeypatch)
+    calls = []
+    monkeypatch.setattr(cli, "create_project", lambda *args, **kwargs: calls.append(kwargs) or tmp_path)
+    assert cli.main(["init", "test-agent", "--type", "code"]) == 0
+    assert calls[0]["profile"] == "chosen"
+
+
+@pytest.mark.parametrize("capture,flag,expected", [
+    (True, [], True), (True, ["--no-content"], False),
+    (False, [], False), (False, ["--capture-content"], True),
+])
+def test_genie_run_inherits_tracing_and_content_policy(monkeypatch, tmp_path, capture, flag, expected):
+    from dataclasses import replace
+    import codex_agentops.runtime as runtime
+    import codex_agentops.tracing as tracing
+    from codex_agentops.project import create_project
+
+    settings = shared_environment(monkeypatch)
+    save_settings(replace(settings, capture_content=capture, content_capture_consent=capture))
+    root = create_project("test-agent", tmp_path / "genie", build_type="no-code")
     calls = []
 
-    class StubRegistry:
-        def __init__(self, **kwargs):
+    class StubStore:
+        def __init__(self, profile, binding):
+            assert profile == "chosen"
+            assert binding == settings.tracing
+
+        def run(self, root, invoke, **kwargs):
             calls.append(kwargs)
+            return {"result": invoke()}
 
-        def list(self, **kwargs):
-            return [release]
-
-        def load(self, agent_id, *, version, destination):
-            assert (agent_id, version, destination) == (
-                "sample-agent", "1.0.0", tmp_path / "sample-agent",
-            )
-            return destination, release
-
-    monkeypatch.setattr(cli, "RegistryClient", StubRegistry)
-    assert cli.main(["use", "--profile", "sandbox", "--registry", "test_catalog.test_schema",
-                     "--warehouse-id", "warehouse-2"]) == 0
-    assert cli.main(["list"]) == 0
-    assert cli.main(["load", "sample-agent", "--version", "1.0.0"]) == 0
-    assert len(calls) == 2
-    assert all(call["profile"] == "sandbox" and call["warehouse_id"] == "warehouse-2" for call in calls)
-    output = capsys.readouterr().out
-    assert "sample-agent@1.0.0" in output
-    assert "aops validate" not in output
-
-
-def test_selected_registry_drives_list_without_extra_flags(monkeypatch):
-    args = build_parser().parse_args(["list"])
-    selected = RegistryContext("sandbox", "https://sandbox.cloud.databricks.com", "test_catalog.test_schema", "warehouse-2")
-    monkeypatch.setattr(cli, "load_registry_context", lambda: selected)
-    monkeypatch.setattr(cli, "load_settings", lambda: Settings(
-        "old-profile", "https://old.cloud.databricks.com", warehouse_id="warehouse-1",
-        registry="old_catalog.old_schema",
+    monkeypatch.setattr(tracing, "TraceStore", StubStore)
+    monkeypatch.setattr(runtime, "NativeRuntime", lambda profile, **kwargs: SimpleNamespace(
+        check_host=lambda project: None, invoke=lambda *args, **kwargs: {"answer": "ok"},
     ))
-    monkeypatch.setattr(cli, "list_profiles", lambda: [
-        Profile("sandbox", selected.host), Profile("old-profile", "https://old.cloud.databricks.com"),
-    ])
-    monkeypatch.setattr(cli, "validate_profile", lambda profile: "user@example.com")
-    monkeypatch.setattr(cli, "RegistryClient", lambda **kwargs: SimpleNamespace(**kwargs))
-    current = cli._registry_client(args)
-    assert (current.profile, current.warehouse_id, current.location.schema_name) == (
-        "sandbox", "warehouse-2", "test_catalog.test_schema",
-    )
-    legacy = cli._registry_client(build_parser().parse_args(["list", "--profile", "old-profile"]))
-    assert (legacy.profile, legacy.warehouse_id, legacy.location.schema_name) == (
-        "old-profile", "warehouse-1", "old_catalog.old_schema",
-    )
-    with pytest.raises(cli.ConfigError, match="게시 대상이 다릅니다"):
-        cli._registry_client(build_parser().parse_args(["register", ".", "--version", "2.0.0"]))
-    with pytest.raises(cli.ConfigError, match="게시 대상이 다릅니다"):
-        cli._registry_client(build_parser().parse_args(["registry-init"]))
-    writable = cli._registry_client(build_parser().parse_args([
-        "register", ".", "--version", "2.0.0", "--profile", "sandbox",
-        "--registry", "test_catalog.test_schema", "--warehouse-id", "warehouse-2",
-    ]))
-    assert (writable.profile, writable.warehouse_id, writable.location.schema_name) == (
-        "sandbox", "warehouse-2", "test_catalog.test_schema",
-    )
-
-
-def test_selected_registry_rejects_changed_workspace_host(monkeypatch):
-    monkeypatch.setattr(cli, "load_registry_context", lambda: RegistryContext(
-        "sandbox", "https://original.cloud.databricks.com", "test_catalog.test_schema", "warehouse-2"
-    ))
-    monkeypatch.setattr(cli, "load_settings", lambda: Settings("sandbox", "https://original.cloud.databricks.com"))
-    monkeypatch.setattr(cli, "list_profiles", lambda: [Profile("sandbox", "https://other.cloud.databricks.com")])
-    monkeypatch.setattr(cli, "validate_profile", lambda profile: "user@example.com")
-    with pytest.raises(cli.ConfigError, match="aops use"):
-        cli._registry_client(build_parser().parse_args(["load", "sample-agent"]))
+    before = (root / "aops.yaml").read_bytes()
+    assert cli.main(["run", str(root), "--prompt", "question", *flag]) == 0
+    assert calls[0]["capture_content"] is expected
+    assert (root / "aops.yaml").read_bytes() == before

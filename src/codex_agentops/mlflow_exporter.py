@@ -28,6 +28,16 @@ class MlflowTurnExporter:
         import mlflow
         from mlflow import MlflowClient
 
+        if self.settings.experiment_id:
+            from .tracing import TraceStore
+
+            store = TraceStore(self.settings.profile, self.settings.tracing)
+            store.verify_location()
+            os.environ["MLFLOW_TRACING_SQL_WAREHOUSE_ID"] = self.settings.warehouse_id
+            os.environ["DATABRICKS_CONFIG_PROFILE"] = self.settings.profile
+            mlflow.set_tracking_uri(self.tracking_uri)
+            mlflow.set_experiment(experiment_id=self.settings.experiment_id)
+            return store.client, self.settings.experiment_id
         os.environ["DATABRICKS_CONFIG_PROFILE"] = self.settings.profile
         mlflow.set_tracking_uri(self.tracking_uri)
         if self.settings.warehouse_id:
@@ -67,9 +77,9 @@ class MlflowTurnExporter:
         client, experiment_id = self._client_and_experiment(create_if_missing=True)
         now = time.time_ns()
         root = client.start_trace(
-            name="codex-agentops.configuration-test",
+            name="agentops.configuration-test",
             span_type="AGENT",
-            inputs={"message": "Codex AgentOps configuration test"},
+            inputs={"message": "AgentOps configuration test"},
             attributes={
                 "agentops.test": "true",
                 "agentops.profile": self.settings.profile,
@@ -92,7 +102,28 @@ class MlflowTurnExporter:
         return root.trace_id
 
     def export_turn(self, turn: PendingTurn) -> str:
+        binding = _first_present(turn.events, "tracing") or {}
+        if binding.get("experiment_id"):
+            from .tracing import TraceStore
+
+            if binding["workspace_host"].rstrip("/") != self.settings.host.rstrip("/"):
+                raise RuntimeError("Turn trace binding belongs to another configured workspace.")
+            store = TraceStore(self.settings.profile, binding)
+            store.verify_location()
+            with store.context():
+                import mlflow
+
+                mlflow.set_experiment(experiment_id=binding["experiment_id"])
+                return self._export_turn(turn, store.client, binding["experiment_id"])
+        if self.settings.experiment_id:
+            raise RuntimeError(
+                "Queued turn has no captured UC tracing binding. Flush it using its original "
+                "configuration before switching environments; it will not be silently redirected."
+            )
         client, experiment_id = self._client_and_experiment()
+        return self._export_turn(turn, client, experiment_id)
+
+    def _export_turn(self, turn: PendingTurn, client: Any, experiment_id: str) -> str:
         prompt_event = _first(turn.events, "UserPromptSubmit")
         stop_event = _last(turn.events, "Stop")
         interrupt_event = _last(turn.events, "Interrupt")

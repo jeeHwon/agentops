@@ -65,10 +65,17 @@ def from_hook_payload(
     created_ns = now_ns or time.time_ns()
     checksums = calculate_definition_checksums(manifest.root)
     release = read_release_metadata(manifest.root) or {}
+    from .project import resolve_project
+
+    tracing = resolve_project(manifest.root, settings)["tracing"]
     release_version = (
         release.get("version")
         if release.get("harness_sha256") == checksums.harness
         and release.get("skills_sha256") == checksums.combined_skills
+        and (
+            not tracing.get("experiment_id")
+            or release.get("project", {}).get("tracing") == tracing
+        )
         else None
     )
     common: dict[str, Any] = {
@@ -98,6 +105,8 @@ def from_hook_payload(
         "owner_group": manifest.owner_group or None,
         "runtime": "codex",
     }
+    if tracing.get("experiment_id"):
+        common["tracing"] = tracing
     runtime_agent_id = str(raw.get("agent_id", "")).strip()
     runtime_agent_type = str(raw.get("agent_type", "")).strip()
     if runtime_agent_id:

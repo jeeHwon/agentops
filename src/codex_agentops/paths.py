@@ -25,10 +25,6 @@ def config_path() -> Path:
     return config_dir() / "config.json"
 
 
-def registry_context_path() -> Path:
-    return config_dir() / "registry.json"
-
-
 def outbox_path() -> Path:
     return data_dir() / "outbox.db"
 

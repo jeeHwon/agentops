@@ -6,12 +6,14 @@ import os
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import quote
 
+from .config import Settings
 from .manifest import (
+    AGENT_TYPES,
     SKILL_BASED_AGENT_TYPE,
     SPEC_SCHEMA_VERSION,
     VERSION_RE,
@@ -66,6 +68,11 @@ class AgentRelease:
     harness_sha256: str
     skills_sha256: str
     spec: dict[str, Any]
+    project: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def agent_type(self) -> str:
+        return AGENT_TYPES[self.spec.get("build_type", "skill")]
 
 
 @dataclass(frozen=True)
@@ -86,7 +93,9 @@ class AssemblyResult:
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 
-def build_release(root: str | Path, version: str, skill_schema: str) -> AgentRelease:
+def build_release(
+    root: str | Path, version: str, skill_schema: str, *, settings: Settings | None = None,
+) -> AgentRelease:
     if not VERSION_RE.fullmatch(version):
         raise ReleaseError("Version must use major.minor.patch.")
     manifest = validate_agent(root)
@@ -96,7 +105,7 @@ def build_release(root: str | Path, version: str, skill_schema: str) -> AgentRel
     schema_parts = skill_schema.split(".")
     if len(schema_parts) != 2 or not all(schema_parts):
         raise ReleaseError("Skill schema must use <catalog>.<schema> format.")
-    skills = load_skills(manifest.root)
+    skills = load_skills(manifest.root) if manifest.build_type == "skill" else {}
     checksums = calculate_definition_checksums(manifest.root)
     skill_releases = tuple(
         SkillRelease(
@@ -112,13 +121,16 @@ def build_release(root: str | Path, version: str, skill_schema: str) -> AgentRel
         )
         for name, definition in sorted(skills.items())
     )
-    subagents = load_subagents(manifest.root, set(skills))
+    subagents = load_subagents(manifest.root, set(skills)) if manifest.build_type == "skill" else {}
+    from .project import resolve_project
+
+    project = resolve_project(manifest.root, settings)
     return AgentRelease(
         root=manifest.root,
         agent_id=manifest.agent_id,
         release_version=version,
         model=manifest.model_service,
-        harness_profile="codex",
+        harness_profile={"skill": "codex", "code": "agentbricks", "no-code": "genie"}[manifest.build_type],
         skills=skill_releases,
         subagents=tuple(
             SubagentRelease(
@@ -147,19 +159,25 @@ def build_release(root: str | Path, version: str, skill_schema: str) -> AgentRel
             "model_service": manifest.model_service,
             "success_criteria": manifest.success_criteria,
         },
+        project=project if (manifest.root / "aops.yaml").exists() or settings else {},
     )
 
 
 def write_release_metadata(release: AgentRelease) -> Path:
     target = release.root / ".aops" / "release.json"
+    if target.parent.is_symlink() or target.is_symlink():
+        raise ReleaseError("Symbolic links are not allowed for generated release metadata.")
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = release_to_dict(release)
-    temporary = target.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, target)
+    fd, temporary = tempfile.mkstemp(prefix="release-", suffix=".json", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return target
 
 
@@ -168,12 +186,13 @@ def release_to_dict(release: AgentRelease) -> dict[str, Any]:
         "schema_version": SPEC_SCHEMA_VERSION,
         "agent_id": release.agent_id,
         "version": release.release_version,
-        "agent_type": SKILL_BASED_AGENT_TYPE,
+        "agent_type": release.agent_type,
         "model": release.model,
         "harness": release.harness_profile,
         "harness_sha256": release.harness_sha256,
         "skills_sha256": release.skills_sha256,
         "spec": release.spec,
+        "project": release.project,
         "skills": [
             {
                 "alias": skill.alias,
@@ -208,7 +227,7 @@ def release_from_dict(
     agent_root = Path(root).expanduser().resolve()
     if raw.get("schema_version") != SPEC_SCHEMA_VERSION:
         raise ReleaseError("Unsupported Agent Release schema_version.")
-    if raw.get("agent_type") != SKILL_BASED_AGENT_TYPE:
+    if raw.get("agent_type") not in AGENT_TYPES.values():
         raise ReleaseError("Unsupported Release agent_type.")
     agent_id = _required_string(raw, "agent_id", "release.json")
     if expected_agent_id and agent_id != expected_agent_id:
@@ -218,9 +237,21 @@ def release_from_dict(
     version = _required_string(raw, "version", "release.json")
     if not VERSION_RE.fullmatch(version):
         raise ReleaseError("Release version contains unsupported characters.")
+    if raw.get("agent_type") != SKILL_BASED_AGENT_TYPE and (
+        raw.get("skills") or raw.get("subagents")
+    ):
+        raise ReleaseError("Code and Genie releases cannot contain Codex Skill or Sub-agent snapshots.")
     raw_skills = raw.get("skills")
-    if not isinstance(raw_skills, list) or not raw_skills:
-        raise ReleaseError("Release must contain at least one Skill snapshot.")
+    if not isinstance(raw_skills, list) or (
+        raw.get("agent_type") == SKILL_BASED_AGENT_TYPE and not raw_skills
+    ):
+        raise ReleaseError("Skill Release must contain at least one Skill snapshot.")
+    spec = raw.get("spec") or {}
+    if not isinstance(spec, dict) or AGENT_TYPES.get(spec.get("build_type", "skill")) != raw["agent_type"]:
+        raise ReleaseError("Release type does not match its SPEC snapshot.")
+    project = raw.get("project", {})
+    if not isinstance(project, dict) or (raw["agent_type"] != SKILL_BASED_AGENT_TYPE and not project):
+        raise ReleaseError("Code and Genie releases require a project snapshot.")
     skills: list[SkillRelease] = []
     for item in raw_skills:
         if not isinstance(item, dict):
@@ -258,7 +289,8 @@ def release_from_dict(
         subagents=subagents,
         harness_sha256=_required_string(raw, "harness_sha256", "release.json"),
         skills_sha256=_required_string(raw, "skills_sha256", "release.json"),
-        spec=dict(raw.get("spec") or {}),
+        spec=dict(spec),
+        project=project,
     )
 
 
@@ -449,6 +481,8 @@ class UcSkillPublisher:
 class CodexRuntimeBuilder:
     def prepare(self, root: str | Path) -> AssemblyResult:
         manifest = validate_agent(root)
+        if manifest.build_type != "skill":
+            raise ReleaseError("Codex runtime preparation supports only Skill agents.")
         require_source_distribution_allowed(manifest.data_sensitivity, manifest.security_level)
         skills = load_skills(manifest.root)
         subagents = load_subagents(manifest.root, set(skills))

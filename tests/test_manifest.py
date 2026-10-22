@@ -162,11 +162,13 @@ def test_latest_spec_fields_and_structured_uc_permissions_round_trip(tmp_path):
 
 
 @pytest.mark.parametrize("other_type", ["code", "no-code"])
-def test_skill_based_cli_rejects_other_agent_build_types(tmp_path, other_type):
+def test_native_build_types_require_their_own_project_contract(tmp_path, other_type):
     root = create_agent("claims-helper", tmp_path / "claims-helper")
     spec = root / "SPEC.md"
     spec.write_text(spec.read_text().replace("build_type: skill", f"build_type: {other_type}"))
-    with pytest.raises(ManifestError, match="build_type must be skill"):
+    if other_type == "no-code":
+        spec.write_text(spec.read_text().replace("serving_type: apps", "serving_type: genie"))
+    with pytest.raises(ManifestError, match="aops.yaml"):
         validate_agent(root)
 
 

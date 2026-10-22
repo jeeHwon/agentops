@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codex-agentops"
-version = "1.2.0"
-description = "Markdown Skill-based Agent Registry, version-pinned UC Skills, and MLflow observability"
+version = "1.3.0"
+description = "Unified Skill, Agent Bricks and Genie CLI with immutable releases and MLflow observability"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

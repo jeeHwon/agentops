@@ -24,7 +24,11 @@ def handle_hook(raw: dict[str, Any], *, launch_uploader: bool = True) -> dict[st
         return {}
     try:
         manifest = load_manifest(root)
+        if manifest.build_type != "skill":
+            return {}
         settings = load_settings()
+        if not settings.codex_enabled:
+            return {}
         outbox = Outbox(outbox_path())
         event_name = str(raw.get("hook_event_name") or "")
         if event_name in {"SessionStart", "SessionEnd"}:

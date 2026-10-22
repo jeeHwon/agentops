@@ -1,6 +1,6 @@
 {
   "name": "codex-agentops",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Markdown Skill-based Agent Registry, UC Skills와 MLflow 모니터링",
   "author": {
     "name": "Contributors"

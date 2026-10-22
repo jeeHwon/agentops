@@ -11,7 +11,7 @@ def catalog_record(release: AgentVersion, location: RegistryLocation) -> dict[st
     if not isinstance(spec, dict):
         raise ValueError("Release is missing a SPEC.md snapshot.")
     skills = release.release_manifest.get("skills")
-    if not isinstance(skills, list) or not skills:
+    if not isinstance(skills, list) or (spec.get("build_type") == "skill" and not skills):
         raise ValueError("Release is missing its UC Skill references.")
     skill_names = []
     for skill in skills:
@@ -23,10 +23,11 @@ def catalog_record(release: AgentVersion, location: RegistryLocation) -> dict[st
         "version": release.version,
         "name": release.name,
         "description": release.description,
-        "type": "skill",
+        "type": spec.get("build_type", "skill"),
         "source_registry": location.schema_name,
         "artifact_sha256": release.artifact_sha256,
         "uc_skills": skill_names,
+        "runtime": release.release_manifest.get("project", {}).get("runtime", {}),
         "spec": {
             key: spec.get(key)
             for key in (

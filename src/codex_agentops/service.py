@@ -11,7 +11,7 @@ from .release import AssemblyResult, CodexRuntimeBuilder
 
 
 class AgentOpsService:
-    """Platform-neutral backend API used by the CLI and external Web UIs."""
+    """Local Python facade for the CLI's common agent lifecycle."""
 
     def __init__(
         self,
@@ -33,17 +33,30 @@ class AgentOpsService:
                 profile=self.settings.profile,
                 warehouse_id=self.settings.warehouse_id,
                 location=parse_registry(self.settings.registry),
+                settings=self.settings,
             )
         return self._registry_client
 
-    def init_agent(self, target: str | Path, agent_id: str) -> Path:
-        root = create_agent(agent_id, target)
-        CodexRuntimeBuilder().prepare(root)
+    def init_agent(
+        self, target: str | Path, agent_id: str, *, build_type: str = "skill",
+        framework: str = "langgraph",
+    ) -> Path:
+        if build_type == "skill":
+            root = create_agent(agent_id, target)
+            CodexRuntimeBuilder().prepare(root)
+        else:
+            from .project import create_project
+
+            root = create_project(
+                agent_id, target, build_type=build_type, framework=framework,
+                profile=self.settings.profile,
+            )
         return root
 
     def validate_agent(self, path: str | Path) -> AgentManifest:
         manifest = validate_agent(path)
-        CodexRuntimeBuilder().prepare(manifest.root)
+        if manifest.build_type == "skill":
+            CodexRuntimeBuilder().prepare(manifest.root)
         return manifest
 
     def list_agents(

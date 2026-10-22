@@ -5,7 +5,7 @@ import mlflow.genai.scorers as scorers
 import mlflow.tracing as tracing
 import pytest
 
-from codex_agentops.config import Settings
+from codex_agentops.config import DEFAULT_EXPERIMENT, Settings
 from codex_agentops.monitoring import TURN_TRACE_FILTER, configure_turn_monitoring
 
 
@@ -18,7 +18,7 @@ class _Client:
         self.tracking_uri = tracking_uri
 
     def get_experiment_by_name(self, name):
-        assert name == "/Shared/codex-agentops"
+        assert name == DEFAULT_EXPERIMENT
         return _Experiment()
 
 

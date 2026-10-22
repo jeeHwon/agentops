@@ -19,8 +19,9 @@ from databricks.sdk.errors import ResourceAlreadyExists
 from databricks.sdk.service.catalog import VolumeType
 from databricks.sdk.service.sql import StatementParameterListItem
 
+from .config import Settings
 from .manifest import (
-    AGENT_ID_RE, SKILL_BASED_AGENT_TYPE, SPEC_SCHEMA_VERSION, VERSION_RE,
+    AGENT_ID_RE, AGENT_TYPES, SKILL_BASED_AGENT_TYPE, SPEC_SCHEMA_VERSION, VERSION_RE,
     calculate_definition_checksums,
     is_os_metadata_file,
     require_source_distribution_allowed, validate_agent,
@@ -91,6 +92,10 @@ class RegistryLocation:
         return f"{self.catalog}.{self.schema}.agent_events"
 
     @property
+    def production_table_name(self) -> str:
+        return f"{self.catalog}.{self.schema}.agent_production"
+
+    @property
     def volume_root(self) -> str:
         return f"/Volumes/{self.catalog}/{self.schema}/{self.volume}"
 
@@ -144,6 +149,7 @@ class RegistryClient:
         location: RegistryLocation,
         workspace: WorkspaceClient | None = None,
         skill_publisher: UcSkillPublisher | None = None,
+        settings: Settings | None = None,
     ) -> None:
         if not profile.strip():
             raise RegistryError("Databricks profile is required.")
@@ -154,13 +160,16 @@ class RegistryClient:
         self.location = location
         self.workspace = workspace or WorkspaceClient(profile=profile)
         self.skill_publisher = skill_publisher or UcSkillPublisher(profile)
+        self.settings = settings
+        if settings and settings.host.rstrip("/") != self.workspace.config.host.rstrip("/"):
+            raise RegistryError("Configured environment belongs to a different workspace.")
 
     def initialize(self) -> None:
         try:
             self.workspace.schemas.create(
                 name=self.location.schema,
                 catalog_name=self.location.catalog,
-                comment="Skill-based Agent Registry metadata and immutable artifacts",
+                comment="Unified Agent Registry metadata and immutable artifacts",
             )
         except Exception as exc:
             if not isinstance(exc, ResourceAlreadyExists) and not _already_exists(exc):
@@ -171,7 +180,7 @@ class RegistryClient:
                 schema_name=self.location.schema,
                 name=self.location.volume,
                 volume_type=VolumeType.MANAGED,
-                comment="Immutable Skill-based Agent release artifacts",
+                comment="Immutable Agent release artifacts",
             )
         except Exception as exc:
             if not isinstance(exc, ResourceAlreadyExists) and not _already_exists(exc):
@@ -184,6 +193,7 @@ class RegistryClient:
         version_skills = _quoted_name(self.location.version_skills_table_name)
         gates = _quoted_name(self.location.gates_table_name)
         events = _quoted_name(self.location.events_table_name)
+        production = _quoted_name(self.location.production_table_name)
         statements = [
             f"""
             CREATE TABLE IF NOT EXISTS {agents} (
@@ -294,6 +304,18 @@ class RegistryClient:
             ) USING DELTA
             COMMENT 'Publish, activation, rollback and lifecycle events'
             """,
+            f"""
+            CREATE TABLE IF NOT EXISTS {production} (
+              agent_id STRING NOT NULL,
+              version STRING NOT NULL,
+              previous_version STRING,
+              transition_id STRING NOT NULL,
+              updated_by STRING NOT NULL,
+              updated_at TIMESTAMP NOT NULL
+            ) USING DELTA
+            TBLPROPERTIES ('delta.isolationLevel' = 'Serializable')
+            COMMENT 'Production catalog pointer; not a runtime deployment record'
+            """,
         ]
         for statement in statements:
             self._execute_sql(statement)
@@ -329,11 +351,13 @@ class RegistryClient:
         if self.get(manifest.agent_id, version, allow_missing=True) is not None:
             raise RegistryError(f"Agent version already exists: {manifest.agent_id}@{version}")
 
-        release = build_release(manifest.root, version, self.location.schema_name)
+        release = build_release(manifest.root, version, self.location.schema_name, settings=self.settings)
         try:
-            published = self.skill_publisher.publish(release)
+            published = self.skill_publisher.publish(release) if manifest.build_type == "skill" else ()
+            if manifest.build_type != "skill":
+                self.verify_access(release)
         except Exception as exc:
-            raise RegistryError(f"Cannot publish Agent Skills: {exc}") from exc
+            raise RegistryError(f"Cannot authorize or publish Agent resources: {exc}") from exc
         write_release_metadata(release)
         archive = build_agent_archive(manifest.root)
         if len(archive.content) > MAX_ARCHIVE_BYTES:
@@ -345,7 +369,7 @@ class RegistryClient:
         release_manifest.update(
             {
                 "artifact_sha256": archive.sha256,
-                "artifact_contains_skill_snapshots": True,
+                "artifact_contains_skill_snapshots": manifest.build_type == "skill",
                 "published_skills": [
                     {"uc_name": item.uc_name, "sha256": item.sha256, "action": item.action}
                     for item in published
@@ -354,7 +378,6 @@ class RegistryClient:
             }
         )
 
-        uploaded = False
         try:
             self.workspace.files.create_directory(artifact_directory)
             self.workspace.files.upload(
@@ -362,7 +385,6 @@ class RegistryClient:
                 io.BytesIO(archive.content),
                 overwrite=False,
             )
-            uploaded = True
             self._register_metadata(
                 manifest=manifest,
                 release=release,
@@ -375,14 +397,12 @@ class RegistryClient:
                 skills_sha256=checksums.combined_skills,
             )
         except Exception as exc:
-            if uploaded:
-                try:
-                    self.workspace.files.delete(artifact_path)
-                except Exception:
-                    pass
             if isinstance(exc, RegistryError):
                 raise
-            raise RegistryError(f"Cannot register Agent artifact: {exc}") from exc
+            raise RegistryError(
+                f"Cannot register Agent artifact: {exc}. Metadata writes may be partial; "
+                "artifacts are not deleted automatically. Inspect the Registry before retrying."
+            ) from exc
 
         registered = self.get(manifest.agent_id, version)
         if registered is None:
@@ -603,7 +623,7 @@ class RegistryClient:
         visible: list[AgentVersion] = []
         for item in versions:
             try:
-                self.skill_publisher.verify_access(
+                self.verify_access(
                     release_from_dict(
                         item.release_manifest,
                         expected_agent_id=item.agent_id,
@@ -669,14 +689,14 @@ class RegistryClient:
             str((registered.release_manifest.get("spec") or {}).get("security_level") or ""),
         )
         try:
-            self.skill_publisher.verify_access(
+            self.verify_access(
                 release_from_dict(
                     registered.release_manifest,
                     expected_agent_id=registered.agent_id,
                 )
             )
         except Exception as exc:
-            raise RegistryError(f"Cannot authorize Agent UC Skills: {exc}") from exc
+            raise RegistryError(f"Cannot authorize Agent resources: {exc}") from exc
         response = self.workspace.files.download(registered.artifact_path)
         content = response.contents.read()
         actual_sha256 = hashlib.sha256(content).hexdigest()
@@ -698,15 +718,39 @@ class RegistryClient:
             require_source_distribution_allowed(manifest.data_sensitivity, manifest.security_level)
             if manifest.agent_id != registered.agent_id:
                 raise RegistryError("Downloaded artifact agent_id does not match Registry metadata.")
+            if manifest.agent_type != registered.agent_type or manifest.agent_version != registered.version:
+                raise RegistryError("Downloaded SPEC type/version does not match Registry metadata.")
             release = load_release(temporary_root, expected_agent_id=registered.agent_id)
             if release.release_version != registered.version:
                 raise RegistryError("Downloaded artifact version does not match Registry metadata.")
+            checksums = calculate_definition_checksums(temporary_root)
+            if (
+                checksums.harness != registered.harness_sha256
+                or checksums.combined_skills != registered.skills_sha256
+                or release.harness_sha256 != checksums.harness
+                or release.skills_sha256 != checksums.combined_skills
+            ):
+                raise RegistryError("Downloaded source checksums do not match the registered release.")
+            snapshot = release_to_dict(release)
+            if any(
+                value != registered.release_manifest.get(key, {} if key == "project" else None)
+                for key, value in snapshot.items()
+            ):
+                raise RegistryError("Downloaded release snapshot does not match Registry metadata.")
             if target.exists():
                 target.rmdir()
             shutil.move(str(temporary_root), str(target))
-        if prepare_codex:
+        if prepare_codex and registered.agent_type == SKILL_BASED_AGENT_TYPE:
             CodexRuntimeBuilder().prepare(target)
         return target, registered
+
+    def verify_access(self, release: Any) -> None:
+        if release.agent_type == SKILL_BASED_AGENT_TYPE:
+            self.skill_publisher.verify_access(release)
+            return
+        from .runtime import NativeRuntime
+
+        NativeRuntime(self.profile, workspace=self.workspace).verify_binding(release.project)
 
     def _execute_sql(
         self,
@@ -744,14 +788,21 @@ class RegistryClient:
 def build_agent_archive(root: str | Path) -> AgentArchive:
     manifest = validate_agent(root)
     release = load_release(manifest.root, expected_agent_id=manifest.agent_id)
-    files = [
-        manifest.root / "AGENTS.md",
-        manifest.root / "README.md",
-        manifest.root / "SPEC.md",
-        manifest.root / ".aops" / "release.json",
-    ]
-    for directory in (manifest.root / "skills", manifest.root / "agents"):
-        files.extend(sorted(path for path in directory.rglob("*") if path.is_file() and not is_os_metadata_file(path)))
+    if manifest.build_type == "skill":
+        files = [
+            manifest.root / "AGENTS.md",
+            manifest.root / "README.md",
+            manifest.root / "SPEC.md",
+        ]
+        if (manifest.root / "aops.yaml").exists():
+            files.append(manifest.root / "aops.yaml")
+        for directory in (manifest.root / "skills", manifest.root / "agents"):
+            files.extend(sorted(path for path in directory.rglob("*") if path.is_file() and not is_os_metadata_file(path)))
+    else:
+        from .project import load_project, project_source_files
+
+        files = project_source_files(manifest.root, load_project(manifest.root))
+    files.append(manifest.root / ".aops" / "release.json")
     entries = [*files]
     symbolic_link = next((path for path in entries if path.is_symlink()), None)
     if symbolic_link is not None:
@@ -772,7 +823,7 @@ def build_agent_archive(root: str | Path) -> AgentArchive:
                 info.mtime = 0
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
-                info.mode = 0o644
+                info.mode = 0o755 if path.stat().st_mode & 0o111 else 0o644
                 archive.addfile(info, io.BytesIO(data))
     content = output.getvalue()
     return AgentArchive(content, hashlib.sha256(content).hexdigest(), checksums)
@@ -783,12 +834,19 @@ def extract_agent_archive(content: bytes, destination: str | Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     try:
         with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as archive:
-            for member in archive.getmembers():
+            seen: set[str] = set()
+            total_bytes = 0
+            for member in archive:
                 relative = PurePosixPath(member.name)
                 if relative.is_absolute() or ".." in relative.parts or not relative.parts:
                     raise RegistryError(f"Unsafe artifact path: {member.name}")
                 if not member.isfile():
                     raise RegistryError(f"Agent artifact contains an unsupported entry: {member.name}")
+                total_bytes += member.size
+                normalized = relative.as_posix()
+                if normalized in seen or len(seen) >= 10000 or total_bytes > MAX_ARCHIVE_BYTES:
+                    raise RegistryError("Agent artifact has duplicate paths or exceeds extraction limits.")
+                seen.add(normalized)
                 source = archive.extractfile(member)
                 if source is None:
                     raise RegistryError(f"Cannot read artifact entry: {member.name}")
@@ -862,7 +920,7 @@ def _already_exists(exc: Exception) -> bool:
 def _row_to_agent_version(row: list[Any]) -> AgentVersion:
     if len(row) != 15:
         raise RegistryError(f"Unexpected Registry row width: {len(row)}")
-    if not VERSION_RE.fullmatch(str(row[1])) or row[4] != SKILL_BASED_AGENT_TYPE:
+    if not VERSION_RE.fullmatch(str(row[1])) or row[4] not in AGENT_TYPES.values():
         raise RegistryError("Registry contains an unsupported Agent version or type.")
     try:
         skills = tuple(json.loads(row[11] or "[]"))

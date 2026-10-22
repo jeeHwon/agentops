@@ -20,10 +20,48 @@ def test_hook_ignores_non_agent_folder(tmp_path, monkeypatch):
     assert not outbox_path().exists()
 
 
+def test_hook_is_disabled_without_codex_opt_in(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
+    save_settings(Settings("chosen", "https://example.com"))
+    root = create_agent("test-agent", tmp_path / "agent")
+    assert handle_hook(
+        {"hook_event_name": "SessionStart", "session_id": "s", "cwd": str(root)},
+        launch_uploader=False,
+    ) == {}
+    assert not outbox_path().exists()
+
+
+def test_skill_events_snapshot_shared_tracing_and_mark_changed_environment_as_working(tmp_path):
+    from dataclasses import replace
+
+    from codex_agentops.events import from_hook_payload
+    from codex_agentops.manifest import load_manifest
+    from codex_agentops.release import build_release, write_release_metadata
+
+    root = create_agent("test-agent", tmp_path / "agent")
+    settings = Settings(
+        "chosen", "https://example.com", registry="main.aops",
+        warehouse_id="warehouse", experiment_id="123", codex_enabled=True,
+    )
+    write_release_metadata(build_release(root, "1.0.0", "main.aops", settings=settings))
+    assert not (root / "aops.yaml").exists()
+    payload = {
+        "hook_event_name": "Stop", "session_id": "s", "turn_id": "t",
+        "cwd": str(root), "last_assistant_message": "done",
+    }
+    event = from_hook_payload(payload, load_manifest(root), settings)
+    assert event.payload["tracing"] == settings.tracing
+    assert event.payload["release_version"] == "1.0.0"
+    changed = from_hook_payload(payload, load_manifest(root), replace(settings, experiment_id="456"))
+    assert changed.payload["release_version"] == "working"
+    assert event.payload["tracing"]["experiment_id"] == "123"
+
+
 def test_hook_records_supported_event_in_agent_folder(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
-    save_settings(Settings("test-profile", "https://example.cloud.databricks.com"))
+    save_settings(Settings("test-profile", "https://example.cloud.databricks.com", codex_enabled=True))
     root = create_agent("test-agent", tmp_path / "agent")
     result = handle_hook(
         {
@@ -44,7 +82,7 @@ def test_stop_hook_attaches_exact_transcript_token_record(tmp_path, monkeypatch)
     monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
     save_settings(
-        Settings("test-profile", "https://example.cloud.databricks.com", otel_mode="external")
+        Settings("test-profile", "https://example.cloud.databricks.com", otel_mode="external", codex_enabled=True)
     )
     root = create_agent("test-agent", tmp_path / "agent")
     transcript = tmp_path / "rollout.jsonl"
@@ -91,7 +129,7 @@ def test_stop_hook_attaches_exact_transcript_token_record(tmp_path, monkeypatch)
 def test_stop_reconciles_hosted_websearch_without_query_or_token_record(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
-    save_settings(Settings("test-profile", "https://example.cloud.databricks.com", otel_mode="external"))
+    save_settings(Settings("test-profile", "https://example.cloud.databricks.com", otel_mode="external", codex_enabled=True))
     root = create_agent("test-agent", tmp_path / "agent")
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_text(json.dumps({"type": "event_msg", "payload": {
@@ -118,7 +156,7 @@ def test_subagent_hooks_attach_child_usage_to_root_turn(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_AGENTOPS_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("CODEX_AGENTOPS_DATA_DIR", str(tmp_path / "data"))
     save_settings(
-        Settings("test-profile", "https://example.cloud.databricks.com", otel_mode="external")
+        Settings("test-profile", "https://example.cloud.databricks.com", otel_mode="external", codex_enabled=True)
     )
     root = create_agent("test-agent", tmp_path / "agent")
     common = {"session_id": "root-session", "cwd": str(root)}

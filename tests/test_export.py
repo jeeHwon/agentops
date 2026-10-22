@@ -42,6 +42,17 @@ def _complete_turn(tmp_path, *, capture_content=True, terminal_event="Stop", too
     return outbox, settings
 
 
+def test_legacy_queued_turn_is_not_redirected_to_new_shared_uc_destination(tmp_path):
+    from dataclasses import replace
+
+    outbox, original = _complete_turn(tmp_path)
+    turn = outbox.claim()
+    assert turn is not None
+    configured = replace(original, experiment_id="123", registry="main.aops", warehouse_id="warehouse")
+    with pytest.raises(RuntimeError, match="will not be silently redirected"):
+        MlflowTurnExporter(configured).export_turn(turn)
+
+
 def _complete_turn_with_subagent(tmp_path):
     root = create_agent("test-agent", tmp_path / "agent")
     manifest = load_manifest(root)
@@ -398,7 +409,7 @@ def test_configuration_trace_is_flushed_and_readable(tmp_path, monkeypatch):
 
     trace_id = exporter.write_test_trace()
     trace = client.get_trace(trace_id)
-    assert trace.data.spans[0].name == "codex-agentops.configuration-test"
+    assert trace.data.spans[0].name == "agentops.configuration-test"
 
 
 def test_configuration_creates_missing_experiment(monkeypatch):

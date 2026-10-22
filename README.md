@@ -1,18 +1,18 @@
 # AgentOps
 
-Markdown으로 Skill-based Agent를 만들고, Unity Catalog에 불변 Release로 등록하며, 기존 `codex`에서 Turn 단위로 MLflow Trace와 평가 결과를 남기는 표준 구현입니다.
+`aops` 하나로 UC Skill 중심 Agent, Agent Bricks CLI 기반 Code Agent, Genie 기반 No-code Agent를 관리합니다. 별도 포털이나 API 서버 없이 공통 `SPEC.md`, 불변 Release, Delta Registry와 MLflow를 사용합니다.
 
 ```text
-Agent 폴더 작성
-  → UC Skills 게시
-  → Release Artifact를 UC Volume에 저장
-  → Release 메타데이터를 Delta Registry에 등록
-  → Agent 목록 조회·로드
-  → Codex에서 실행
-  → 수집된 Turn의 MLflow Trace, 입력·출력이 있는 경우 Scorer 결과 확인
+Skill (Codex + UC Skills) ─┐
+Code (Agent Bricks CLI) ───┼─ aops ─ SPEC / Release / Registry / MLflow
+No-code (Genie API) ───────┘
+
+configure (최초 1회)
+    → init → validate → link/deploy → register
+     → list/load → run → traces/evaluate → review → promote/rollback
 ```
 
-Agent 자체를 MCP 서버로 배포하는 기능은 포함하지 않습니다. Web UI나 사내 플랫폼은 `AgentOpsService` Python API를 사용하고, 터미널 사용자는 `aops` CLI를 사용합니다.
+세 유형의 실행·배포·평가·심사·운영 절차는 [CLI_LIFECYCLE.md](docs/CLI_LIFECYCLE.md)에 정리했습니다. 환경 설정은 세 유형이 공유하며, 아래 Skill 작성 안내만 Codex에 해당합니다. `register`는 게시, `deploy`는 원격 리소스 변경, `promote`는 운영 카탈로그 버전 지정이며 서로를 암묵적으로 실행하지 않습니다. Agent 자체를 MCP 서버로 배포하지 않습니다.
 
 추적 범위와 실제 검증 결과는 [MONITORING_STATUS.md](docs/MONITORING_STATUS.md)에 **됨/안됨**으로 정리했습니다. 토큰 전수 추적이나 민감 Skill의 원문 비공개를 보장하지 않습니다.
 
@@ -20,7 +20,7 @@ Agent 자체를 MCP 서버로 배포하는 기능은 포함하지 않습니다. 
 
 ## 설치
 
-Codex CLI, Databricks CLI, Python 3.11 이상과 `uv`가 필요합니다.
+Databricks CLI, Python 3.11 이상과 `uv`가 필요합니다. Skill 실행에만 Codex CLI와 Hook Plugin이 필요하고, Code에는 공식 `agentbricks` CLI가 필요합니다.
 
 ```bash
 git clone https://github.com/jeeHwon/agentops.git
@@ -29,11 +29,11 @@ cd agentops
 aops --version
 ```
 
-`install.sh`는 로컬 Python 도구와 `codex-agentops` Plugin을 Git 저장소에서 설치합니다. Marketplace 게시 과정은 없습니다.
+`install.sh`는 로컬 Python 도구를 설치하며 Codex가 있으면 Hook Plugin도 설치합니다. Marketplace 게시 과정은 없습니다. Code의 프레임워크·서버 의존성은 네이티브 Agent Bricks 프로젝트에서 관리합니다.
 
 ## 최초 설정
 
-Databricks CLI Profile은 사용자가 명시적으로 선택합니다.
+**Skill·Code·Genie 모두 `aops configure` 한 번으로 시작합니다.** Databricks Profile은 사용자가 선택하며 Workspace URL은 해당 Profile에서 확인합니다. 대상 UC Catalog·Schema와 필요한 권한은 관리자가 먼저 준비합니다.
 
 ```bash
 databricks auth login \
@@ -43,38 +43,54 @@ databricks auth login \
 aops configure \
   --profile <profile> \
   --registry <catalog.schema> \
-  --experiment /Shared/agentops
+  --experiment /Shared/agentops \
+  --warehouse-id <warehouse-id>
 ```
 
-`configure`는 다음 작업을 한 번에 수행합니다.
+인자 없이 최초 `aops configure`를 실행하면 Profile 선택과 공통 값 입력을 안내합니다. 설정 후에는 사용자가 저장한 Profile과 값을 재사용하고, 환경 변경은 `--profile` 등으로 명시합니다. 비대화형 최초 실행에서는 `--profile`과 `--registry`가 필요합니다. Experiment의 최초 기본값은 `/Shared/agentops`, Warehouse를 생략하면 선택한 Profile의 기본 Warehouse를 조회합니다.
 
-1. 선택한 Profile과 SQL Warehouse 접근을 확인합니다.
-2. MLflow Experiment가 없으면 생성하고 테스트 Trace를 기록합니다.
-3. `RelevanceToQuery`, `Safety`, `Completeness` Scorer를 **평가용 입력·출력이 모두 있는** `agent.turn`에 한해 100% 샘플링으로 등록합니다. 비동기 assessment 완료 여부는 별도로 확인해야 합니다. 기본 비수집 모드에서는 본문 기반 품질 평가를 하지 않습니다.
-4. 사용자 전역 Codex OTel 설정을 로컬 Collector에 연결해 관측된 Token과 Tool 실행시간을 보완합니다. 누락·부분집계는 구분합니다.
-5. Profile, Registry, Experiment와 Warehouse를 사용자 설정에 저장합니다.
+이 명령은 인증을 확인하고, 공통 MLflow Experiment를 Registry와 같은 UC Schema의 Trace 저장소에 연결한 뒤 테스트 Trace와 span을 다시 읽어 확인합니다. Profile·Workspace·Registry·Experiment ID·Warehouse·본문 수집 정책은 사용자 설정 파일 하나에 저장합니다. Codex 설치나 전역 설정 변경은 기본 동작에 포함되지 않습니다. 토큰은 저장하지 않습니다.
 
-기존 공유 실험에 서로 다른 scorer 필터가 있으면 이를 자동 덮어쓰지 않고 설정을 중단합니다. 필터 변경 시 태그가 없는 기존 Trace의 Safety 평가 범위가 줄어들 수 있으므로 실험 소유자가 먼저 검토해야 합니다.
-
-이미 다른 환경에서 모니터링 중이고 **Registry 조회·로드만** 별도 환경으로 전환하려면, 모니터링에 영향을 주는 `configure` 대신 다음을 최초 한 번 실행합니다. Databricks Profile은 직접 지정해야 합니다.
+이후에는 Profile·Experiment·Warehouse를 반복해서 적지 않습니다.
 
 ```bash
-aops use --profile <profile> --registry <catalog.schema> --warehouse-id <warehouse-id>
+aops registry-init                 # 관리자: Registry마다 한 번
+aops init my-agent --type code
 aops list
 aops load <agent-id> --version <version>
 ```
 
-`use`는 사용자별 조회·로드(`list`, `load`, `catalog-export`) 기본값만 저장하고 MLflow Experiment, Scorer, Codex 전역 설정이나 등록 명령의 대상을 변경하지 않습니다. **게시할 때는 `aops register . --version <version> --profile <profile> --registry <catalog.schema> --warehouse-id <warehouse-id>`로 대상을 명시하세요.** `use`의 선택과 `configure`의 게시 대상이 다르면 인자 없는 `register`/`registry-init`은 잘못된 환경에 쓰지 않도록 중단됩니다. 생략한 Warehouse는 선택한 Profile의 기본 Warehouse를 조회합니다. `load`는 권한·체크섬·Agent 구조를 검증하므로 다운로드 후 다시 `aops validate`할 필요는 없습니다. 다른 Registry로 전환할 때만 `use`를 다시 실행합니다.
+### UC 스키마와 테이블
 
-관리자는 Registry마다 한 번 초기화합니다. `aops use`로 조회 환경만 바꿨다면 기존 모니터링 설정의 Registry를 잘못 초기화하지 않도록 **쓰기 대상 전체를 명시**합니다.
+아래 이름은 데모 구성 예시이며, 실제 Catalog·Schema는 `configure`와 앱 배포 설정에서 지정합니다.
+
+| 스키마 | 저장하는 것 |
+|---|---|
+| `<catalog>.agentops_skill_registry` | `aops` 원본: `agents`(신원), `agent_versions`(불변 버전), `agent_version_skills`(Skill 구성), `release_gates`(등록·심사 증빙), `agent_events`(변경 이력), `agent_production`(운영 버전 선택). `agent_artifacts` Volume에 릴리스 파일을 보관하고 UC Skill도 이 스키마에 등록합니다. |
+| `<catalog>.agentops` | 별도 통합 포털의 Delta 목록: `agents`(공통 신원), `releases`(Skill·Code·Genie 버전), `production`(포털 운영 버전), `gate_events`(포털 심사 이력). `aops` 단독 사용에는 필요하지 않습니다. |
+| `<catalog>.agentops_traces` | 별도 Code 데모의 MLflow UC Trace 저장소. `code_demo_otel_*` 테이블 4개와 `code_demo_trace_*` 뷰 2개는 해당 실험이 관리하며, 모든 `aops` 설치에 필요한 스키마는 아닙니다. 공통 `aops configure`의 Trace 저장소는 위 `aops` Registry 스키마에 연결됩니다. |
+
+`agent_production`과 포털의 `production`은 **서로 자동 동기화되지 않습니다.** 예시 행을 직접 넣어도 `aops review`의 독립 심사나 `aops promote`의 승인 절차를 통과했다는 뜻은 아닙니다.
+
+조회와 쓰기는 같은 설정을 사용합니다. 일회성 `--profile`, `--registry`, `--warehouse-id`는 예외 작업에만 사용합니다. 다른 Workspace로 Profile을 바꾸면 기존 Workspace의 공통 값을 가져오지 않으며, 저장된 Profile의 Workspace URL이 변경되면 재설정을 요구합니다. 같은 Workspace의 다른 인증 Profile은 공통 값을 재사용할 수 있습니다.
+
+같은 Workspace에서 `configure`를 다시 실행하면 생략한 값과 기존 본문 동의를 유지합니다. 본문 수집은 최초 기본 비활성이며 `--capture-content`로 동의하고 `--no-content`로 해제합니다. 환경을 바꾸기 전에 `aops flush`로 기존 대기 이벤트를 처리하십시오. 과거 이벤트의 Trace 바인딩은 바꾸지 않으며 새 공통 저장소로 임의 이전하지 않습니다.
+
+기존 Experiment가 다른 UC 위치에 연결돼 있으면 중단합니다. 기존 저장소의 과거 Trace는 자동 이전하지 않으므로 새 환경에는 새 Experiment 경로를 권장합니다.
+
+### Skill용 Codex 연동
+
+Skill을 Codex로 실행할 때만 공통 설정에 다음 옵션을 추가합니다.
 
 ```bash
-aops registry-init --profile <profile> --registry <catalog.schema> --warehouse-id <warehouse-id>
+aops configure --codex
 ```
+
+기존 공통 값은 유지하면서 Codex 설정을 검사하고 Hook용 로컬 Collector·전역 OTel 연동 및 Turn Scorer를 준비합니다. `RelevanceToQuery`, `Safety`, `Completeness`는 평가용 입력·출력이 있는 `agent.turn`만 100% 샘플링하며 비용이 발생할 수 있습니다. 기존 공유 실험의 Scorer 정책이 다르면 자동 덮어쓰지 않고 중단합니다. `--no-codex`는 Hook 수집과 Codex 진단을 비활성화하며 기존 전역 exporter를 제거하지 않습니다. Code·Genie에는 이 단계가 필요 없습니다.
 
 ## 새 Agent 개발
 
-선택한 모델 공급자/인증이 별도로 준비된 Codex에서 실행합니다. `aops configure`의 OTel 설정은 모델 공급자를 변경하지 않습니다.
+선택한 모델 공급자/인증이 별도로 준비된 Codex에서 실행합니다. `aops configure --codex`의 OTel 설정은 모델 공급자를 변경하지 않습니다.
 
 ```bash
 aops init my-agent
@@ -187,7 +203,7 @@ aops register . --version 1.0.0
 
 `register`는 구조 검증, UC Skill 생성 또는 갱신, Release manifest 생성, Artifact 압축·해시, UC Volume 업로드와 Delta Registry 등록을 순서대로 수행합니다. 같은 Agent ID와 버전은 덮어쓰지 않습니다.
 
-`aops list`는 **Skill 원본 Registry**(예: `<catalog>.<skill_schema>`)의 등록 여부를 보여줍니다. 통합 포털의 목록은 별도 Delta Registry(예: `<catalog>.<portal_schema>`)에서 읽으므로 `aops register`만으로 포털에 자동 표시되지 않습니다. 포털에서 **개발 → Skill → 원본 Skill · 포털 연결 대기** 목록의 같은 ID·버전을 선택해 **개발 목록에 연결**하세요. 이는 UC Skill이나 Volume 원본을 다시 게시하는 작업이 아닙니다. 운영 목록에는 별도 Gate 승인과 운영 지정이 필요합니다.
+`aops list`는 Skill·Code·Genie를 함께 표시합니다. 별도 카탈로그 연결이나 포털 등록은 필요하지 않습니다. 운영 선택에는 MLflow 평가 증빙과 독립 심사가 필요합니다.
 
 UC Skill 게시에는 Registry 스키마의 관리형 스토리지에서 `/Skills` Files API 쓰기가 실제로 지원되어야 합니다. 게시기는 공식 절차대로 디렉터리를 만들고 파일을 개별 업로드한 뒤 finalize하며, 게시 중 실패하면 **이번 시도에서 생성한** UC Skill만 삭제합니다. 관리형 Volume 생성 성공은 Skill 파일 업로드 성공의 증거가 아닙니다. 어떤 기본 스토리지 위치에서는 Skill 생성 후에도 `/Skills` 쓰기가 `The requested operation is not supported for this skill's storage location`로 거부되었습니다. 같은 워크스페이스에서 별도 클라우드 스토리지에 관리형 위치가 지정된 카탈로그의 전용 스키마를 사용하자 Skill 게시·finalize, Artifact Volume 업로드, Registry 등록·로드가 모두 성공했습니다. 이 관찰을 모든 기본/외부 스토리지의 지원 여부로 일반화하지 말고 대상 스키마에서 실제 파일 업로드를 시험하십시오. [Skill 저장소 요건](https://docs.databricks.com/aws/en/ai-gateway/govern-skills), [게시 절차](https://docs.databricks.com/aws/en/ai-gateway/skill-reference)를 참고하십시오.
 
@@ -199,14 +215,14 @@ cd <agent-id>
 codex
 ```
 
-`load`는 다음을 검증한 뒤 로컬 폴더와 Codex Runtime을 만듭니다.
+`load`는 다음을 검증한 뒤 로컬 폴더를 복구하며 Skill일 때만 Codex Runtime을 만듭니다.
 
 1. UC Volume Artifact 전체 SHA-256
 2. Artifact 내부 파일별 SHA-256
 3. Registry 메타데이터와 Agent ID·버전
-4. 현재 사용자의 각 UC Skill 접근 권한
+4. 현재 사용자의 각 UC Skill 또는 연결된 App·Genie 접근 권한
 
-`aops list`도 기본적으로 현재 사용자가 UC Skill 권한을 가진 Agent만 표시합니다. 관리자가 전체 행을 점검할 때만 `aops list --include-unavailable`을 사용합니다.
+`aops list`도 기본적으로 연결 리소스의 접근을 확인합니다. 리소스가 없는 초안은 Registry·Artifact Volume 권한으로 관리합니다. 관리자가 전체 행을 점검할 때만 `aops list --include-unavailable`을 사용합니다.
 
 Release Artifact에는 등록 시점의 Skill-based Agent 정의, Skill과 Sub-agent 전체 스냅샷이 들어갑니다. 공통 UC Skill이 나중에 바뀌어도 기존 Release 내용은 바뀌지 않습니다.
 
@@ -214,12 +230,13 @@ Release Artifact에는 등록 시점의 Skill-based Agent 정의, Skill과 Sub-a
 
 | 저장소 | 저장 내용 |
 |---|---|
-| Delta Table `agents` | Agent 현재 이름·Owner·중요도·민감도·위험등급·수명주기와 활성 버전 |
+| Delta Table `agents` | Agent 현재 이름·설계와 최근 등록 버전 (`current_version`; 운영 버전 아님) |
 | Delta Table `agent_versions` | 불변 버전별 spec snapshot·모델·Artifact·해시·평가 연결·Release manifest |
 | Delta Table `agent_version_skills` | Release를 구성하는 UC Skill 이름·해시·게시 방식 |
 | Delta Table `release_gates` | 평가·보안·모니터링 Gate와 승인 증거 |
 | Delta Table `agent_events` | publish·activate·rollback·deprecate·retire 이력 |
-| UC Volume `agent_artifacts` | Skill-based Agent 정의, Skill, Sub-agent와 생성된 Release manifest를 포함한 불변 압축파일 |
+| Delta Table `agent_production` | 운영 카탈로그 선택 버전·이전 버전·변경 ID |
+| UC Volume `agent_artifacts` | 유형별 소스·설정과 Release manifest의 불변 압축파일 |
 | UC Skills | Skill 검색, 권한, 감사와 조직 공용 재사용에 쓰는 현재 Skill 객체 |
 
 `aops registry-init`은 위 Registry 테이블과 Artifact Volume을 멱등하게 준비합니다.
@@ -228,7 +245,7 @@ Release Artifact에는 등록 시점의 Skill-based Agent 정의, Skill과 Sub-a
 
 Agent 루트에서 평소와 같이 `codex`를 실행합니다. Plugin Hook은 응답이 끝나는 `Stop` 이벤트에서 Turn을 완성하고, Codex OTel과 transcript 보정 결과를 로컬 Outbox에서 결합해 백그라운드로 MLflow에 전송합니다.
 
-**OTel은 프로젝트 `.codex/config.toml`에서 설정하지 않습니다.** Codex는 프로젝트 범위의 `[otel]` 설정을 읽지 않습니다. `aops configure`는 충돌이 없으면 사용자 전역 `~/.codex/config.toml`에 로컬 Collector exporter를 설치합니다. 기존 전역 exporter가 있으면 보존하고 경고하므로 `aops doctor`의 `codex-otel-config`와 실제 Token 수집 여부를 확인하십시오. 기존 exporter를 변경할 수 없으면 해당 Collector로 전달하거나 실행 시 Codex `-c` 설정을 명시해야 합니다.
+**OTel은 프로젝트 `.codex/config.toml`에서 설정하지 않습니다.** Codex는 프로젝트 범위의 `[otel]` 설정을 읽지 않습니다. `aops configure --codex`는 충돌이 없으면 사용자 전역 `~/.codex/config.toml`에 로컬 Collector exporter를 설치합니다. 기존 전역 exporter가 있으면 보존하고 경고하므로 `aops doctor`의 `codex-otel-config`와 실제 Token 수집 여부를 확인하십시오. 기존 exporter를 변경할 수 없으면 해당 Collector로 전달하거나 실행 시 Codex `-c` 설정을 명시해야 합니다.
 
 ```text
 UserPromptSubmit → 사용자 입력 저장
@@ -247,41 +264,36 @@ aops status
 aops flush
 ```
 
-## Web UI와 자체 플랫폼 연동
+## 통합 카탈로그
 
-CLI와 동일한 코어 로직은 `codex_agentops.service.AgentOpsService`로 제공합니다.
-
-`agentops`는 Skill 생성·검증·원본 게시·로드 및 Codex 관측의 정본으로 단독 동작합니다. 별도 `agentops-portal`은 Skill/Code/Genie 통합 목록과 심사 UI를 제공하는 선택적 계층입니다. `aops register`만으로 원본 A안 Registry에 게시되고, 포털 개발 목록까지 관리하려면 그곳에서 **이미 게시된 ID·버전을 연결**합니다. 이 연결은 원본 Skill이나 릴리스를 다시 게시하지 않습니다.
-
-통합 Delta 카탈로그에 A안 릴리스를 연결하려면 현재 사용자가 UC Skill 원문을 읽을 수 있는 릴리스의 메타데이터만 내보내십시오. 이 명령은 Skill 본문이나 Volume 다운로드 주소를 포함하지 않습니다.
+CLI가 단독으로 목록·버전·실행·평가·심사·운영 선택을 제공합니다. `AgentOpsService`는 로컬 Python facade이며 서버나 UI를 필요로 하지 않습니다. 카탈로그 메타데이터는 다음 명령으로 내보낼 수 있습니다.
 
 ```bash
-aops catalog-export --all-versions --profile <profile> \
-  --registry <catalog.schema> --warehouse-id <warehouse-id>
+aops catalog-export --all-versions
 ```
 
-외부 플랫폼에서 사용할 때는 `AgentOpsService.export_catalog(all_versions=True)`가 동일한 공개 메타데이터를 반환합니다. 각 사용자는 여전히 자신의 OAuth 프로필로 `aops load`하여 UC Skill 권한과 릴리스 체크섬을 검증해야 합니다.
-
-```python
-from codex_agentops.service import AgentOpsService
-
-service = AgentOpsService()
-agents = service.list_agents()
-path, release = service.load_agent("my-agent", version="1.0.0", target="./workspace")
-```
-
-플랫폼은 사용자별 작업 디렉터리를 만든 뒤 이 API로 Agent를 로드하고 해당 디렉터리에서 `codex` 세션을 실행하면 됩니다.
-
-운영 Web 환경에서는 최종 사용자에게 공용 Artifact Volume 직접 읽기 권한을 주지 않고, 사용자 자격증명 또는 OBO로 UC Skill 권한을 먼저 확인하는 Loader Backend를 통해 Release를 전달해야 합니다.
+내보내기에는 Skill 본문이나 Artifact 다운로드 URL이 들어가지 않습니다. 실제 실행 권한은 UC·App·Genie ACL로 통제하며 공용 Artifact Volume을 읽을 수 있는 사용자는 소스 스냅샷도 읽을 수 있습니다.
 
 ## 예제와 테스트
 
 두 Skill과 한 Sub-agent가 있는 예제는 [`samples/release-agent`](samples/release-agent)입니다.
 
 ```bash
-uv sync --dev
-uv run pytest
+python3 scripts/check_uv_lock_public_urls.py
+uv sync --dev --frozen
+uv run --frozen pytest
 ```
+
+`uv.lock`은 버전 관리하며 공개 PyPI의 Registry와 Artifact URL만 포함합니다. 테스트도 저장소의 lock 파일을 검사합니다. 일상 실행의 `--frozen`은 환경별 Registry 설정 때문에 lock 파일이 다시 작성되는 것을 방지하며, 의존성 갱신 시에는 별도로 lock을 갱신하고 검사해야 합니다.
+
+승인된 PyPI 미러만 사용할 수 있는 환경에서는 미러 설정을 로컬에 유지합니다. 미러에서 갱신한 lock은 게시 전에 다음과 같이 정규화할 수 있습니다.
+
+```bash
+python3 scripts/check_uv_lock_public_urls.py \
+  --fix --mirror-url "$APPROVED_PYPI_INDEX"
+```
+
+검사·정규화 스크립트는 Python 3.11 이상의 표준 라이브러리만 사용하며 패키지 설치나 네트워크 접속 없이 실행됩니다. 정규화는 명시한 미러의 URL만 공개 주소로 바꾸고 패키지 버전·Artifact 경로·SHA256은 보존하며, 다른 출처나 예상과 다른 경로는 거부합니다. 실제 다운로드 가능 여부는 검증하지 않으므로 네트워크 정책상 허용된 환경에서 별도로 설치를 확인하십시오. 이 정규화는 과거 Git 커밋의 내용을 변경하지 않습니다.
 
 ## 라이선스
 

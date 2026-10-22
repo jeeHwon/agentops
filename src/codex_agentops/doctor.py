@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from .config import ConfigError, load_settings
 from .codex_config import is_otel_configured
 from .collector import collector_health
-from .databricks import Profile, validate_profile
+from .databricks import get_profile, list_profiles, validate_profile
 from .mlflow_exporter import MlflowTurnExporter
 from .outbox import Outbox
 from .paths import heartbeat_path, otel_heartbeat_path, outbox_path
@@ -29,9 +29,10 @@ def run_doctor(*, write_test_trace: bool = False) -> list[Check]:
     except ConfigError as exc:
         return [Check("FAIL", "configuration", str(exc))]
 
-    checks.append(_plugin_check())
-    checks.append(_hook_check())
-    if settings.otel_mode == "local":
+    if settings.codex_enabled:
+        checks.append(_plugin_check())
+        checks.append(_hook_check())
+    if settings.codex_enabled and settings.otel_mode == "local":
         checks.append(
             Check(
                 "OK" if is_otel_configured(settings) else "FAIL",
@@ -47,7 +48,7 @@ def run_doctor(*, write_test_trace: bool = False) -> list[Check]:
             )
         )
         checks.append(_otel_signal_check())
-    else:
+    elif settings.codex_enabled:
         checks.append(
             Check(
                 "WARN",
@@ -65,7 +66,10 @@ def run_doctor(*, write_test_trace: bool = False) -> list[Check]:
         )
         checks.append(_otel_signal_check())
     try:
-        identity = validate_profile(Profile(settings.profile, settings.host))
+        profile = get_profile(settings.profile, list_profiles())
+        if profile.host.rstrip("/") != settings.host.rstrip("/"):
+            raise ConfigError("Configured Profile changed workspace. Run aops configure again.")
+        identity = validate_profile(profile)
         checks.append(Check("OK", "databricks-auth", identity))
     except Exception as exc:
         checks.append(Check("FAIL", "databricks-auth", str(exc)))
@@ -84,9 +88,10 @@ def run_doctor(*, write_test_trace: bool = False) -> list[Check]:
     except Exception as exc:
         checks.append(Check("FAIL", "mlflow", str(exc)))
 
-    stats = Outbox(outbox_path()).stats()
-    level = "WARN" if stats["failed"] else "OK"
-    checks.append(Check(level, "outbox", ", ".join(f"{key}={value}" for key, value in stats.items())))
+    if settings.codex_enabled:
+        stats = Outbox(outbox_path()).stats()
+        level = "WARN" if stats["failed"] else "OK"
+        checks.append(Check(level, "outbox", ", ".join(f"{key}={value}" for key, value in stats.items())))
     return checks
 
 
