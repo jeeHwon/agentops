@@ -112,6 +112,7 @@ def test_session_tree_metrics_retrieval_and_no_double_count(tmp_path, monkeypatc
     assert trace.info.tags["agentops.end_reason"] == "other"
     assert trace.info.tags["agentops.project"] == "metrics-agent"
     assert trace.info.tags["agentops.session_id"] == "synthetic-session"
+    assert trace.info.trace_metadata["mlflow.trace.session"] == "synthetic-session"
     assert trace.info.tags["agentops.source"] == "codex-plugin-hooks"
     assert trace.info.tags["agentops.git_commit"] == "unknown"
     assert trace.info.tags["agentops.subagent_defs"] == "[]"

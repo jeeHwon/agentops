@@ -10,7 +10,7 @@ from typing import Any, Iterable
 
 from .config import Settings
 from .manifest import AGENT_ID_RE
-from .mlflow_exporter import MlflowTurnExporter
+from .mlflow_exporter import MlflowTurnExporter, _start_root_trace
 
 
 class OtelBridgeError(RuntimeError):
@@ -392,7 +392,8 @@ class OtelMlflowExporter:
             "mlflow.trace.session": session_id or "unknown",
             "mlflow.trace.user": str(resource.get("agentops.user_name") or "unknown"),
         }
-        mlflow_root = client.start_trace(
+        mlflow_root = _start_root_trace(
+            session_id=session_id, user=resource.get("agentops.user_name"),
             name="agent.turn",
             span_type="AGENT",
             inputs={"prompt": input_value},

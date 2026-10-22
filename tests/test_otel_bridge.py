@@ -116,6 +116,7 @@ def test_omnigent_otlp_is_normalized_to_agent_turn(tmp_path, monkeypatch):
     assert root.inputs == {"prompt": "hello"}
     assert root.outputs["response"] == "done"
     assert trace.info.tags["agentops.evaluation_inputs_available"] == "true"
+    assert trace.info.trace_metadata["mlflow.trace.session"] == "conv-1"
     assert tool.parent_id == root.span_id
     assert tool.inputs == {"query": "x"}
     assert tool.outputs == {"count": 1}

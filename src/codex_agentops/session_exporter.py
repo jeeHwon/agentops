@@ -13,7 +13,7 @@ from . import __version__
 from .call_metrics import metric_name, observed_calls
 from .events import CONTENT_CAPTURE_DISABLED
 from .mlflow_exporter import (
-    ExportResult, MlflowTurnExporter, _token_attributes, _tool_event_failed,
+    ExportResult, MlflowTurnExporter, _start_root_trace, _token_attributes, _tool_event_failed,
 )
 from .outbox import Outbox, PendingSession, PendingTurn, SessionTurn
 from .redaction import redact_text, trace_maxlen
@@ -213,7 +213,8 @@ class MlflowSessionExporter:
                 for _, post in observed_calls(item.events)
             ) for item in ordered
         )
-        root = client.start_trace(
+        root = _start_root_trace(
+            session_id=session.session_id, user=metadata.get("user_name"),
             name="agent.session", span_type="AGENT",
             inputs={"prompt": _visible(first_prompt)},
             attributes={

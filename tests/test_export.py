@@ -222,6 +222,8 @@ def test_real_mlflow_trace_contains_root_io_and_tool_span(tmp_path, monkeypatch)
     assert trace.info.tags["agentops.origin"] == "databricks"
     assert trace.info.tags["agentops.model_service"] == "system.ai.gpt-5-6-sol"
     assert "correctness_min=0.8" in trace.info.tags["agentops.success_criteria"]
+    assert trace.info.trace_metadata["mlflow.trace.session"] == "s"
+    assert trace.info.trace_metadata.get("mlflow.trace.user") != "unknown"
     assert trace.info.token_usage == {
         "input_tokens": 100,
         "output_tokens": 20,

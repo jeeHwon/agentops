@@ -146,7 +146,8 @@ class MlflowTurnExporter:
         evaluation_inputs_available = bool(prompt) and bool(response)
         model = _first_present(turn.events, "model")
         permission_mode = _first_present(turn.events, "permission_mode")
-        user_name = _first_present(turn.events, "user_name") or self.settings.user_name or "unknown"
+        known_user = _first_present(turn.events, "user_name") or self.settings.user_name
+        user_name = known_user or "unknown"
         harness_checksum = _first_present(turn.events, "harness_checksum") or "unknown"
         skills_checksum = _first_present(turn.events, "skills_checksum") or "unknown"
         skill_checksums = _first_present(turn.events, "skill_checksums") or {}
@@ -170,7 +171,9 @@ class MlflowTurnExporter:
             turn.token_usage, turn.token_usage_source, include_mlflow=True
         )
 
-        root = client.start_trace(
+        root = _start_root_trace(
+            session_id=turn.session_id,
+            user=known_user,
             name="agent.turn",
             span_type="AGENT",
             inputs={"prompt": prompt},
@@ -480,6 +483,21 @@ def _first(events: tuple[StoredEvent, ...], event_name: str) -> StoredEvent | No
 
 def _last(events: tuple[StoredEvent, ...], event_name: str) -> StoredEvent | None:
     return next((item for item in reversed(events) if item.event_name == event_name), None)
+
+
+def _start_root_trace(*, session_id: str | None, user: str | None, **options: Any) -> Any:
+    """Start a trace whose session and user are trace metadata.
+
+    MLflow groups sessions and users from metadata, which MlflowClient.start_trace cannot set.
+    """
+    import mlflow
+
+    metadata = {
+        key: str(value)
+        for key, value in (("mlflow.trace.session", session_id), ("mlflow.trace.user", user))
+        if value
+    }
+    return mlflow.start_span_no_context(metadata=metadata or None, **options)
 
 
 def _first_present(events: tuple[StoredEvent, ...], key: str) -> Any:

@@ -241,7 +241,7 @@ Release Artifact에는 등록 시점의 Skill-based Agent 정의, Skill과 Sub-a
 
 ## Codex 실행과 MLflow
 
-Agent 루트에서 평소와 같이 `codex`를 실행합니다. Plugin Hook은 응답이 끝나는 `Stop` 이벤트에서 Turn을 완성하고, Codex OTel과 transcript 보정 결과를 로컬 Outbox에서 결합해 백그라운드로 MLflow에 전송합니다. `SessionEnd` 뒤에는 완료된 턴을 한 화면에서 보는 별도의 `agent.session` 요약 Trace도 생성합니다. 평가용 `agent.turn`과 요약 Trace를 **둘 다 토큰 합계에 더하지 마세요**. Hook/OTel이 빠진 실행의 사용량은 0으로 취급하지 않습니다.
+Agent 루트에서 평소와 같이 `codex`를 실행합니다. Plugin Hook은 응답이 끝나는 `Stop` 이벤트에서 Turn을 완성하고, Codex OTel과 transcript 보정 결과를 로컬 Outbox에서 결합해 백그라운드로 MLflow에 전송합니다. `SessionEnd` 뒤에는 완료된 턴을 한 화면에서 보는 별도의 `agent.session` 요약 Trace도 생성합니다. 평가용 `agent.turn`과 요약 Trace를 **둘 다 토큰 합계에 더하지 마세요**. 두 Trace는 `agentops.trace_role` 태그(`canonical_turn` / `session_summary`)로 구분합니다. 세션 ID는 MLflow Trace 메타데이터 `mlflow.trace.session`에도 기록되어 MLflow의 Sessions 보기에서 세션별로 묶입니다. Hook/OTel이 빠진 실행의 사용량은 0으로 취급하지 않습니다.
 
 **OTel은 프로젝트 `.codex/config.toml`에서 설정하지 않습니다.** Codex는 프로젝트 범위의 `[otel]` 설정을 읽지 않습니다. `aops configure --codex`는 충돌이 없으면 사용자 전역 `~/.codex/config.toml`에 로컬 Collector exporter를 설치합니다. 기존 전역 exporter가 있으면 보존하고 경고하므로 `aops doctor`의 `codex-otel-config`와 실제 Token 수집 여부를 확인하십시오. 기존 exporter를 변경할 수 없으면 해당 Collector로 전달하거나 실행 시 Codex `-c` 설정을 명시해야 합니다.
 Collector의 `/v1/logs`는 OTLP/HTTP **JSON과 protobuf binary**를 모두 받습니다. 일부 Codex 실행에서는 `Content-Type: application/x-protobuf` 헤더와 JSON 본문이 함께 관측되어 둘을 안전하게 구분해 파싱합니다. 형식이 지원되더라도 Codex가 토큰 로그를 실제 발송했는지는 세션별로 별도 검증해야 합니다. 기존 전역 exporter를 보존하는 설치에서 로컬 Collector로 토큰 로그를 보내려면 다음처럼 **해당 실행에만** 지정할 수 있습니다(포트는 설정값에 맞게 변경).
