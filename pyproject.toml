@@ -3,15 +3,19 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "codex-agentops"
-version = "2.0.0.dev0"
+name = "aops-cli"
+version = "0.1.0.dev0"
 description = "Manage the AI agent lifecycle on top of existing harnesses and platforms"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+claude = ["claude-agent-sdk>=0.2.176"]
+codex = ["openai-codex>=0.163.0"]
+
 [project.scripts]
-aops = "codex_agentops.cli:main"
+aops = "aops.cli:main"
 
 [dependency-groups]
 dev = [
@@ -19,7 +23,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/codex_agentops"]
+packages = ["src/aops"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
