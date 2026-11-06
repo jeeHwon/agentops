@@ -42,7 +42,7 @@
 - **평가:** `mlflow.genai.evaluate`, UC 평가 데이터셋, Unity Gateway 서비스 정책(가드레일)을 씁니다.
 - **검증:** 후보 소스를 UC Volume에 올리고 Lakeflow Job(서버리스)이 검사합니다. 결과는 MLflow와 Delta 테이블에 남습니다.
 - **등록:** UC registered model 버전을 만들고, 소스와 스킬의 스냅샷·해시를 남깁니다.
-- **배포:** aops 서버(Databricks App)의 console 화면에서 승인하면 배포 Job이 코드 에이전트는 Agent Runtime(Databricks Apps)에, 노코드는 대상 워크스페이스의 Genie Agent로 배포합니다.
+- **배포:** aops 서버(Databricks App)의 console 화면에서 승인하면 배포 Job이 코드 에이전트는 Agent Runtime(Databricks Apps)의 시험 앱에, 노코드는 대상 워크스페이스의 시험 Genie Agent로 배포합니다. 운영 지정(`promote`) 때 같은 스냅샷이 운영 쪽에 배포됩니다.
 - **운영:** 운영 지정(`promote`) 때 스킬 기반은 Unity Gateway Skills에 게시됩니다. system tables(사용량·비용·감사), Apps telemetry, 예산 API로 운영 현황을 봅니다.
 
 Agent Bricks CLI, Unity Gateway Skills, Agent sessions·memory, Sandbox, 서비스 정책, Apps telemetry는 Beta입니다. 꺼져 있으면 그 기능만 local 구현을 씁니다.
