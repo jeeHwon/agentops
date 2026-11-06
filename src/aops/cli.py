@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Callable
 
 from . import __version__, harness
@@ -53,12 +54,26 @@ def cmd_session(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+
+        from .server import create_app
+    except ImportError:
+        print("aops serve needs the serve extra: uv tool install 'aops-cli[serve]'", file=sys.stderr)
+        return 1
+    app = create_app(cors_origins=args.cors_origin or None)
+    print(f"aops API docs: http://{args.host}:{args.port}/api/v1/docs")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
 def _short(text: str, size: int = 90) -> str:
     text = " ".join(text.split())
     return text if len(text) <= size else text[: size - 1] + "…"
 
 
-COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {"run": cmd_run, "session": cmd_session}
+COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {"run": cmd_run, "session": cmd_session, "serve": cmd_serve}
 
 
 def parser() -> argparse.ArgumentParser:
@@ -80,6 +95,11 @@ def parser() -> argparse.ArgumentParser:
     switch.add_argument("--harness", required=True)
     new = actions.add_parser("new", help="새 세션 시작")
     new.add_argument("--harness")
+
+    serve = sub.add_parser("serve", help="aops API 서버 (custom 에디션, /api/v1/docs)")
+    serve.add_argument("--host", default="127.0.0.1", help="기본 127.0.0.1 (이 PC에서만)")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--cors-origin", action="append", help="브라우저에서 직접 부를 화면 주소 (여러 번 가능)")
     return root
 
 

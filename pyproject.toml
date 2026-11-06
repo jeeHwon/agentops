@@ -13,6 +13,7 @@ dependencies = []
 [project.optional-dependencies]
 claude = ["claude-agent-sdk>=0.2.176"]
 codex = ["openai-codex>=0.163.0"]
+serve = ["fastapi>=0.162", "uvicorn>=0.54"]
 
 [project.scripts]
 aops = "aops.cli:main"
@@ -20,6 +21,8 @@ aops = "aops.cli:main"
 [dependency-groups]
 dev = [
   "pytest>=8.3,<9",
+  "fastapi>=0.162",
+  "httpx2>=2.16",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -31,7 +31,8 @@ aops monitor               # 운영 현황
 - [개요](docs/overview.md): 단계별 Databricks 기능, 원칙, 에디션
 - [명령어](docs/commands.md): 전체 명령과 옵션
 - [프로젝트 폴더](docs/project.md): 폴더 구조와 `aops.toml`
-- [레지스트리·승인](docs/registry.md): 관리자 정책, console App, 테이블
+- [레지스트리·승인](docs/registry.md): 관리자 정책, aops 서버, 테이블
+- [API](docs/api.md): `aops serve`의 HTTP API와 명령 대응표
 
 ## 라이선스
 
