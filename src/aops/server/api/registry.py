@@ -105,10 +105,12 @@ class Deployment(BaseModel):
     gate_id: str | None = Field(None, description="`--dev` 개인 시험 배포는 비어 있음")
     agent_id: str
     version: str
-    app_name: str = Field(examples=["agent-bricks-price-helper"])
+    environment: Literal["dev", "staging", "production"] = Field(description="dev: 개인 시험 배포, staging: 승인된 deploy의 시험 앱, production: promote의 운영 앱")
+    app_name: str = Field(examples=["agent-bricks-price-helper-s"], description="실제 앱 이름 (agent-bricks-<base>, 시험은 -s)")
     app_url: str | None = None
     status: Literal["running", "succeeded", "failed"]
-    dev: bool = False
+    dependencies_match: bool | None = Field(None, description="앱에 깔린 의존 버전이 등록 때 uv.lock과 같은지")
+    changed_files: list[str] = Field(default_factory=list, examples=[["app.yaml", "agent.toml"]], description="배포 도구가 고쳐 쓴 파일 (스냅샷 사본 기준)")
     guardrail_checks: list[dict[str, Any]] = Field(default_factory=list)
     started_at: datetime
     ended_at: datetime | None = None
@@ -118,6 +120,7 @@ class AgentProduction(BaseModel):
     agent_id: str
     current_version: str = Field(examples=["1.2.0"])
     previous_version: str | None = Field(None, examples=["1.1.0"])
+    app_name: str | None = Field(None, examples=["agent-bricks-price-helper"], description="운영 앱 이름 (스킬 기반은 비어 있음)")
     updated_at: datetime
     updated_by: str = Field(examples=["owner@example.com"])
 

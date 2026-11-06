@@ -33,7 +33,7 @@ class RegisterRequest(BaseModel):
 class DeployRequest(BaseModel):
     version: str = Field(examples=["1.2.0"])
     target_workspace: str | None = Field(None, description="`--target`. 비우면 현재 워크스페이스")
-    dev: bool = Field(False, description="`--dev`: 승인 없는 개인 시험 배포 (agent-bricks-dev-<user>-<name>)")
+    dev: bool = Field(False, description="`--dev`: 승인 없는 개인 시험 배포 (agent-bricks-d<사용자 해시 4자>-<이름>)")
 
 
 class PromoteRequest(BaseModel):
@@ -123,7 +123,7 @@ def register(project_id: str, body: RegisterRequest) -> AgentVersion:
 
 @router.post(
     "/projects/{project_id}/deploy-requests", status_code=201, summary="배포 요청 (심사 대기)",
-    **command("aops deploy", DBX, note="`dev=true`면 승인 없이 개인 시험 배포를 시작하고 배포를 돌려준다."),
+    **command("aops deploy", DBX, note="승인되면 배포 Job이 시험 앱(`agent-bricks-<base>-s`)에 배포한다. `dev=true`면 승인 없이 개인 시험 배포를 시작하고 배포를 돌려준다."),
 )
 def deploy(project_id: str, body: DeployRequest) -> ReleaseGate | Deployment:
     raise todo("aops deploy")
@@ -131,7 +131,7 @@ def deploy(project_id: str, body: DeployRequest) -> ReleaseGate | Deployment:
 
 @router.post(
     "/agents/{agent_id}/promote", summary="운영 버전 지정 (되돌리기 포함)",
-    **command("aops promote", DBX, note="스킬 기반은 이때 그 버전의 스킬을 Unity Gateway Skills에 게시한다(되돌리면 이전 버전을 다시 게시)."),
+    **command("aops promote", DBX, note="같은 스냅샷을 운영 앱(노코드는 운영 Genie space)에 배포하고 확인한 뒤 운영 포인터를 바꾼다. 스킬 기반은 이때 Unity Gateway Skills에 게시한다. 되돌리기는 이전 버전의 스냅샷을 다시 배포·게시한다."),
 )
 def promote(agent_id: str, body: PromoteRequest) -> AgentProduction:
     raise todo("aops promote")
