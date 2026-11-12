@@ -48,6 +48,11 @@ def add_command(sub: argparse._SubParsersAction) -> None:
     setup.add_argument("--approval-mode", choices=["required", "optional", "auto"], default="required")
     setup.add_argument("--validation-mode", choices=["mandatory", "optional", "exempt"], default="mandatory")
     setup.add_argument("--approver-group", default="")
+    setup.add_argument("--git-connection", help="Git 사본: GitHub API(https://api.github.com)로 가는 UC HTTP 연결 이름. "
+                       "git 옵션이 없으면 지금 정책의 git 설정을 그대로 둔다")
+    setup.add_argument("--git-owner", help="Git 사본: 에이전트 저장소를 둘 GitHub 조직")
+    setup.add_argument("--git-repo-prefix", help="Git 사본: 저장소 이름 = <접두어><agent_id> (기본 aops-)")
+    setup.add_argument("--no-git", action="store_true", help="Git 사본을 끈다 (저장소는 그대로 둔다)")
     setup.add_argument("--only", help=f"쉼표로 고른 단계만 ({', '.join(STEPS)})")
     setup.add_argument("--apply", action="store_true", help="미리보기 대신 실행")
 
@@ -72,14 +77,15 @@ def cmd_admin(args: argparse.Namespace) -> int:
                 sql.run(stmt)
             print("  ok")
 
+    current = _active_policy(sql) if ("policy" in steps or "grants" in steps) else None
+    git = (json.loads(current["body"]) if current else {}).get("git")
     if "policy" in steps:
-        body = {"validation_mode": args.validation_mode, "approval_mode": args.approval_mode,
-                "approval_channel": "console", "approver_group": args.approver_group, "required_approvals": 1,
-                "security_levels": ["general", "important", "secret"]}
+        body = policy_body(args, json.loads(current["body"]) if current else None)
+        git = body.get("git")
         print(f"\n[policy] 정책: {json.dumps(body, ensure_ascii=False)}")
+        if git and not (args.git_connection or args.no_git):
+            print("  git: 지금 정책의 설정을 그대로 둡니다 (바꾸려면 --git-connection·--git-owner, 끄려면 --no-git)")
         if args.apply:
-            current = sql.one(f"SELECT policy_version, body FROM {sql.table('policies')} WHERE status = 'active' "
-                              "ORDER BY policy_version DESC LIMIT 1")
             if current and json.loads(current["body"]) == body:
                 print(f"  같은 정책이 이미 적용돼 있습니다 (버전 {current['policy_version']})")
             else:
@@ -126,6 +132,8 @@ def cmd_admin(args: argparse.Namespace) -> int:
             f"GRANT USE SCHEMA, CREATE VOLUME, SELECT, MODIFY ON SCHEMA `{catalog}`.`{schema}` TO `{sp}`",
             f"GRANT READ VOLUME ON VOLUME `{catalog}`.`{schema}`.`aops_dist` TO `{sp}`",
         ]
+        if git:  # the Git mirror calls GitHub through this connection; only the aops service principal may use it
+            grants.append(f"GRANT USE CONNECTION ON CONNECTION `{git['connection']}` TO `{sp}`")
         print("\n[grants] aops 서버 서비스 주체 권한 (사람에게는 USE·SELECT만 준다)")
         for grant in grants:
             print(f"  {grant}")
@@ -146,6 +154,33 @@ def cmd_admin(args: argparse.Namespace) -> int:
     if not args.apply:
         print("\n미리보기입니다. 실행하려면 --apply를 붙이세요.")
     return 0
+
+
+def policy_body(args: argparse.Namespace, current: dict[str, Any] | None) -> dict[str, Any]:
+    """The policy to apply. Git settings carry over from the active policy unless git options are given."""
+    body: dict[str, Any] = {
+        "validation_mode": args.validation_mode, "approval_mode": args.approval_mode, "approval_channel": "console",
+        "approver_group": args.approver_group, "required_approvals": 1, "security_levels": ["general", "important", "secret"]}
+    git = (current or {}).get("git")
+    if getattr(args, "no_git", False):
+        git = None
+    elif getattr(args, "git_connection", None) or getattr(args, "git_owner", None):
+        if not (args.git_connection and args.git_owner):
+            raise SystemExit("aops: --git-connection과 --git-owner를 함께 적습니다")
+        # mode commit: each version goes straight onto main. A Git failure never blocks a deploy.
+        git = {"provider": "github", "connection": args.git_connection, "owner": args.git_owner,
+               "repo_prefix": args.git_repo_prefix or "aops-", "mode": "commit"}
+    if git:
+        body["git"] = git
+    return body
+
+
+def _active_policy(sql: Any) -> dict[str, Any] | None:
+    try:
+        return sql.one(f"SELECT policy_version, body FROM {sql.table('policies')} WHERE status = 'active' "
+                       "ORDER BY policy_version DESC LIMIT 1")
+    except Exception:  # no registry tables yet (first setup)
+        return None
 
 
 def _deploy_app(w: Any, args: argparse.Namespace, wheel_path: str | None, me: str) -> Any:

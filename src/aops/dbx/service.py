@@ -20,6 +20,7 @@ from typing import Any
 from .. import package
 from ..init import SKILL_DESCRIPTION, SPEC_DESCRIPTION, TEMPLATE_SKILL
 from ..hashing import skills_sha256
+from .git import GitHub, GitSettings, commit_message, proxy_transport
 from .sql import Sql, loads
 
 DEFAULT_POLICY = {
@@ -257,7 +258,109 @@ class Service:
             except Exception:
                 pass
             raise
-        return {**self.version(agent_id, new_version), "skills": self.version_skills(agent_id, new_version)}
+        result = {**self.version(agent_id, new_version), "skills": self.version_skills(agent_id, new_version)}
+        # 4. Git mirror (when the policy has one): never fails the registration
+        synced = self.sync_git(agent_id, caller.email, known={new_version: files})
+        if synced is not None:
+            records, error = synced
+            result["git"] = records.get(new_version) or {"status": "failed", "error": error}
+        return result
+
+    # ── Git mirror (optional) ───────────────────────────────────────────────
+
+    def _github(self) -> GitHub | None:
+        settings = GitSettings.from_policy(self.policy()[1])
+        return GitHub(settings, proxy_transport(self.w, settings.connection)) if settings else None
+
+    def git_records(self, agent_id: str) -> dict[str, dict[str, Any]]:
+        rows = self.sql.run(f"SELECT * FROM {self.sql.table('agent_version_git')} WHERE agent_id = :a", {"a": agent_id})
+        return {row["version"]: row for row in rows}
+
+    def sync_git(self, agent_id: str, actor: str, known: dict[str, dict[str, bytes]] | None = None,
+                 hub: GitHub | None = None) -> tuple[dict[str, dict[str, Any]], str | None] | None:
+        """Put every version that is not in Git yet there, oldest first: (records by version, error).
+
+        None when the policy has no Git. Never raises: Git is a copy, so a failure is recorded
+        (`failed`) and the next register or deploy tries again from that version. A version with
+        secrets is not sent (`skipped`), because Git history is hard to clean.
+        """
+        try:
+            hub = hub or self._github()
+        except Exception as error:
+            return {}, f"정책을 읽지 못함: {error}"[:300]
+        if hub is None:
+            return None
+        records: dict[str, dict[str, Any]] = {}
+        current = None
+        try:
+            records = self.git_records(agent_id)
+            repo = None
+            for row in self.versions(agent_id):
+                current = row["version"]
+                if records.get(current, {}).get("status") in ("synced", "skipped"):
+                    continue
+                files = (known or {}).get(current) or package.read(self.w.files.download(row["artifact_path"]).contents.read())
+                leaks = find_secrets(files)
+                if leaks:
+                    records[current] = self._git_record(agent_id, current, f"{hub.settings.owner}/{hub.settings.repo(agent_id)}",
+                                                        None, None, "skipped", "비밀값이 있어 올리지 않음: " + ", ".join(leaks), actor)
+                    continue
+                repo = repo or hub.ensure_repo(agent_id, (self.agent(agent_id) or {}).get("description"))
+                commit = hub.publish(repo, current, files, commit_message(agent_id, row), row.get("registered_by") or actor)
+                records[current] = self._git_record(agent_id, current, repo["full_name"], f"{repo['html_url']}/tree/v{current}",
+                                                    commit, "synced", None, actor)
+            return records, None
+        except Exception as error:
+            message = f"{type(error).__name__}: {error}"[:300]
+            if current:
+                try:
+                    records[current] = self._git_record(agent_id, current, f"{hub.settings.owner}/{hub.settings.repo(agent_id)}",
+                                                        None, None, "failed", message, actor)
+                except Exception:
+                    pass  # e.g. no agent_version_git table yet (admin setup --only tables)
+            return records, (f"{current}: {message}" if current else message)
+
+    def _git_record(self, agent_id: str, version: str, repo: str, url: str | None, commit: str | None, status: str,
+                    error: str | None, actor: str) -> dict[str, Any]:
+        row = {"agent_id": agent_id, "version": version, "repo": repo, "url": url, "commit_sha": commit,
+               "tag": f"v{version}" if commit else None, "status": status, "error": error}
+        self.sql.atomic([
+            (f"MERGE INTO {self.sql.table('agent_version_git')} t USING (SELECT :a AS agent_id, :v AS version) s "
+             "ON t.agent_id = s.agent_id AND t.version = s.version "
+             "WHEN MATCHED THEN UPDATE SET repo = :repo, url = :url, commit_sha = :c, tag = :tag, status = :st, error = :err, "
+             "updated_at = current_timestamp() "
+             "WHEN NOT MATCHED THEN INSERT (agent_id, version, repo, url, commit_sha, tag, status, error, updated_at) "
+             "VALUES (:a, :v, :repo, :url, :c, :tag, :st, :err, current_timestamp())",
+             {"a": agent_id, "v": version, "repo": repo, "url": url, "c": commit, "tag": row["tag"], "st": status, "err": error}),
+            self._event_statement(agent_id, version, "git", actor,
+                                  {"action": "publish", "status": status, "repo": repo, "commit": commit, "error": error}),
+        ])
+        return row
+
+    def git_production(self, agent_id: str, version: str, actor: str) -> dict[str, Any] | None:
+        """After a deploy: the `production` branch follows the production version. Never raises."""
+        try:
+            hub = self._github()
+        except Exception as error:
+            return {"status": "failed", "error": f"정책을 읽지 못함: {error}"[:300]}
+        if hub is None:
+            return None
+        records, error = self.sync_git(agent_id, actor, hub=hub) or ({}, None)  # a version that missed Git goes there first
+        record = records.get(version)
+        if not record or record["status"] != "synced":
+            reason = (record or {}).get("error") or error or "버전 커밋이 없습니다"
+            return {"status": (record or {}).get("status") or "failed", "error": f"production을 옮기지 않음: {reason}"}
+        try:
+            hub.move_production(record["repo"], record["commit_sha"])
+            result = {"status": "synced", "url": record["url"].rsplit("/tree/", 1)[0] + "/tree/production",
+                      "commit_sha": record["commit_sha"]}
+        except Exception as failure:
+            result = {"status": "failed", "error": f"{type(failure).__name__}: {failure}"[:300]}
+        try:
+            self.event(agent_id, version, "git", actor, {"action": "production", **result})
+        except Exception:
+            pass
+        return result
 
     # ── UC skills ───────────────────────────────────────────────────────────
 
@@ -597,13 +700,15 @@ class Service:
                 self._event_statement(agent_id, version, kind, gate["requester"],
                                       {"gate_id": gate_id, "previous": previous, "skills": names, "not_in_version": removed}),
             ])
-            return {"status": "succeeded", "agent_id": agent_id, "version": version, "previous": previous,
-                    "approval_mode": gate.get("approval_mode"), "requester": gate["requester"], "skills": skills,
-                    "not_in_version": removed, "artifact_path": target["artifact_path"]}
+            report = {"status": "succeeded", "agent_id": agent_id, "version": version, "previous": previous,
+                      "approval_mode": gate.get("approval_mode"), "requester": gate["requester"], "skills": skills,
+                      "not_in_version": removed, "artifact_path": target["artifact_path"]}
         except Exception as error:
             self.sql.run(f"UPDATE {self.sql.table('deployments')} SET status = 'failed', detail = parse_json(:d), ended_at = current_timestamp() "
                          "WHERE deployment_id = :id", {"d": {"error": f"{type(error).__name__}: {error}"}, "id": deployment_id})
             raise
+        report["git"] = self.git_production(agent_id, version, gate["requester"])  # outside: Git never fails a deploy
+        return report
 
     def gate(self, gate_id: str) -> dict[str, Any]:
         row = self.sql.one(f"SELECT * FROM {self.sql.table('release_gates')} WHERE gate_id = :g", {"g": gate_id})
@@ -842,9 +947,14 @@ def check_skill_agent(files: dict[str, bytes]) -> list[dict[str, Any]]:
     steps.append({"name": "skills", "status": "failed" if problems else "passed",
                   "detail": "; ".join(problems) if problems else f"스킬 {len(skills)}개 형식이 맞습니다 ({', '.join(sorted(skills))})"})
 
-    leaks = [f"{rel} ({label})" for rel, data in files.items() for label, pattern in SECRET_PATTERNS.items()
-             if pattern.search(data.decode("utf-8", "ignore"))]
-    leaks += [f"{rel} (금지 파일)" for rel in files if FORBIDDEN_FILES.search(rel)]
+    leaks = find_secrets(files)
     steps.append({"name": "secrets", "status": "failed" if leaks else "passed",
                   "detail": "비밀값·금지 파일: " + ", ".join(leaks) if leaks else "비밀값·금지 파일이 없습니다"})
     return steps
+
+
+def find_secrets(files: dict[str, bytes]) -> list[str]:
+    """Files with a secret-looking value or a forbidden name (the Gate's secrets check, also run before Git)."""
+    leaks = [f"{rel} ({label})" for rel, data in files.items() for label, pattern in SECRET_PATTERNS.items()
+             if pattern.search(data.decode("utf-8", "ignore"))]
+    return leaks + [f"{rel} (금지 파일)" for rel in files if FORBIDDEN_FILES.search(rel)]

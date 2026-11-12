@@ -49,6 +49,10 @@ def print_deploy(gate_id: str, registry: str, report: dict[str, Any]) -> None:
             say(f"    {rel}")
     for name in report.get("not_in_version") or []:
         say(f"\n  UC Skill {name}: 이 버전에는 없는 스킬 (지우지 않고 그대로 둠. 쓰던 사람은 이전 내용을 계속 받음)")
+    git = report.get("git")
+    if git:
+        line = git.get("url") if git["status"] == "synced" else git.get("error")
+        say(f"\n  Git production 브랜치: {git['status']} {line or ''} (실패해도 배포는 그대로)")
     say(f"\n결과: {report['status']} → {registry}.agent_production · deployments · agent_events")
 
 

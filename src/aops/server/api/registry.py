@@ -72,9 +72,19 @@ class AgentVersion(BaseModel):
     registered_at: datetime | None = None
 
 
+class GitRecord(BaseModel):
+    status: Literal["synced", "failed", "skipped"] = Field(description="synced: 커밋·태그를 올림, failed: 다음 register·deploy 때 다시, skipped: 비밀값이 있어 올리지 않음")
+    repo: str | None = Field(None, examples=["my-org/aops-price-helper"])
+    url: str | None = Field(None, examples=["https://github.com/my-org/aops-price-helper/tree/v1.2.0"])
+    commit_sha: str | None = None
+    tag: str | None = Field(None, examples=["v1.2.0"])
+    error: str | None = None
+
+
 class AgentVersionDetail(AgentVersion):
     skills: list[AgentVersionSkill] = Field(default_factory=list)
     spec: dict[str, Any] = Field(default_factory=dict, description="등록 때 SPEC.md 스냅샷")
+    git: GitRecord | None = Field(None, description="Git 사본 (정책에 git이 있을 때만). 실패해도 등록은 성공")
 
 
 class ValidationStep(BaseModel):
@@ -130,7 +140,8 @@ class AgentEvent(BaseModel):
     event_id: str
     agent_id: str
     version: str | None = None
-    event_type: Literal["register", "validate", "gate_requested", "gate_approved", "gate_rejected", "deploy", "promote", "rollback", "load"]
+    event_type: Literal["register", "validate", "gate_requested", "gate_approved", "gate_rejected", "gate_canceled", "deploy",
+                        "promote", "rollback", "load", "git"]
     actor: str
     at: datetime
     detail: dict[str, Any] = Field(default_factory=dict)
