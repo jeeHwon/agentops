@@ -224,7 +224,7 @@ aops register [--version x.y.z] [--bump fix|minor|major]
   - GitHub는 Unity Catalog HTTP 연결의 프록시로 부릅니다. 토큰은 연결(시크릿)에만 있고, 연결을 쓸 수 있는 주체는 aops 서비스 주체뿐입니다.
   - Git 반영이 실패해도 등록은 성공합니다. 실패는 `agent_version_git`에 남고, 다음 `register`·`deploy` 때 빠진 버전부터 순서대로 다시 올립니다. 비밀값이 있는 버전은 올리지 않습니다(Git 이력에서 지우기 어려움).
   - 배포하면 `production` 브랜치가 운영 버전 커밋으로 옮겨 갑니다(되돌리기도 같음).
-- **지금:** 스킬 기반이 동작합니다. 담당자·담당 팀만 새 버전을 등록하고, 마지막 버전과 내용이 같거나 이미 있는 버전 번호면 막습니다. UC Skill 이름은 `<registry>.<agent_id>__<스킬 이름>`이고, 첫 배포 때 aops 서버 서비스 주체가 주인으로 만듭니다. `agent_versions`에는 해시·zip 경로·크기·스킬 해시·기본 하네스·SPEC을 남깁니다(SDK·UC 모델 버전은 설계). 코드·노코드는 501을 돌려줍니다.
+- **지금:** 스킬 기반이 동작합니다. 담당자·담당 팀만 새 버전을 등록하고, 마지막 버전과 내용이 같거나 이미 있는 버전 번호면 막습니다. UC Skill 이름은 `<registry>.<agent_id>__<스킬 이름>`이고, 첫 배포 때 aops 서버 서비스 주체가 주인으로 만듭니다. `agent_versions`에는 해시·zip 경로·크기·스킬 해시·기본 하네스·SPEC을 남깁니다(SDK·UC 모델 버전은 설계). 코드 기반은 Agent Bricks 프로젝트(`agent.toml`·`app.yaml`·`pyproject.toml`, SPEC `build_type: code`)를 같은 방식으로 등록하고, 검사는 스킬 대신 `project`(Agent Bricks 형식, `server = agentbricks`)를 봅니다. 배포는 승인 뒤 aops 서버가 서비스 주체로 등록된 zip을 풀어 `agent.toml`의 추적 실험만 운영 위치로 바꾼 사본에서 `agentbricks deploy`를 실행해 운영 앱 `agent-bricks-<이름>`을 바꿉니다(서버리스 Job에서는 `databricks` CLI가 대화형 전용이라 앱 안에서 돌림). `promote`는 앱 `CAN_USE`, `load`는 앱 링크입니다. 노코드는 501을 돌려줍니다.
 
 ### `aops validate`
 

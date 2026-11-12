@@ -278,6 +278,11 @@ function stat(label, value, hint) {
 async function agentPage(root, id, params) {
   const [agent, versions] = await Promise.all([get(`/agents/${enc(id)}`), get(`/agents/${enc(id)}/versions`)]);
   const latest = versions.items[0];
+  let appUrl = null;
+  if (agent.build_type === "code" && agent.production_version) {
+    const deploys = await get(`/agents/${enc(id)}/deployments`).catch(() => ({ items: [] }));
+    appUrl = (deploys.items.find((d) => d.status === "succeeded" && d.app_url) || {}).app_url || null;
+  }
   const isOwner = state.me && (state.me.user === agent.owner || (agent.owner_group && state.me.groups.includes(agent.owner_group)));
   const tabs = [["versions", "버전", versions.items.length], ["checks", "검사"], ["gates", "배포 요청"], ["deploys", "배포"], ["events", "감사 이력"]];
   let tab = params.get("tab") || "versions";
@@ -307,6 +312,7 @@ async function agentPage(root, id, params) {
         h("dl", { class: "kv" },
           h("dt", {}, "상태"), h("dd", {}, badge("lifecycle", agent.lifecycle)),
           h("dt", {}, "운영 버전"), h("dd", {}, agent.production_version ? h("b", {}, agent.production_version) : "없음"),
+          agent.build_type === "code" ? [h("dt", {}, "운영 앱"), h("dd", {}, appUrl ? h("a", { href: appUrl, target: "_blank" }, `${appUrl.replace("https://", "").split(".")[0]} ↗`) : "–")] : null,
           h("dt", {}, "최신 버전"), h("dd", { class: "mono" }, agent.latest_version || "–"),
           h("dt", {}, "마지막 검사"), h("dd", {}, badge("validation", agent.last_validation)),
           h("dt", {}, "진행 중 요청"), h("dd", {}, agent.pending_gates ? `${agent.pending_gates}건` : "없음"))),
@@ -499,7 +505,9 @@ function openPromote(agent) {
   };
   modal(`권한: ${agent.agent_id}`, h("div", {},
     h("label", { class: "field" }, h("span", {}, "대상 (한 줄에 하나)"), input,
-      h("small", {}, "group:<계정 그룹> · user:<이메일> · sp:<application ID>. 스킬은 운영 UC Skill에 READ_VOLUME을 겁니다. 받은 사람은 가져오기(load)를 할 수 있습니다.")),
+      h("small", {}, agent.build_type === "code"
+        ? "group:<그룹> · user:<이메일> · sp:<application ID>. 코드 기반은 운영 앱에 CAN_USE를 겁니다. 받은 사람은 앱을 열어 씁니다."
+        : "group:<계정 그룹> · user:<이메일> · sp:<application ID>. 스킬은 운영 UC Skill에 READ_VOLUME을 겁니다. 받은 사람은 가져오기(load)를 할 수 있습니다.")),
     result), [
     { label: "회수", cls: "danger", run: () => run(true) },
     { label: "권한 주기", cls: "primary", run: () => run(false) }]);
@@ -510,6 +518,7 @@ function openPromote(agent) {
 async function openLoad(agent) {
   try {
     const info = await post(`/agents/${enc(agent.agent_id)}/load`, {});
+    if (info.link) { window.open(info.link, "_blank"); return toast(`운영 앱을 엽니다: ${agent.agent_id} ${info.version}`, "ok", "앱 사용 권한(CAN_USE)이 있어야 열립니다"); }
     if (!info.allowed || !info.archive) return toast("가져올 수 없습니다", "bad", "운영 UC Skill 읽기 권한이 필요합니다 (담당자에게 권한 요청)");
     await download(info.archive.url.replace(API, ""), `${agent.agent_id}-${info.version}.zip`);
     toast(`가져옴: ${agent.agent_id} ${info.version}`, "ok", "풀어서 aops run으로 쓰거나 Genie Code 폴더에 올리세요");
@@ -703,12 +712,13 @@ function registerPage(root, params) {
 function newPage(root) {
   const name = h("input", { type: "text", placeholder: "price-helper", style: "width:280px" });
   const harness = h("select", {}, h("option", { value: "claude" }, "claude"), h("option", { value: "codex" }, "codex"));
+  const kind = h("select", {}, h("option", { value: "skill" }, "스킬 기반 (누구나: 하네스 + 스킬)"), h("option", { value: "code" }, "코드 기반 (Agent Bricks 프로젝트)"));
   const make = async () => {
     const value = name.value.trim();
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(value)) return toast("이름은 영문 소문자·숫자·하이픈 63자 이하", "bad");
     try {
       const resp = await fetch(`${API}/projects/template`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: value, type: "skill", harness: harness.value }) });
+        body: JSON.stringify({ name: value, type: kind.value, harness: harness.value }) });
       if (!resp.ok) throw new ApiError(resp.status, await resp.json().catch(() => ({})));
       const url = URL.createObjectURL(await resp.blob());
       const a = h("a", { href: url, download: `${value}.zip` }); document.body.append(a); a.click(); a.remove();
@@ -716,11 +726,12 @@ function newPage(root) {
     } catch (e) { fail(e); }
   };
   root.replaceChildren(
-    pageHead("새 에이전트", "aops init과 같은 스킬 기반 에이전트 폴더를 zip으로 받습니다"),
+    pageHead("새 에이전트", "aops init과 같은 에이전트 폴더를 zip으로 받습니다"),
     h("div", { class: "grid two" },
       h("div", { class: "card pad" },
         h("label", { class: "field" }, h("span", {}, "이름 (agent_id)"), name, h("small", {}, "영문 소문자·숫자·하이픈. 레지스트리·UC Skill 이름에 쓰입니다")),
-        h("label", { class: "field" }, h("span", {}, "기본 하네스"), harness),
+        h("label", { class: "field" }, h("span", {}, "종류"), kind, h("small", {}, "코드 기반은 agentbricks init 템플릿에 aops.toml·SPEC.md를 더해 줍니다 (처음 한 번은 서버가 Agent Bricks CLI를 설치해 30초쯤 걸림)")),
+        h("label", { class: "field" }, h("span", {}, "기본 하네스 (스킬 기반)"), harness),
         h("button", { class: "btn primary", onclick: make }, "폴더 받기 (zip)")),
       h("div", { class: "card pad" }, h("h2", {}, "다음 순서"),
         h("ol", { style: "margin:0;padding-left:18px;line-height:1.9" },
@@ -728,7 +739,7 @@ function newPage(root) {
           h("li", {}, "PC에서 ", h("code", {}, 'aops run "질문"'), "으로 시험합니다 (Claude·Codex, 개인 MLflow 실험에 trace)"),
           h("li", {}, "등록: 이 화면의 ", h("a", { href: "#/register" }, "등록"), ", PC의 ", h("code", {}, "aops register"), ", 또는 Genie Code에 \"등록해줘\""),
           h("li", {}, "배포 요청 → 검사 → 승인 → 운영. 템플릿 그대로면 검사에서 반려됩니다")),
-        h("div", { class: "note mt" }, "코드 기반(Agent Bricks)·노코드(Genie Agent)는 준비 중입니다."))));
+        h("div", { class: "note mt" }, "코드 기반: agentbricks dev로 시험하고 같은 방법으로 등록·배포합니다. 운영 앱(agent-bricks-<이름>)은 aops 서버가 서비스 주체로 배포합니다. 노코드(Genie Agent)는 준비 중입니다."))));
 }
 
 // ── 정책 (aops admin setup --only policy) ───────────────────────────────────

@@ -2,7 +2,7 @@
 
 [README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md)
 
-> **지금 동작하는 범위:** 스킬 기반 에이전트의 dbx 흐름(`init` → `run`·`session` → `register` → `deploy` → `list` → `promote` → `load`)입니다. 노코드는 연결 작업 중, 코드 기반은 다음 차례입니다. 나머지는 설계이고, 표의 **지금** 열과 [명령어](commands.md)에 구분해 두었습니다.
+> **지금 동작하는 범위:** 스킬 기반 에이전트의 dbx 흐름(`init` → `run`·`session` → `register` → `deploy` → `list` → `promote` → `load`)입니다. 코드 기반(Agent Bricks)은 등록·검사·배포·권한·가져오기가 들어갔고 운영 실측 전입니다. 노코드는 연결 작업 중입니다. 나머지는 설계이고, 표의 **지금** 열과 [명령어](commands.md)에 구분해 두었습니다.
 
 ## 에이전트 3종
 

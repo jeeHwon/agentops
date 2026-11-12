@@ -45,7 +45,7 @@ def test_template_is_the_init_folder_with_this_server(tmp_path):
     assert "price-helper/SPEC.md" in names and "price-helper/agent/skills/my-skill/SKILL.md" in names
     assert 'server = "https://aops-server-1.aws.databricksapps.com"' in toml
     assert client.post("/api/v1/projects/template", json={"name": "Bad Name"}).status_code == 400
-    assert client.post("/api/v1/projects/template", json={"name": "x", "type": "code"}).status_code == 501
+    assert client.post("/api/v1/projects/template", json={"name": "x", "type": "no_code"}).status_code == 501
 
 
 class PolicySql:

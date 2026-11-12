@@ -15,11 +15,12 @@ Databricks 위에서 AI 에이전트를 개발부터 운영까지 관리하는 �
 - **검증 후 배포:** 등록·배포할 때만 관리자 정책을 검사하고, 승인된 버전만 배포합니다.
 - **찾기·가져오기:** 등록된 에이전트를 목록에서 찾고, 권한을 받은 사람은 가져와 씁니다.
 - **운영 모니터링:** 사용량·비용과 실행 중인 에이전트를 한 화면에서 봅니다.
+- **console 화면:** aops 서버 주소를 브라우저로 열면 등록·검사·배포·승인·권한·정책을 화면에서 합니다 ([console](docs/console.md)).
 - **Custom Front:** 조직의 웹·서비스가 aops 서버 API에 연결해 dbx 기능을 그대로 씁니다 (custom 에디션).
 
 ## 지금 되는 것 (스킬 기반)
 
-지금은 **스킬 기반 에이전트**의 만들기부터 가져다 쓰기까지 dbx 에디션에서 동작합니다. 노코드(Genie Agent)는 연결 작업 중이고, 코드 기반(Agent Bricks)은 다음에 붙입니다.
+지금은 **스킬 기반 에이전트**의 만들기부터 가져다 쓰기까지 dbx 에디션에서 동작합니다. **코드 기반(Agent Bricks)** 은 만들기(`aops init --type code`)·등록·검사·배포(aops 서버가 서비스 주체로 `agentbricks deploy`)·권한(앱 `CAN_USE`)·가져오기(앱 링크)가 들어갔고 운영 실측은 다음 차례입니다. 노코드(Genie Agent)는 연결 작업 중입니다.
 
 | 단계 | 명령 | 도는 곳 | 쓰는 Databricks 기능 |
 | --- | --- | --- | --- |
@@ -38,7 +39,7 @@ Databricks 위에서 AI 에이전트를 개발부터 운영까지 관리하는 �
 - `aops run`은 내 PC에 설치된 `claude`·`codex` CLI를 SDK로 띄웁니다. 모델 호출은 하네스 설정을 따릅니다. Claude는 기본으로 프로젝트 설정만 읽습니다(개인 MCP·hook은 `[agent] user_settings = true`로 켬).
 - 등록부터는 aops 서버가 서비스 주체로 레지스트리·Job·UC Skill을 씁니다. 사람은 요청만 합니다.
 - 배포 요청은 검사(Gate)를 통과해야 승인으로 넘어갑니다. `init` 템플릿을 고치지 않은 채(`my-skill`, 템플릿 설명) 올리면 반려됩니다.
-- 승인 방식은 관리자 정책을 따릅니다: `auto`(자동), `optional`(SPEC 중요도 `low`·민감도 `public`·`internal`이면 자동), `required`(늘 승인자). 승인자는 `aops gates`·`aops approve`로 결재하고, 요청자 본인은 승인할 수 없습니다. console 승인 화면은 아직 없습니다.
+- 승인 방식은 관리자 정책을 따릅니다: `auto`(자동), `optional`(SPEC 중요도 `low`·민감도 `public`·`internal`이면 자동), `required`(늘 승인자). 승인자는 console 화면의 배포 요청함이나 `aops gates`·`aops approve`로 결재하고, 요청자 본인은 승인할 수 없습니다.
 - aops 서버 API 중 지금 처리되는 경로는 [API](docs/api.md)의 "지금 상태"에 있습니다. 나머지는 형식만 있고 `501`을 돌려줍니다.
 
 ### 한 바퀴 돌려 보기
@@ -110,6 +111,7 @@ aops serve                 # aops API 서버 (custom)
 
 - [개요](docs/overview.md): 에이전트 3종, 단계별 Databricks 기능, 원칙, 에디션
 - [명령어](docs/commands.md): 전체 명령과 옵션, 지금 동작하는 범위
+- [console 화면](docs/console.md): 화면별로 하는 일과 대응하는 명령
 - [프로젝트 폴더](docs/project.md): 폴더 구조와 `aops.toml`
 - [레지스트리·승인](docs/registry.md): 관리자 정책, aops 서버, 권한, 테이블
 - [API](docs/api.md): `aops serve`의 HTTP API와 명령 대응표

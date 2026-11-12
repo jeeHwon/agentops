@@ -15,9 +15,18 @@ from .store import Store
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    if args.type == "code":
+        import shutil
+
+        if not shutil.which("agentbricks"):
+            print("aops: 코드 기반은 Agent Bricks CLI가 필요합니다: uv tool install databricks-agentbricks", file=sys.stderr)
+            return 2
+        project = init.create_code(Path.cwd(), args.name)
+        print(f"created {project.root} (Agent Bricks 프로젝트 + aops.toml·SPEC.md)")
+        print(f"next: cd {args.name} → SPEC.md의 description, agent/agent.py를 고친 뒤 agentbricks dev로 시험, aops register")
+        return 0
     if args.type != "skill":
-        where = "Genie Code의 aops 스킬" if args.type == "code" else "aops 서버가 만든 에이전트 폴더의 Genie 화면"
-        print(f"aops: {args.type} 에이전트는 워크스페이스에서 만듭니다 ({where}). 내 PC에서는 skill만 만듭니다.", file=sys.stderr)
+        print("aops: 노코드 에이전트는 워크스페이스에서 만듭니다 (aops 서버가 만든 에이전트 폴더의 Genie 화면).", file=sys.stderr)
         return 2
     harness.get(args.harness)  # fail early on an unknown harness
     project = init.create(Path.cwd(), args.name, harness=args.harness, edition=args.edition)

@@ -20,6 +20,7 @@ from typing import Any
 from .. import package
 from ..init import SKILL_DESCRIPTION, SPEC_DESCRIPTION, TEMPLATE_SKILL
 from ..hashing import skills_sha256
+from . import code
 from .git import GitHub, GitSettings, commit_message, proxy_transport
 from .sql import Sql, loads
 
@@ -50,6 +51,7 @@ CHECK_RULES = {
               "name = 폴더 이름, description 1~1024자 (Agent Skills 형식). init 템플릿(my-skill, 템플릿 description) 그대로면 반려",
     "secrets": "모든 파일에서 " + "·".join(SECRET_PATTERNS) + " 패턴, 금지 파일(.env, *.pem, id_rsa)",
     "record": "볼륨의 버전 zip이 등록 때 해시와 같다",
+    "project": "(코드 기반) agent.toml·app.yaml·pyproject.toml이 있고 server = agentbricks, framework = langgraph·openai. uv.lock을 권함",
 }
 
 
@@ -274,8 +276,10 @@ class Service:
         if spec.get("agent_id", agent_id) != agent_id:
             raise ServiceError(400, "agent_id_mismatch", f"SPEC.md의 agent_id({spec.get('agent_id')})가 {agent_id}와 다릅니다")
         build_type = spec.get("build_type", "skill").replace("-", "_")
-        if build_type != "skill":
-            raise ServiceError(501, "not_implemented", "지금은 스킬 기반 에이전트만 등록합니다", "aops register")
+        if build_type not in ("skill", "code"):
+            raise ServiceError(501, "not_implemented", "지금은 스킬 기반·코드 기반 에이전트를 등록합니다 (노코드는 준비 중)", "aops register")
+        if build_type == "code" and ("agent.toml" not in files or "app.yaml" not in files):
+            raise ServiceError(400, "not_agent_bricks", "코드 기반은 Agent Bricks 프로젝트입니다 (agent.toml·app.yaml이 있어야 함)", "aops register")
         sha = package.files_sha256(list(files.items()))
 
         agent = self.agent(agent_id)
@@ -309,9 +313,9 @@ class Service:
         statements: list[tuple[str, dict[str, Any]]] = []
         if not agent:
             statements.append((
-                f"INSERT INTO {self.sql.table('agents')} VALUES (:id, :name, :desc, 'skill', :owner, :group, :crit, :sens, :sec, "
+                f"INSERT INTO {self.sql.table('agents')} VALUES (:id, :name, :desc, :type, :owner, :group, :crit, :sens, :sec, "
                 "'registered', parse_json(:spec), :by, current_timestamp(), current_timestamp())",
-                {**fields, "id": agent_id, "owner": spec.get("owner") or caller.email, "by": caller.email}))
+                {**fields, "id": agent_id, "type": build_type, "owner": spec.get("owner") or caller.email, "by": caller.email}))
         else:
             # The owner changes only when the SPEC names one; an empty owner keeps the current owner.
             statements.append((
@@ -529,7 +533,7 @@ class Service:
             data = self.w.files.download(version["artifact_path"]).contents.read()
             files = package.read(data)
             report["files"] = sorted(files)
-            steps = check_skill_agent(files)
+            steps = check_agent(files)
             same = package.files_sha256(list(files.items())) == version["source_sha256"]
             steps.append({"name": "record", "status": "passed" if same else "failed",
                           "detail": "버전 zip이 등록 때 해시와 같습니다" if same else "버전 zip이 등록 때 해시와 다릅니다"})
@@ -722,9 +726,65 @@ class Service:
                      "NULL, current_timestamp(), NULL)", {"d": deployment_id, "g": gate["gate_id"], "a": gate["agent_id"], "v": gate["version"]})
         self.event(gate["agent_id"], gate["version"], "gate_approved", actor,
                    {"gate_id": gate["gate_id"], "approval_mode": gate["approval_mode"]})
+        if (self.agent(gate["agent_id"]) or {}).get("build_type") == "code":
+            # `agentbricks deploy` drives the databricks CLI, which only works here (inside the app), not in a Job
+            threading.Thread(target=self.run_code_deploy, args=(gate["gate_id"],), daemon=True).start()
+            return
         job_run = self._run_job("deploy", gate["gate_id"])
         self.sql.run(f"UPDATE {self.sql.table('deployments')} SET job_run_id = :j WHERE deployment_id = :d",
                      {"j": job_run, "d": deployment_id})
+
+    def run_code_deploy(self, gate_id: str) -> dict[str, Any]:
+        """In this server, as its service principal: the approved Agent Bricks version to its production app."""
+        import tempfile
+        from pathlib import Path
+
+        gate = self.gate(gate_id)
+        deployment_id = gate["deployment_id"]
+        log = ""
+        try:
+            if gate["decision"] != "approved":
+                raise RuntimeError(f"승인되지 않은 요청입니다 ({gate['decision']})")
+            agent_id, version = gate["agent_id"], gate["version"]
+            target = self.version(agent_id, version)
+            files = package.read(self.w.files.download(target["artifact_path"]).contents.read())
+            if package.files_sha256(list(files.items())) != target["source_sha256"]:
+                raise RuntimeError("버전 zip이 등록 때 해시와 다릅니다")
+            home = f"/Users/{self.w.current_user.me().user_name}/aops/agents/{agent_id}"
+            source = Path(tempfile.mkdtemp(prefix=f"aops-{agent_id}-")) / "src"
+            changed = code.prepare(files, source, f"{home}/traces")
+            rc, log = code.deploy(source, code.app_base(agent_id), f"/Workspace{home}/app", self.config.profile)
+            if rc != 0:
+                raise RuntimeError(f"agentbricks deploy 실패 (exit {rc})")
+            name = code.app_name(agent_id)
+            url = self.w.apps.get(name).url
+            production = self.production(agent_id)
+            previous = production["current_version"] if production else None
+            kind = "rollback" if gate["upgrade_type"] == "rollback" else "deploy"
+            self.sql.atomic([
+                (f"UPDATE {self.sql.table('agent_versions')} SET status = 'retired' WHERE agent_id = :a AND status = 'production'", {"a": agent_id}),
+                (f"UPDATE {self.sql.table('agent_versions')} SET status = 'production' WHERE agent_id = :a AND version = :v",
+                 {"a": agent_id, "v": version}),
+                (f"MERGE INTO {self.sql.table('agent_production')} t USING (SELECT :a AS agent_id) s ON t.agent_id = s.agent_id "
+                 "WHEN MATCHED THEN UPDATE SET previous_version = t.current_version, current_version = :v, target = :t, updated_by = :by, "
+                 "updated_at = current_timestamp() WHEN NOT MATCHED THEN INSERT (agent_id, current_version, previous_version, target, updated_by, updated_at) "
+                 "VALUES (:a, :v, NULL, :t, :by, current_timestamp())",
+                 {"a": agent_id, "v": version, "t": name, "by": gate["requester"]}),
+                (f"UPDATE {self.sql.table('agents')} SET lifecycle = 'production', updated_at = current_timestamp() WHERE agent_id = :a",
+                 {"a": agent_id}),
+                (f"UPDATE {self.sql.table('deployments')} SET status = 'succeeded', target = :t, app_url = :u, detail = parse_json(:d), "
+                 "ended_at = current_timestamp() WHERE deployment_id = :id",
+                 {"t": name, "u": url, "d": {"changed_files": changed, "log": log[-4000:]}, "id": deployment_id}),
+                self._event_statement(agent_id, version, kind, gate["requester"],
+                                      {"gate_id": gate_id, "previous": previous, "app": name, "app_url": url}),
+            ])
+            report = {"status": "succeeded", "agent_id": agent_id, "version": version, "previous": previous, "app": name, "app_url": url}
+        except Exception as error:
+            self.sql.run(f"UPDATE {self.sql.table('deployments')} SET status = 'failed', detail = parse_json(:d), ended_at = current_timestamp() "
+                         "WHERE deployment_id = :id", {"d": {"error": f"{type(error).__name__}: {error}", "log": log[-4000:]}, "id": deployment_id})
+            return {"status": "failed", "error": str(error)}
+        report["git"] = self.git_production(agent_id, version, gate["requester"])
+        return report
 
     def run_deploy(self, gate_id: str) -> str:
         """Inside the deploy Job: check the approval again and roll the version out."""
@@ -823,6 +883,8 @@ class Service:
         production = self.production(agent_id)
         if not production:
             raise ServiceError(409, "no_production", "운영 버전이 없습니다. 먼저 aops deploy 하세요", "aops promote")
+        if agent.get("build_type") == "code":
+            return self._promote_app(caller, agent_id, production, principals, revoke)
         names = [s["uc_name"] for s in self.version_skills(agent_id, production["current_version"]) if s["uc_name"]]
         grants = []
         for principal in principals:
@@ -837,8 +899,41 @@ class Service:
                        {"principal": principal, "permission": "READ_VOLUME", "granted": not revoke, "skills": names})
         return grants
 
+    def _promote_app(self, caller: Caller, agent_id: str, production: dict[str, Any], principals: list[str],
+                     revoke: bool) -> list[dict[str, Any]]:
+        """Code agents: CAN_USE on the production app (the app checks it on every request)."""
+        from databricks.sdk.service.apps import AppAccessControlRequest, AppPermissionLevel
+
+        name = production["target"]
+        current = self.w.apps.get_permissions(name).access_control_list or []
+        grants = []
+        for principal in principals:
+            kind, _, who = principal.partition(":") if ":" in principal else ("group", "", principal)
+            key = {"group": "group_name", "user": "user_name", "sp": "service_principal_name"}.get(kind, "group_name")
+            if revoke:
+                keep = [AppAccessControlRequest(**{k: getattr(a, k) for k in ("group_name", "user_name", "service_principal_name") if getattr(a, k)},
+                                                permission_level=AppPermissionLevel(p.permission_level.value))
+                        for a in current if getattr(a, key) != who for p in (a.all_permissions or [])[:1] if not p.inherited]
+                self.w.apps.set_permissions(name, access_control_list=keep)
+                current = self.w.apps.get_permissions(name).access_control_list or []
+            else:
+                self.w.apps.update_permissions(name, access_control_list=[
+                    AppAccessControlRequest(**{key: who}, permission_level=AppPermissionLevel.CAN_USE)])
+            grants.append({"agent_id": agent_id, "securable": f"app:{name}", "principal": principal, "permission": "CAN_USE", "granted": not revoke})
+            self.event(agent_id, production["current_version"], "promote", caller.email,
+                       {"principal": principal, "permission": "CAN_USE", "granted": not revoke, "app": name})
+        return grants
+
     def load(self, caller: Caller, agent_id: str, version: str | None = None) -> dict[str, Any]:
         agent = self._agent_or_404(agent_id)
+        if agent.get("build_type") == "code":  # the production app; the app itself checks CAN_USE
+            production = self.production(agent_id)
+            if not production:
+                raise ServiceError(409, "no_production", "운영 버전이 없습니다", "aops load")
+            url = self.w.apps.get(production["target"]).url
+            self.event(agent_id, production["current_version"], "load", caller.email, {"app": production["target"]})
+            return {"agent_id": agent_id, "build_type": "code", "version": production["current_version"], "link": url,
+                    "allowed": True, "archive": None}
         target, allowed = self._loadable(caller, agent, version)
         if allowed:
             self.event(agent_id, target["version"], "load", caller.email, {"version": target["version"]})
@@ -994,6 +1089,21 @@ def upgrade_type(current: str | None, new: str) -> str:
 
 def pick(value: str | None, allowed: set[str], default: str) -> str:
     return value if value in allowed else default
+
+
+def check_agent(files: dict[str, bytes]) -> list[dict[str, Any]]:
+    """The validate steps for the kind of agent in SPEC.md (skill or code)."""
+    spec = package.front_matter(files.get("SPEC.md", b"").decode("utf-8", "replace"))
+    if str(spec.get("build_type", "skill")).replace("-", "_") == "code":
+        return check_code_agent(files)
+    return check_skill_agent(files)
+
+
+def check_code_agent(files: dict[str, bytes]) -> list[dict[str, Any]]:
+    """Code agents: the same SPEC format and secrets checks, and an Agent Bricks project instead of skills."""
+    steps = [s for s in check_skill_agent(files) if s["name"] != "skills"]
+    steps.insert(1, code.check_project(files))
+    return steps
 
 
 def check_skill_agent(files: dict[str, bytes]) -> list[dict[str, Any]]:

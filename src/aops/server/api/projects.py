@@ -125,14 +125,19 @@ def project_template(body: ProjectCreate, request: Request) -> Response:
     from ... import init
     from ...dbx.service import ServiceError
 
-    if body.type != "skill":
-        raise ServiceError(501, "not_implemented", "지금은 스킬 기반 에이전트만 만듭니다", "aops init")
+    if body.type not in ("skill", "code"):
+        raise ServiceError(501, "not_implemented", "지금은 스킬 기반·코드 기반 에이전트를 만듭니다 (노코드는 준비 중)", "aops init")
     host = request.headers.get("x-forwarded-host")
     server = f"https://{host}" if host else str(request.base_url).rstrip("/")
     buffer = io.BytesIO()
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            project = init.create(Path(tmp), body.name, harness=body.harness, edition="dbx")
+            if body.type == "code":
+                from ...dbx import code
+
+                project = init.create_code(Path(tmp), body.name, agentbricks=str(code.agentbricks_cli()))
+            else:
+                project = init.create(Path(tmp), body.name, harness=body.harness, edition="dbx")
         except ValueError as error:
             raise ServiceError(400, "bad_name", "이름은 영문 소문자·숫자·하이픈 63자 이하입니다", "aops init") from error
         toml = project.root / "aops.toml"

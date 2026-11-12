@@ -145,6 +145,49 @@ aops list                              # 등록된 에이전트 목록
 GITIGNORE = "runs/\n.aops/\n"
 
 
+CODE_TOML = """config_version = 1
+
+[project]
+name = "{name}"
+edition = "dbx"
+type = "code"                  # 코드 기반 (Agent Bricks 프로젝트). aops run 대신 agentbricks dev로 시험
+"""
+
+CODE_README_NOTE = """
+## aops (코드 기반)
+
+이 폴더는 Agent Bricks 프로젝트에 aops 파일(`aops.toml`, `SPEC.md`)을 더한 것입니다.
+
+```bash
+agentbricks dev                        # 내 PC에서 시험 (http://localhost:8000)
+aops register                          # 버전 저장 (aops 서버)
+aops deploy                            # 검사 → 승인 → aops 서버가 운영 앱(agent-bricks-<이름>)에 반영
+```
+
+운영 배포는 aops 서버가 합니다. `agentbricks deploy`를 직접 실행하면 개인 시험 앱이 생깁니다.
+"""
+
+
+def create_code(parent: Path, name: str, *, framework: str = "openai", agentbricks: str = "agentbricks") -> Project:
+    """A code-based agent: `agentbricks init` (the Agent Bricks template) plus aops.toml and SPEC.md."""
+    import os
+    import subprocess
+
+    if not NAME.match(name):
+        raise ValueError("name must be lowercase letters, digits and hyphens (up to 63 characters)")
+    root = parent / name
+    env = {**os.environ, "AGENTBRICKS_DISABLE_TELEMETRY": "1", "AGENTBRICKS_DISABLE_AGENT_HINT": "1"}
+    done = subprocess.run([agentbricks, "init", str(root), "--framework", framework], capture_output=True, text=True, env=env)
+    if done.returncode != 0 or not (root / "agent.toml").exists():
+        raise RuntimeError(f"agentbricks init 실패: {(done.stderr or done.stdout)[-400:]}")
+    spec = SPEC_MD.format(name=name, spec_description=SPEC_DESCRIPTION).replace("build_type: skill", "build_type: code")
+    (root / CONFIG_FILE).write_text(CODE_TOML.format(name=name) + DBX_TOML, encoding="utf-8")
+    (root / "SPEC.md").write_text(spec, encoding="utf-8")
+    readme = root / "README.md"
+    readme.write_text((readme.read_text(encoding="utf-8") if readme.exists() else f"# {name}\n") + CODE_README_NOTE, encoding="utf-8")
+    return Project.load(root)
+
+
 def create(parent: Path, name: str, *, harness: str = "claude", edition: str = "local") -> Project:
     if not NAME.match(name):
         raise ValueError("name must be lowercase letters, digits and hyphens (up to 63 characters)")
