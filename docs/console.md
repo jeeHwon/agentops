@@ -13,7 +13,8 @@ aops 서버 주소를 브라우저로 열면 나오는 화면입니다. dbx 에�
 | 에이전트 → 권한 | 대상(group:·user:·sp:)에게 운영 UC Skill 읽기 부여·회수 | `aops promote` |
 | 에이전트 → 가져오기 | 운영 버전 zip 받기 (권한 판정은 서버) | `aops load` |
 | 등록 | 에이전트 폴더(또는 버전 zip)를 올려 새 버전 저장. 폴더는 서버가 CLI와 같은 규칙으로 묶어 해시까지 같음 | `aops register` |
-| 새 에이전트 | 스킬 기반 에이전트 폴더(zip)를 받음. aops.toml에 이 서버 주소가 들어 있음 | `aops init` |
+| 새 에이전트 | 스킬 기반·코드 기반 에이전트 폴더(zip)를 받음. aops.toml에 이 서버 주소가 들어 있음 | `aops init`, `aops init --type code` |
+| 노코드 점검 | Genie 스페이스 정의를 배포 Gate와 같은 규칙(준수율 15개)으로 바로 점검하고 고치는 곳을 보여 줌. 기록하지 않음 | `aops validate` (노코드) |
 | 배포 요청함 | 승인할 요청·내 요청·전체. 승인·반려(사유)·취소 | `aops gates`·`approve`·`reject`·`deploy --cancel` |
 | 정책 | 지금 정책과 이력. 워크스페이스 관리자는 검사·승인 방식과 승인 그룹을 바꿈(새 정책 버전) | `aops admin setup --only policy` |
 | CLI·Genie Code 안내 | 명령 ↔ 화면 ↔ API 대응표 | `GET /api/v1/meta/commands` |
