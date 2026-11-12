@@ -312,13 +312,19 @@ def _deploy_app(w: Any, args: argparse.Namespace, wheel_path: str | None, me: st
     return w.apps.get(args.app)
 
 
-# files: read the requester's UC skill (load). iam.*: who the requester is and their groups, so the
-# console (browser) knows owners, approvers and admins like the CLI does.
-USER_SCOPES = ("files", "iam.current-user:read", "iam.access-control:read")
+# files: read the requester's UC skill (load). Who the requester is and their groups (so the console in a
+# browser knows owners, approvers and admins like the CLI does) come with the default scopes every app
+# gets (iam.current-user:read, iam.access-control:read); they cannot be set and are not listed here.
+USER_SCOPES = ("files",)
+IDENTITY_SCOPES = ("iam.current-user:read",)
 
 
 def _ensure_user_scopes(w: Any, app: Any) -> None:
     current = set(app.user_api_scopes or [])
+    effective = current | set(app.effective_user_api_scopes or [])
+    missing = [s for s in IDENTITY_SCOPES if s not in effective]
+    if missing:
+        print(f"  aops: 앱에 {', '.join(missing)} 범위가 없어 화면이 그룹(담당 팀·승인 그룹·관리자)을 모릅니다")
     if set(USER_SCOPES) <= current:
         return
     try:
@@ -327,7 +333,7 @@ def _ensure_user_scopes(w: Any, app: Any) -> None:
         print(f"  사용자 권한 범위: {', '.join(app.user_api_scopes)}")
     except Exception as error:
         print(f"  aops: 앱 사용자 권한 범위를 바꾸지 못했습니다 ({str(error).splitlines()[0][:120]}). "
-              "앱 설정 → User authorization에서 iam.current-user:read를 더하세요")
+              f"앱 설정 → User authorization에서 {', '.join(USER_SCOPES)}를 더하세요")
 
 
 def _report_code_folder(w: Any, path: str) -> None:

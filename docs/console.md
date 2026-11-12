@@ -23,7 +23,7 @@ aops 서버 주소를 브라우저로 열면 나오는 화면입니다. dbx 에�
 
 ## 쓰는 법
 
-- **Databricks App(aops 서버):** `aops admin setup`이 배포한 앱 주소를 엽니다. Databricks 로그인을 그대로 쓰고, 앱의 `CAN USE` 권한이 있으면 됩니다. 앱이 사용자 권한 범위 `iam.current-user:read`·`iam.access-control:read`로 내 그룹을 읽어 담당 팀·승인 그룹·관리자를 판정합니다(`admin setup --only app`이 더함).
+- **Databricks App(aops 서버):** `aops admin setup`이 배포한 앱 주소를 엽니다. Databricks 로그인을 그대로 쓰고, 앱의 `CAN USE` 권한이 있으면 됩니다. 앱의 기본 사용자 권한 범위(`iam.current-user:read`·`iam.access-control:read`, 모든 앱에 늘 들어 있음)로 내 그룹을 읽어 담당 팀·승인 그룹·관리자를 판정합니다.
 - **내 PC에서 시험:** 레지스트리에 연결한 `aops serve`를 띄우고 `http://127.0.0.1:8000`을 엽니다. 이때 화면의 사용자는 그 PC의 Databricks CLI 프로필 사용자입니다.
 
   ```bash
