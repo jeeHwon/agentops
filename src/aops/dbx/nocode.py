@@ -262,16 +262,7 @@ class NoCodeMixin:
         There is no fallback to the service principal: a space it made would carry sample values of tables the
         author may not be allowed to read.
         """
-        result = self._as_user(caller.token, method, path, body)
-        if result["status"] == 200:
-            return result["body"] or {}
-        message = result.get("error") or ""
-        if result["status"] in (401, 403) and "scope" in message.lower():
-            raise ServiceError(403, "missing_scope", "aops 앱에 genie 사용자 권한 범위가 없어 내 권한으로 Genie를 다룰 수 없습니다. "
-                               f"관리자가 aops admin setup --only app을 다시 실행하면 더해집니다 (그 뒤 화면을 새로 열어 동의). 응답: {message[:200]}",
-                               "aops admin setup --only app")
-        raise ServiceError(result["status"] if 400 <= result["status"] < 500 else 502, "genie_failed",
-                           f"Genie {what}에 실패했습니다: {message}", "aops init")
+        return self._user_api(caller, method, path, body, f"Genie {what}", scope="genie", code="genie_failed")
 
     def _service_user(self) -> str:
         if not getattr(self, "_me", None):

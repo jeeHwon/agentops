@@ -252,7 +252,7 @@ async function agentsPage(root) {
         h("td", {}, h("div", {}, a.owner), a.owner_group ? h("div", { class: "cell-sub" }, a.owner_group) : null),
         h("td", { class: "muted" }, when(a.updated_at))))))
       : h("div", { class: "empty" }, h("b", {}, items.length ? "조건에 맞는 에이전트가 없습니다" : "등록된 에이전트가 없습니다"),
-        items.length ? "" : "새 에이전트를 받아 고친 뒤 등록하세요."));
+        items.length ? "" : "[새 에이전트]에서 만들고 고친 뒤 등록하세요."));
   };
   const seg = (options, set) => {
     const box = h("div", { class: "seg" });
@@ -296,6 +296,7 @@ async function agentPage(root, id, params) {
   const isOwner = state.me && (state.me.user === agent.owner || (agent.owner_group && state.me.groups.includes(agent.owner_group)));
   const noCode = agent.build_type === "no_code";
   const nc = noCode ? await get(`/no-code/agents/${enc(id)}`).catch(() => null) : null;
+  const ws = noCode ? null : await get(`/agents/${enc(id)}/workspace`).catch(() => null);
   const link = (url, text) => url ? h("a", { href: url, target: "_blank" }, `${text} ↗`) : "–";
   const tabs = [["versions", "버전", versions.items.length], ["checks", "검사"], ["gates", "배포 요청"], ["deploys", "배포"], ["events", "감사 이력"]];
   let tab = params.get("tab") || "versions";
@@ -320,7 +321,8 @@ async function agentPage(root, id, params) {
       h("button", { class: "btn", disabled: !agent.production_version, onclick: () => openLoad(agent) }, "가져오기"),
       h("button", { class: "btn", disabled: !agent.production_version || !isOwner, title: isOwner ? "" : "담당자·담당 팀만", onclick: () => openPromote(agent) }, "권한"),
       h("button", { class: "btn primary", disabled: !isOwner, title: isOwner ? "" : "담당자·담당 팀만", onclick: () => openDeploy(id, versions.items, agent.production_version, null, "no_code") }, "배포 요청")] : [
-      h("a", { class: "btn", href: `#/register?agent=${enc(id)}` }, "↑ 새 버전 등록"),
+      ws && ws.open_url ? h("a", { class: "btn", href: ws.open_url, target: "_blank" }, "Genie Code에서 열기 ↗") : null,
+      h("a", { class: "btn", href: `#/register?agent=${enc(id)}${ws ? `&path=${enc(ws.workspace_path)}` : ""}` }, ws ? "↑ 이 폴더에서 등록" : "↑ 새 버전 등록"),
       h("button", { class: "btn", disabled: !latest, onclick: () => openValidate(id, latest.version) }, "검사"),
       h("button", { class: "btn", disabled: !latest, onclick: () => openLoad(agent) }, "가져오기"),
       h("button", { class: "btn", disabled: !agent.production_version || !isOwner, title: isOwner ? "" : "담당자·담당 팀만", onclick: () => openPromote(agent) }, "권한"),
@@ -345,7 +347,8 @@ async function agentPage(root, id, params) {
           h("dt", {}, "담당"), h("dd", {}, agent.owner, agent.owner_group ? h("span", { class: "muted" }, ` · ${agent.owner_group}`) : null),
           h("dt", {}, "중요도·민감도"), h("dd", {}, `${agent.service_criticality} · ${agent.data_sensitivity}`),
           h("dt", {}, "보안 등급"), h("dd", {}, agent.security_level),
-          h("dt", {}, "내 권한"), h("dd", {}, isOwner ? "담당자 (등록·권한·모든 버전)" : "조회·운영 버전 가져오기")))),
+          h("dt", {}, "내 권한"), h("dd", {}, isOwner ? "담당자 (등록·권한·모든 버전)" : "조회·운영 버전 가져오기"),
+          ws ? [h("dt", {}, "작업 폴더"), h("dd", {}, ws.folder_url ? h("a", { href: ws.folder_url, target: "_blank" }, `${ws.workspace_path} ↗`) : h("span", { class: "mono" }, ws.workspace_path))] : null))),
     h("div", { class: "card pad mt" }, tabBar, pane));
   drawTabs();
   loadTab();
@@ -668,7 +671,7 @@ function included(rel) {  // preview only; the server applies the same rule (aop
 
 function registerPage(root, params) {
   const expected = params.get("agent");
-  let picked = null;  // { kind: "folder" | "zip", name, files: [{rel, file}], zip }
+  let picked = null;  // { kind: "folder" | "zip" | "workspace", name, files: [{rel, file}], zip, path }
   let bump = "minor";
   const info = h("div", {});
   const result = h("div", {});
@@ -682,6 +685,16 @@ function registerPage(root, params) {
     h("div", { class: "row", style: "justify-content:center" },
       h("button", { class: "btn", onclick: () => folderInput.click() }, "폴더 고르기"), h("button", { class: "btn", onclick: () => zipInput.click() }, "zip 고르기")),
     folderInput, zipInput);
+  const wsPath = h("input", { type: "text", placeholder: "/Workspace/Users/<나>/aops/<이름>", style: "flex:1", value: params.get("path") || "" });
+  const wsBox = h("div", { class: "row mt" }, h("span", { class: "muted" }, "또는 워크스페이스 폴더:"), wsPath,
+    h("button", { class: "btn", onclick: () => pickWorkspace() }, "이 폴더로"));
+
+  function pickWorkspace() {
+    const path = wsPath.value.trim().replace(/\/+$/, "");
+    if (!path.startsWith("/Workspace/")) return toast("/Workspace/로 시작하는 폴더를 적으세요", "bad");
+    picked = { kind: "workspace", name: expected || path.split("/").pop(), path };
+    showPicked();
+  }
   drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
   drop.addEventListener("dragleave", () => drop.classList.remove("over"));
   drop.addEventListener("drop", (e) => {
@@ -713,7 +726,9 @@ function registerPage(root, params) {
     info.replaceChildren(h("div", { class: "card pad mt" },
       h("dl", { class: "kv" },
         h("dt", {}, "에이전트"), h("dd", {}, h("b", {}, picked.name || "(aops.toml에 이름 없음)"), picked.desc ? h("span", { class: "muted" }, ` · ${picked.desc}`) : null),
-        h("dt", {}, "보낼 것"), h("dd", {}, picked.kind === "zip" ? `zip ${size(picked.zip.size)}` : `파일 ${picked.files.length}개${picked.skipped ? ` (하네스 설정·기록 ${picked.skipped}개 제외)` : ""}`)),
+        h("dt", {}, "보낼 것"), h("dd", {}, picked.kind === "zip" ? `zip ${size(picked.zip.size)}` : picked.kind === "workspace"
+          ? [h("span", { class: "mono" }, picked.path), h("div", { class: "muted" }, "서버가 내 권한으로 이 폴더를 읽어 같은 규칙으로 묶습니다 (하네스 설정·기록·노트북 제외)")]
+          : `파일 ${picked.files.length}개${picked.skipped ? ` (하네스 설정·기록 ${picked.skipped}개 제외)` : ""}`)),
       picked.kind === "folder" ? h("div", { class: "files" }, picked.files.map((f) => h("div", {}, f.rel))) : null,
       mismatch ? h("div", { class: "note warn mt" }, `이 폴더는 ${picked.name}입니다 (${expected}의 새 버전이 아닙니다)`) : null));
     submit.disabled = !picked.name;
@@ -722,6 +737,7 @@ function registerPage(root, params) {
   async function send() {
     const form = new FormData();
     if (picked.kind === "zip") form.append("archive", picked.zip, picked.zip.name);
+    else if (picked.kind === "workspace") form.append("workspace_path", picked.path);
     else picked.files.forEach((f) => form.append("files", f.file, `${picked.name}/${f.rel}`));
     if (version.value.trim()) form.append("version", version.value.trim()); else form.append("bump", bump);
     submit.disabled = true;
@@ -752,9 +768,10 @@ function registerPage(root, params) {
 
   const bumpSeg = h("div", { class: "seg" }, [["fix", "fix (1.0.x)"], ["minor", "minor (1.x.0)"], ["major", "major (x.0.0)"]].map(([v, label]) =>
     h("button", { class: v === bump ? "on" : "", onclick: (e) => { bump = v; bumpSeg.querySelectorAll("button").forEach((b) => b.classList.remove("on")); e.target.classList.add("on"); } }, label)));
+  if (params.get("path")) pickWorkspace();
   root.replaceChildren(
     pageHead("등록", expected ? `${expected}의 새 버전 (aops register)` : "버전 저장 (aops register). 처음이면 에이전트가 생깁니다"),
-    h("div", { class: "card pad" }, drop, info,
+    h("div", { class: "card pad" }, drop, wsBox, info,
       h("div", { class: "grid two mt" },
         h("div", { class: "field" }, h("span", {}, "버전 올리는 폭"), bumpSeg, h("small", {}, "처음 등록은 1.0.0")),
         h("label", { class: "field" }, h("span", {}, "또는 버전 직접"), version)),
@@ -779,12 +796,14 @@ function newPage(root, params) {
     harness: choose([["claude", "claude"], ["codex", "codex"]], "claude"),
     consumer: input("선택: 운영 Genie를 쓸 계정 그룹"), tables: h("textarea", { placeholder: "main.sales.orders\nmain.sales.customers" }),
     space: input("Genie 주소나 ID (32자리)"), warehouse: input("비우면 aops 서버의 warehouse (복사는 원본의 것)"),
+    location: input("비우면 /Workspace/Users/<나>/aops/<이름>"),
   };
   const result = h("div", {});
   const kindBox = h("div", {});
   const help = h("div", {});
   const genieBox = h("div", {});
   const submit = h("button", { class: "btn primary", onclick: () => make() });
+  const zipBtn = h("button", { class: "btn", onclick: () => downloadZip() }, "폴더 받기 (zip)");
 
   const drawGenie = () => fill(genieBox,
     h("div", { class: "field" }, h("span", {}, "개발용 Genie"), segment([["new", "테이블로 새로 만들기"], ["copy", "기존 스페이스 복사"], ["move", "기존 스페이스 옮기기"]], genieMode,
@@ -798,8 +817,11 @@ function newPage(root, params) {
     h("label", { class: "field" }, h("span", {}, "공개 그룹 (consumer_group)"), f.consumer, h("small", {}, "배포 때 운영용 Genie에 CAN RUN을 줍니다. 나중에 SPEC.md에서 바꿀 수 있습니다")));
 
   const drawKind = () => {
-    fill(kindBox, kind === "no_code" ? genieBox : kind === "skill" ? h("label", { class: "field" }, h("span", {}, "기본 하네스"), f.harness) : null);
-    submit.textContent = kind === "no_code" ? "만들기" : "폴더 받기 (zip)";
+    fill(kindBox, kind === "no_code" ? genieBox : [
+      kind === "skill" ? h("label", { class: "field" }, h("span", {}, "기본 하네스 (PC에서 aops run)"), f.harness) : null,
+      h("label", { class: "field" }, h("span", {}, "워크스페이스 위치"), f.location, h("small", {}, "여기에 템플릿을 올립니다 (내 권한, 이미 있는 폴더에는 쓰지 않음). PC에서 고칠 거면 [폴더 받기 (zip)]"))]);
+    submit.textContent = kind === "no_code" ? "만들기" : "내 워크스페이스에 만들기";
+    zipBtn.style.display = kind === "no_code" ? "none" : "";
     f.description.placeholder = kind === "no_code" ? "필수: 이 Genie가 답하는 질문 (운영 Genie 설명이 됩니다)" : "이 에이전트가 하는 일을 한 줄로";
     fill(help, h("h2", {}, "다음 순서"), kind === "no_code" ? [
       h("ol", { class: "steps-plain" },
@@ -810,10 +832,12 @@ function newPage(root, params) {
         h("li", {}, "공개 그룹에 CAN RUN. [가져오기]는 운영용 Genie 링크입니다")),
       h("div", { class: "note mt" }, "운영용 Genie는 aops 서비스 주체가 만듭니다. 쓰는 테이블에 서비스 주체의 SELECT가 있어야 합니다 (데이터 주인이 줌).")] : [
       h("ol", { class: "steps-plain" },
-        h("li", {}, "zip을 풀면 ", h("code", {}, "SPEC.md"), "에 위 항목이 들어 있습니다. ", kind === "skill" ? [h("code", {}, "agent/skills/my-skill"), " 폴더 이름과 SKILL.md를 내 스킬로 바꿉니다"] : [h("code", {}, "agent/agent.py"), "를 고칩니다"]),
-        h("li", {}, kind === "skill" ? ["PC에서 ", h("code", {}, 'aops run "질문"'), "으로 시험합니다"] : ["PC에서 ", h("code", {}, "agentbricks dev"), "로 시험하거나 Genie Code로 고칩니다"]),
-        h("li", {}, "등록: 이 화면의 ", h("a", { href: "#/register" }, "등록"), ", PC의 ", h("code", {}, "aops register"), ", 또는 Genie Code에 \"등록해줘\""),
+        h("li", {}, "[내 워크스페이스에 만들기]: ", h("code", {}, "SPEC.md"), "에 위 항목이 든 템플릿이 내 폴더에 생기고 에이전트가 레지스트리에 잡힙니다"),
+        h("li", {}, "[편집기에서 열기 (Genie Code)]: ", kind === "skill" ? [h("code", {}, "agent/skills/my-skill/SKILL.md"), "가 열립니다. 폴더 이름과 SKILL.md를 내 스킬로"] : [h("code", {}, "agent/agent.py"), "가 열립니다"],
+          ". 오른쪽 Genie Code에 고칠 내용을 말합니다"),
+        h("li", {}, "등록: 만든 뒤의 [이 폴더에서 등록], 에이전트 화면, 또는 Genie Code에 \"이 폴더 등록해줘\""),
         h("li", {}, "배포 요청 → 검사 → 승인 → 운영. 템플릿 그대로면 검사에서 반려됩니다")),
+      h("div", { class: "note mt" }, "PC에서 고치려면 [폴더 받기 (zip)]: 같은 템플릿을 받아 ", kind === "skill" ? h("code", {}, 'aops run "질문"') : h("code", {}, "agentbricks dev"), "로 시험하고 ", h("code", {}, "aops register"), "로 등록합니다."),
       kind === "code" ? h("div", { class: "note mt" }, "운영 앱(agent-bricks-<이름>)은 aops 서버가 서비스 주체로 배포합니다. 처음 한 번은 서버가 Agent Bricks CLI를 설치해 30초쯤 걸립니다.") : null]);
   };
 
@@ -821,19 +845,34 @@ function newPage(root, params) {
     description: f.description.value.trim() || null, owner_group: f.group.value.trim() || null, service_criticality: f.crit.value,
     data_sensitivity: f.sens.value, security_level: f.sec.value });
 
+  async function downloadZip() {
+    const b = body();
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(b.name)) return toast("이름은 영문 소문자·숫자·하이픈 63자 이하", "bad");
+    try {
+      const resp = await fetch(`${API}/projects/template`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) });
+      if (!resp.ok) throw new ApiError(resp.status, await resp.json().catch(() => ({})));
+      const url = URL.createObjectURL(await resp.blob());
+      const a = h("a", { href: url, download: `${b.name}.zip` }); document.body.append(a); a.click(); a.remove();
+      toast(`${b.name}.zip을 받았습니다`, "ok");
+    } catch (e) { fail(e); }
+  }
+
+  async function makeInWorkspace(b) {
+    submit.disabled = true;
+    submit.replaceChildren(h("span", { class: "spinner" }), " 만드는 중…");
+    try {
+      const row = await post("/projects", { ...b, location: f.location.value.trim() || null });
+      result.replaceChildren(workspaceCard(row));
+      toast(`만들었습니다: ${row.agent_id}`, "ok", "편집기에서 열어 Genie Code로 고친 뒤 이 폴더에서 등록");
+    } catch (e) { fail(e); }
+    submit.disabled = false;
+    submit.textContent = "내 워크스페이스에 만들기";
+  }
+
   async function make() {
     const b = body();
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(b.name)) return toast("이름은 영문 소문자·숫자·하이픈 63자 이하", "bad");
-    if (kind !== "no_code") {
-      try {
-        const resp = await fetch(`${API}/projects/template`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) });
-        if (!resp.ok) throw new ApiError(resp.status, await resp.json().catch(() => ({})));
-        const url = URL.createObjectURL(await resp.blob());
-        const a = h("a", { href: url, download: `${b.name}.zip` }); document.body.append(a); a.click(); a.remove();
-        toast(`${b.name}.zip을 받았습니다`, "ok");
-      } catch (e) { fail(e); }
-      return;
-    }
+    if (kind !== "no_code") return makeInWorkspace(b);
     if (!b.description) return toast("설명을 적으세요 (운영 Genie의 설명이 됩니다)", "bad");
     const space = (f.space.value.match(/[0-9a-f]{32}/) || [""])[0];
     const tables = f.tables.value.split(/\n|,/).map((t) => t.trim()).filter(Boolean);
@@ -876,9 +915,23 @@ function newPage(root, params) {
           h("label", { class: "field" }, h("span", {}, "데이터 민감도"), f.sens),
           h("label", { class: "field" }, h("span", {}, "보안 등급"), f.sec)),
         kindBox,
-        h("div", { class: "row" }, h("span", { class: "muted" }, "담당자(owner)는 나입니다."), h("span", { class: "right" }, submit))),
+        h("div", { class: "row" }, h("span", { class: "muted" }, "담당자(owner)는 나입니다."), h("span", { class: "right row" }, zipBtn, submit))),
       h("div", { class: "card pad" }, help)),
     result);
+}
+
+function workspaceCard(row) {
+  const prompt = row.type === "code" ? "agent/agent.py를 <하고 싶은 일>을 하도록 고쳐줘. 다 되면 이 폴더를 aops에 등록해줘"
+    : "agent/skills/my-skill을 <스킬 이름>으로 바꾸고 <규칙>을 적어줘. 다 되면 이 폴더를 aops에 등록해줘";
+  return h("div", { class: "card pad mt" },
+    h("div", { class: "row" }, h("h2", { style: "margin:0" }, `만들었습니다: ${row.agent_id}`), h("span", { class: "tag" }, BUILD[row.type] || row.type)),
+    h("dl", { class: "kv mt" },
+      h("dt", {}, "폴더"), h("dd", { class: "mono" }, row.location),
+      h("dt", {}, "파일"), h("dd", {}, `${row.files.length}개`, row.open_file ? h("span", { class: "muted" }, ` · 처음 열 파일 ${row.open_file}`) : null)),
+    h("div", { class: "note mt" }, "Genie Code에 이렇게 말해 보세요: ", h("code", {}, prompt)),
+    h("div", { class: "row mt" }, row.links.map((l, i) => h("a", { class: `btn ${i === 0 ? "primary" : ""}`, href: l.url, target: "_blank" }, `${l.label} ↗`)),
+      h("a", { class: "btn", href: `#/register?agent=${enc(row.agent_id)}&path=${enc(row.location)}` }, "이 폴더에서 등록"),
+      h("a", { class: "btn ghost", href: `#/agents/${enc(row.agent_id)}` }, "에이전트 보기 →")));
 }
 
 // ── 노코드 점검 (Genie 정의 규칙, 참고용) ─────────────────────────────────────

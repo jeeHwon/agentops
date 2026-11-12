@@ -123,32 +123,28 @@ def list_projects(cursor: str | None = None, limit: int = Query(50, le=200)) -> 
     raise todo(None)
 
 
-_TEMPLATE = command("aops init", ALL, note="`aops init <이름> --edition dbx`와 같은 폴더를 zip으로 내준다. 받은 폴더를 PC나 워크스페이스에 풀고 스킬·SPEC을 고친 뒤 등록한다. 서버 주소가 aops.toml에 들어 있다. 지금은 스킬 기반만")
-_TEMPLATE["responses"] = {200: {"content": {"application/zip": {}}, "description": "새 에이전트 폴더 zip"}, **_TEMPLATE["responses"]}
+def _server_url(request: Request) -> str:
+    host = request.headers.get("x-forwarded-host")
+    return f"https://{host}" if host else str(request.base_url).rstrip("/")
 
 
-@router.post("/projects/template", summary="새 에이전트 폴더 받기 (zip)", response_class=Response, **_TEMPLATE)
-def project_template(body: ProjectCreate, request: Request) -> Response:
-    import io
+def _spec(body: "ProjectCreate", owner: str) -> dict[str, Any]:
+    return {"agent_id": body.name, "name": body.display_name or body.name, "build_type": body.type, "owner": owner,
+            "owner_group": body.owner_group or "", "service_criticality": body.service_criticality,
+            "data_sensitivity": body.data_sensitivity, "security_level": body.security_level, "description": body.description or ""}
+
+
+def template_files(body: "ProjectCreate", server: str, owner: str) -> dict[str, bytes]:
+    """The `aops init` folder for a skill or code agent, as {relative path: content}: the server address in
+    aops.toml, and SPEC.md from the screen's SPEC fields when they were given."""
     import tempfile
-    import zipfile
     from pathlib import Path
 
     from ... import init
     from ...dbx.service import ServiceError
 
-    from ..dbx import caller_of, service_for
-
-    try:
-        svc = service_for("aops init")
-    except Exception:
-        svc = None  # no registry configured (API contract only): the template needs nothing from it
-    owner = caller_of(request, svc).email if svc is not None else ""
     if body.type not in ("skill", "code"):
-        raise ServiceError(501, "not_implemented", "지금은 스킬 기반·코드 기반 에이전트를 만듭니다 (노코드는 준비 중)", "aops init")
-    host = request.headers.get("x-forwarded-host")
-    server = f"https://{host}" if host else str(request.base_url).rstrip("/")
-    buffer = io.BytesIO()
+        raise ServiceError(400, "not_a_template", "폴더 템플릿은 스킬 기반·코드 기반입니다 (노코드는 POST /projects)", "aops init")
     with tempfile.TemporaryDirectory() as tmp:
         try:
             if body.type == "code":
@@ -162,14 +158,30 @@ def project_template(body: ProjectCreate, request: Request) -> Response:
         toml = project.root / "aops.toml"
         toml.write_text(toml.read_text(encoding="utf-8").replace('server = ""', f'server = "{server}"', 1), encoding="utf-8")
         if body.description:  # the SPEC fields from the screen become SPEC.md
-            spec = {"agent_id": body.name, "name": body.display_name or body.name, "build_type": body.type, "owner": owner,
-                    "owner_group": body.owner_group, "service_criticality": body.service_criticality,
-                    "data_sensitivity": body.data_sensitivity, "security_level": body.security_level, "description": body.description}
-            (project.root / "SPEC.md").write_text(init.render_spec(spec), encoding="utf-8")
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for path in sorted(project.root.rglob("*")):
-                if path.is_file():
-                    zf.write(path, f"{body.name}/{path.relative_to(project.root).as_posix()}")
+            (project.root / "SPEC.md").write_text(init.render_spec(_spec(body, owner)), encoding="utf-8")
+        return {path.relative_to(project.root).as_posix(): path.read_bytes() for path in sorted(project.root.rglob("*")) if path.is_file()}
+
+
+_TEMPLATE = command("aops init", ALL, note="`aops init <이름> --edition dbx`와 같은 폴더를 zip으로 내준다. 받은 폴더를 PC에 풀고 고친 뒤 등록한다. 서버 주소가 aops.toml에 들어 있고, SPEC 항목(description 등)을 주면 SPEC.md가 된다. 스킬 기반·코드 기반")
+_TEMPLATE["responses"] = {200: {"content": {"application/zip": {}}, "description": "새 에이전트 폴더 zip"}, **_TEMPLATE["responses"]}
+
+
+@router.post("/projects/template", summary="새 에이전트 폴더 받기 (zip)", response_class=Response, **_TEMPLATE)
+def project_template(body: ProjectCreate, request: Request) -> Response:
+    import io
+    import zipfile
+
+    from ..dbx import caller_of, service_for
+
+    try:
+        svc = service_for("aops init")
+    except Exception:
+        svc = None  # no registry configured (API contract only): the template needs nothing from it
+    owner = caller_of(request, svc).email if svc is not None else ""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for rel, data in template_files(body, _server_url(request), owner).items():
+            zf.writestr(f"{body.name}/{rel}", data)
     return Response(buffer.getvalue(), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="{body.name}.zip"'})
 
@@ -181,28 +193,37 @@ class ProjectCreated(BaseModel):
     dev_space_id: str | None = Field(None, description="no_code: 개발용 Genie 스페이스")
     genie_mode: str | None = None
     warehouse_id: str | None = None
-    links: list[Link] = Field(default_factory=list, description="Genie에서 열기, 폴더 열기")
+    files: list[str] = Field(default_factory=list, description="skill·code: 워크스페이스에 올린 파일")
+    open_file: str | None = Field(None, examples=["agent/agent.py"], description="skill·code: 처음 열 파일 (Genie Code로 고치는 곳)")
+    links: list[Link] = Field(default_factory=list, description="Genie에서 열기·편집기에서 열기(Genie Code), 폴더 열기")
     warnings: list[str] = Field(default_factory=list)
 
 
 @router.post(
-    "/projects", status_code=201, summary="새 에이전트 만들기 (노코드)",
+    "/projects", status_code=201, summary="새 에이전트 만들기 (워크스페이스)",
     **command("aops init", ALL, note=(
+        "skill·code: `aops init`과 같은 템플릿(SPEC 항목은 SPEC.md로)을 요청자의 토큰(앱의 workspace.workspace 사용자 권한 범위)으로 "
+        "요청자 폴더(`location`, 기본 /Workspace/Users/<나>/aops/<이름>)에 올린다. 이미 있는 폴더에는 쓰지 않는다. 편집기에서 열어 Genie Code로 고치고, "
+        "그 폴더에서 바로 등록한다(registrations의 workspace_path). "
         "no_code: aops 서비스 주체가 에이전트 폴더(/Workspace/aops/no-code/<이름>)를 만들고 요청자(와 담당 팀)에게 CAN MANAGE를 준 뒤 "
         "SPEC.md를 쓴다. 개발용 Genie는 요청자의 토큰(앱의 genie 사용자 권한 범위)으로 그 폴더에 만든다: 테이블로 새로(new), "
         "기존 스페이스 복사(copy), 기존 스페이스 옮기기(move). 서비스 주체는 폴더에서 권한을 받아 정의를 읽는다. "
-        "레지스트리에 agents·genie_agents 행과 create 기록을 남긴다. 버전은 첫 배포가 성공할 때 생긴다."
+        "레지스트리에 agents(와 노코드는 genie_agents) 행과 create 기록을 남긴다. 버전은 등록(노코드는 첫 배포 성공) 때 생긴다."
     )),
 )
 def create_project(body: ProjectCreate, request: Request) -> ProjectCreated:
-    from ...dbx.service import ServiceError
-
     from ..dbx import caller_of, service_for
 
     svc = service_for("aops init")
     caller = caller_of(request, svc)
     if body.type != "no_code":
-        raise ServiceError(501, "not_implemented", "스킬 기반·코드 기반은 지금 폴더 받기(POST /projects/template)로 만듭니다", "aops init")
+        files = template_files(body, _server_url(request), caller.email)
+        row = svc.create_in_workspace(caller, body.type, body.name, files, _spec(body, caller.email), body.location)
+        links = [Link(label="편집기에서 열기 (Genie Code)", url=row["open_url"])] if row.get("open_url") else []
+        if row.get("folder_url"):
+            links.append(Link(label="폴더 열기", url=row["folder_url"]))
+        return ProjectCreated(agent_id=row["agent_id"], type=body.type, location=row["workspace_path"], files=row["files"],
+                              open_file=row["open_file"], links=links)
     row = svc.create_no_code(caller, body.model_dump())
     links = [Link(label="Genie에서 열기 (개발용)", url=row["dev_url"])] if row.get("dev_url") else []
     if row.get("folder_url"):

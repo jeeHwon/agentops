@@ -13,12 +13,20 @@ aops 서버 주소를 브라우저로 열면 나오는 화면입니다. dbx 에�
 | 에이전트 → 권한 | 대상(group:·user:·sp:)에게 부여·회수: 스킬은 운영 UC Skill 읽기, 코드 기반은 운영 앱 `CAN_USE`, 노코드는 운영용 Genie `CAN RUN` | `aops promote` |
 | 에이전트 → 가져오기 | 스킬은 운영 버전 zip(권한 판정은 서버), 코드 기반은 운영 앱, 노코드는 운영용 Genie를 엶 | `aops load` |
 | 에이전트 → 점검 (노코드) | 개발용 Genie 정의를 배포 Gate와 같은 규칙으로 바로 점검 | `aops validate` (노코드) |
-| 등록 | 에이전트 폴더(또는 버전 zip)를 올려 새 버전 저장. 폴더는 서버가 CLI와 같은 규칙으로 묶어 해시까지 같음 | `aops register` |
-| 새 에이전트 | 종류(스킬·코드·노코드)를 고르고 SPEC 항목(이름·표시 이름·설명·담당 팀·중요도·민감도·보안 등급)을 적음. 스킬·코드 기반은 그 SPEC.md가 든 폴더(zip, aops.toml에 이 서버 주소), 노코드는 에이전트 폴더·SPEC.md·개발용 Genie를 바로 만듦 | `aops init`, `aops init --type code` |
+| 등록 | 에이전트 폴더(또는 버전 zip)를 올리거나 워크스페이스 폴더 경로를 적어 새 버전 저장. 폴더는 서버가 CLI와 같은 규칙으로 묶어 해시까지 같음(워크스페이스 폴더는 내 토큰으로 읽음, 노트북은 뺌) | `aops register` |
+| 새 에이전트 | 종류(스킬·코드·노코드)를 고르고 SPEC 항목(이름·표시 이름·설명·담당 팀·중요도·민감도·보안 등급)을 적음. 스킬·코드 기반은 [내 워크스페이스에 만들기](그 SPEC.md가 든 템플릿을 내 폴더에, 편집기·Genie Code 링크) 또는 [폴더 받기 (zip)], 노코드는 에이전트 폴더·SPEC.md·개발용 Genie를 바로 만듦 | `aops init`, `aops init --type code` |
 | 노코드 점검 | Genie 스페이스 정의를 배포 Gate와 같은 규칙(준수율 15개)으로 바로 점검하고 고치는 곳을 보여 줌. 기록하지 않음 | `aops validate` (노코드) |
 | 배포 요청함 | 승인할 요청·내 요청·전체. 승인·반려(사유)·취소 | `aops gates`·`approve`·`reject`·`deploy --cancel` |
 | 정책 | 지금 정책과 이력. 워크스페이스 관리자는 검사·승인 방식과 승인 그룹을 바꿈(새 정책 버전) | `aops admin setup --only policy` |
 | CLI·Genie Code 안내 | 명령 ↔ 화면 ↔ API 대응표 | `GET /api/v1/meta/commands` |
+
+## 스킬·코드 기반을 워크스페이스에서
+
+1. **새 에이전트 → 스킬 기반·코드 기반 → [내 워크스페이스에 만들기]:** `aops init`과 같은 템플릿(SPEC 항목이 든 `SPEC.md`, 이 서버 주소가 든 `aops.toml`)이 내 토큰으로 `/Workspace/Users/<나>/aops/<이름>`(또는 적은 위치)에 올라갑니다. 이미 있는 폴더에는 쓰지 않습니다. 하네스 설정(`.claude`·`.agents`·`CLAUDE.md`·`AGENTS.md`)은 올리지 않습니다. 에이전트가 레지스트리에 바로 잡힙니다(버전은 등록 때).
+2. **[편집기에서 열기 (Genie Code)]:** 코드 기반은 `agent/agent.py`, 스킬 기반은 `agent/skills/my-skill/SKILL.md`가 편집기에서 열리고 오른쪽에 Genie Code가 있습니다. 고칠 내용을 말하고, 다 되면 "이 폴더를 aops에 등록해줘"라고 하거나
+3. **[이 폴더에서 등록]:** 서버가 내 토큰으로 그 폴더를 읽어 `aops register`와 같은 규칙으로 묶습니다(해시도 같음). 에이전트 화면에도 작업 폴더와 [Genie Code에서 열기]·[이 폴더에서 등록]이 나옵니다.
+
+PC에서 고치려면 [폴더 받기 (zip)]로 같은 템플릿을 받습니다.
 
 ## 노코드 (Genie Agent)
 

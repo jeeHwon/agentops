@@ -155,6 +155,23 @@ def no_code_agent(agent_id: str, request: Request) -> NoCodeAgent:
     return NoCodeAgent(**svc.no_code_links(agent_id))
 
 
+class AgentWorkspace(BaseModel):
+    workspace_path: str = Field(examples=["/Workspace/Users/me@example.com/aops/price-helper"], description="에이전트를 고치는 워크스페이스 폴더")
+    folder_url: str | None = None
+    open_url: str | None = Field(None, description="처음 열 파일의 편집기 주소 (Genie Code 패널과 함께 열림)")
+    open_file: str | None = Field(None, examples=["agent/agent.py"])
+
+
+@router.get("/agents/{agent_id}/workspace", summary="에이전트의 워크스페이스 폴더 (스킬·코드)", **command(None, DBX, screen="console 에이전트"))
+def agent_workspace(agent_id: str, request: Request) -> AgentWorkspace:
+    svc = service_for(None)
+    caller_of(request, svc)
+    row = svc.agent_workspace(agent_id)
+    if not row or not row.get("workspace_path"):
+        raise ServiceError(404, "no_workspace", "워크스페이스에서 만들거나 등록한 기록이 없습니다")
+    return AgentWorkspace(**row)
+
+
 @router.get("/validations/{validation_run_id}", summary="검증 결과 (단계별)", **command(None, DBX, screen="검증 진행 화면"))
 def get_validation(validation_run_id: str, request: Request) -> ValidationRun:
     svc = service_for(None)
@@ -179,10 +196,19 @@ def register(
     project_id: str, request: Request,
     archive: UploadFile | None = File(None, description="버전 zip (aops.toml, SPEC.md, agent/…)"),
     files: list[UploadFile] | None = File(None, description="zip 대신 폴더의 파일들 (filename = 폴더 안 상대 경로). 서버가 `aops register`와 같은 규칙으로 묶는다"),
+    workspace_path: str | None = Form(None, description="zip·파일 대신 워크스페이스 폴더 (/Workspace/...). 서버가 요청자의 토큰으로 읽어 같은 규칙으로 묶는다 (앱의 workspace.workspace 사용자 권한 범위)"),
     version: str | None = Form(None, description="`--version`. 비우면 register가 매긴다 (최초 1.0.0)"),
     bump: Literal["fix", "minor", "major"] | None = Form(None, description="버전을 올리는 폭. 비우면 minor"),
 ) -> AgentVersionDetail:
     svc = service_for("aops register")
+    if workspace_path and archive is None and not files:
+        caller = caller_of(request, svc)
+        found, skipped = svc.read_workspace_folder(caller, workspace_path)
+        data = package.build_entries([(rel, content, 0o644) for rel, content in found]).data
+        source = {**svc.workspace_links(caller, workspace_path, dict(found)), "skipped": skipped}
+        row = svc.register(caller, project_id, data, version, bump, source=source)
+        skills = [AgentVersionSkill(**s) for s in row.pop("skills", [])]
+        return AgentVersionDetail(**{**row, "created_at": row["registered_at"], "spec": loads(row.get("spec")) or {}}, skills=skills)
     if archive is not None:
         data = archive.file.read(MAX_UPLOAD + 1)
     elif files:

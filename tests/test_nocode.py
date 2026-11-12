@@ -275,3 +275,73 @@ def test_revoke_keeps_everyone_else():
     grants = svc.promote_genie(Caller("dev@x.com"), "sales", {"target": "p" * 32, "current_version": "1.0.0"}, ["group:analysts"], True)
     assert sets == [[{"user_name": "dev@x.com", "permission_level": "CAN_RUN"}]]
     assert grants[0]["securable"] == "genie:" + "p" * 32 and grants[0]["granted"] is False
+
+
+# ── skill and code agents in the requester's workspace folder ──────────────
+
+def user_workspace(tree):
+    """A fake of the workspace REST API as the requester sees it: {path: "DIRECTORY" | "NOTEBOOK" | bytes}."""
+    import base64
+    import urllib.parse
+
+    calls = []
+
+    def as_user(token, method, path, body=None):
+        calls.append((method, path.split("?")[0], body))
+        query = dict(urllib.parse.parse_qsl(path.split("?", 1)[1])) if "?" in path else {}
+        if path.startswith("/api/2.0/workspace/get-status"):
+            p = query["path"]
+            if p not in tree:
+                return {"status": 404, "body": None, "error": "RESOURCE_DOES_NOT_EXIST"}
+            return {"status": 200, "body": {"object_id": abs(hash(p)) % 1000, "object_type": "FILE"}, "error": None}
+        if path.startswith("/api/2.0/workspace/mkdirs"):
+            tree[body["path"]] = "DIRECTORY"
+        elif path.startswith("/api/2.0/workspace/import"):
+            tree[body["path"]] = base64.b64decode(body["content"])
+        elif path.startswith("/api/2.0/workspace/list"):
+            p = query["path"]
+            objects = [{"path": k, "object_type": v if isinstance(v, str) else "FILE"} for k, v in tree.items()
+                       if k.rsplit("/", 1)[0] == p]
+            return {"status": 200, "body": {"objects": objects}, "error": None}
+        elif path.startswith("/api/2.0/workspace/export"):
+            return {"status": 200, "body": {"content": base64.b64encode(tree[query["path"]]).decode()}, "error": None}
+        return {"status": 200, "body": {}, "error": None}
+
+    return as_user, calls
+
+
+def test_template_goes_into_my_folder_and_never_over_an_existing_one():
+    tree = {}
+    svc = service()
+    svc._as_user, calls = user_workspace(tree)
+    svc.agent = lambda a: None
+    files = {"SPEC.md": b"---\nbuild_type: code\n---\n", "aops.toml": b"", "agent/agent.py": b"print(1)\n", ".claude/settings.json": b"{}",
+             "CLAUDE.md": b"x"}
+    row = svc.create_in_workspace(Caller("dev@x.com", "t"), "code", "helper", files, {"description": "돕는다"})
+    root = "/Workspace/Users/dev@x.com/aops/helper"
+    assert tree[f"{root}/agent/agent.py"] == b"print(1)\n" and f"{root}/.claude/settings.json" not in tree and f"{root}/CLAUDE.md" not in tree
+    assert row["open_file"] == "agent/agent.py" and row["open_url"].startswith("https://ws.example.com/editor/files/")
+    assert all(body["overwrite"] is False for method, path, body in calls if path.endswith("/import"))
+    agents, event = svc.sql.atomics[0]
+    assert ":type" in agents[0] and agents[1]["type"] == "code" and event[0] == "EVENT create"
+    assert event[1]["d"]["workspace_path"] == root
+    with pytest.raises(ServiceError) as error:
+        svc.create_in_workspace(Caller("dev@x.com", "t"), "code", "helper", files, {})
+    assert error.value.code == "folder_exists"
+    with pytest.raises(ServiceError):
+        svc.create_in_workspace(Caller("dev@x.com", "t"), "code", "other", files, {}, "/Workspace/../etc")
+
+
+def test_register_reads_my_folder_with_the_register_rules():
+    root = "/Workspace/Users/dev@x.com/aops/helper"
+    tree = {root: "DIRECTORY", f"{root}/SPEC.md": b"---\nbuild_type: skill\n---\n", f"{root}/aops.toml": b"x",
+            f"{root}/agent": "DIRECTORY", f"{root}/agent/skills": "DIRECTORY", f"{root}/agent/skills/k": "DIRECTORY",
+            f"{root}/agent/skills/k/SKILL.md": b"---\nname: k\n---\n", f"{root}/runs": "DIRECTORY", f"{root}/runs/s.db": b"db",
+            f"{root}/scratch": "NOTEBOOK", f"{root}/AGENTS.md": b"generated"}
+    svc = service()
+    svc._as_user, _ = user_workspace(tree)
+    files, skipped = svc.read_workspace_folder(Caller("dev@x.com", "t"), root + "/")
+    assert [rel for rel, _ in files] == ["SPEC.md", "agent/skills/k/SKILL.md", "aops.toml"]
+    assert skipped == ["scratch (notebook)"]
+    links = svc.workspace_links(Caller("dev@x.com", "t"), root, dict(files))
+    assert links["open_file"] == "agent/skills/k/SKILL.md" and links["workspace_path"] == root

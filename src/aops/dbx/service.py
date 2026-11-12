@@ -24,6 +24,7 @@ from . import code, nocode
 from .base import AGENT_ID, CRITICALITY, SENSITIVITY, Caller, ServiceError, now_id
 from .git import GitHub, GitSettings, commit_message, proxy_transport
 from .nocode import NoCodeMixin
+from .userspace import UserSpaceMixin
 from .sql import Sql, loads
 
 __all__ = ["AGENT_ID", "Caller", "Config", "Service", "ServiceError", "now_id"]
@@ -46,7 +47,8 @@ SECRET_PATTERNS = {
     "AWS 키": re.compile(r"AKIA[0-9A-Z]{16}"),
     "개인 키": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 }
-FORBIDDEN_FILES = re.compile(r"(^|/)(\.env(\..*)?|.*\.pem|id_rsa)$")
+# .env files hold real values; .env.example and the like are templates (their content is still scanned)
+FORBIDDEN_FILES = re.compile(r"(^|/)(\.env(?!\.(example|sample|template|dist)$)(\..*)?|.*\.pem|id_rsa)$")
 # What each validate step checks, shown in the Job description and in every validate run's output.
 CHECK_RULES = {
     "format": "SPEC.md에 agent_id·name·build_type이 있고, service_criticality ∈ {low, medium, high}, "
@@ -85,7 +87,7 @@ class Config:
         return self.registry.split(".")[1]
 
 
-class Service(NoCodeMixin):
+class Service(NoCodeMixin, UserSpaceMixin):
     def __init__(self, config: Config, workspace: Any = None):
         from databricks.sdk import WorkspaceClient
 
@@ -299,7 +301,7 @@ class Service(NoCodeMixin):
     # ── register ────────────────────────────────────────────────────────────
 
     def register(self, caller: Caller, agent_id: str, data: bytes, version: str | None = None,
-                 bump: str | None = None) -> dict[str, Any]:
+                 bump: str | None = None, source: dict[str, Any] | None = None) -> dict[str, Any]:
         if not AGENT_ID.match(agent_id):
             raise ServiceError(400, "bad_agent_id", "에이전트 이름은 영문 소문자·숫자·하이픈 63자 이하입니다 (첫 글자는 영문 소문자·숫자)", "aops register")
         try:
@@ -373,7 +375,7 @@ class Service(NoCodeMixin):
                                {"id": agent_id, "v": new_version, "alias": alias, "uc": uc_name, "sha": hashes[alias],
                                 "src": f"agent/skills/{alias}"}))
         statements.append(self._event_statement(agent_id, new_version, "register", caller.email,
-                                                {"artifact_path": path, "skills": published, "first": not existing}))
+                                                {"artifact_path": path, "skills": published, "first": not existing, **(source or {})}))
         try:
             self.sql.atomic(statements)
         except Exception:

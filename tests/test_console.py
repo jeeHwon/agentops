@@ -45,7 +45,12 @@ def test_template_is_the_init_folder_with_this_server(tmp_path):
     assert "price-helper/SPEC.md" in names and "price-helper/agent/skills/my-skill/SKILL.md" in names
     assert 'server = "https://aops-server-1.aws.databricksapps.com"' in toml
     assert client.post("/api/v1/projects/template", json={"name": "Bad Name"}).status_code == 400
-    assert client.post("/api/v1/projects/template", json={"name": "x", "type": "no_code"}).status_code == 501
+    assert client.post("/api/v1/projects/template", json={"name": "x", "type": "no_code"}).status_code == 400  # POST /projects
+    resp = client.post("/api/v1/projects/template", json={"name": "price-helper", "type": "skill", "description": "할인 합계를 계산한다",
+                                                          "service_criticality": "low", "owner_group": "pricing"})
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        spec = zf.read("price-helper/SPEC.md").decode()
+    assert "description: 할인 합계를 계산한다" in spec and "service_criticality: low" in spec and "owner_group: pricing" in spec
 
 
 class PolicySql:
