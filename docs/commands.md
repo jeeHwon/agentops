@@ -382,7 +382,7 @@ aops admin policy show|diff
   1. `tables`: 레지스트리 테이블 13개와 뷰 `agent_status`
   2. `policy`: 옵션의 검사·승인 방식으로 정책 버전을 올림 (`policy` 명령 대신)
   3. `dist`: Job이 설치할 aops 패키지를 빌드해 볼륨 `aops_dist`에 올림
-  4. `app`: aops 서버(Databricks App)를 배포하고 레지스트리·웨어하우스·패키지 경로를 환경변수로 넣음. 코드는 `/Workspace/aops/server/<앱>`(워크스페이스 관리자만 쓰기)에 올리고, 그 폴더에 쓸 수 있는 주체를 보여 줌. `/Workspace/Shared`는 모든 사용자가 `CAN_MANAGE`를 물려받아 쓰지 않습니다
+  4. `app`: aops 서버(Databricks App)를 배포하고 레지스트리·웨어하우스·패키지 경로를 환경변수로 넣음. 코드는 `/Workspace/aops/server/<앱>`(워크스페이스 관리자만 쓰기)에 올리고, 루트에 폴더를 만들 권한이 없으면 실행한 관리자의 홈 폴더(본인과 관리자만 쓰기)에 둡니다. 그 폴더에 쓸 수 있는 주체를 보여 줌. `/Workspace/Shared`는 모든 사용자가 `CAN_MANAGE`를 물려받아 쓰지 않습니다. warehouse를 앱 자원으로 붙일 권한이 없으면 ID만 넘기고, 권한 부여가 실패하면 멈추지 않고 주인에게 부탁할 `GRANT` 문을 보여 줍니다
   5. `grants`: 서버 서비스 주체에 카탈로그·스키마·`aops_dist` 권한 (사람에게는 사용·조회만)
   - validate·배포 Job은 서버가 처음 쓸 때 서비스 주체로 만들고, 서버의 패키지·설명이 바뀌면 Job 설정을 맞춥니다.
   - 번들 배포, monitor 뷰, 태그 정책, Apps telemetry, `policy` 명령은 설계입니다.

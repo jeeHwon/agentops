@@ -108,8 +108,8 @@ def cmd_admin(args: argparse.Namespace) -> int:
 
     app = None
     if "app" in steps:
-        print(f"\n[app] aops 서버 앱 {args.app}: SQL warehouse 자원(CAN USE), 사용자 권한 범위 files, "
-              f"코드 {APP_ROOT}/{args.app} (워크스페이스 관리자만 쓰기)")
+        print(f"\n[app] aops 서버 앱 {args.app}: SQL warehouse {args.warehouse}(자원으로 붙이거나, 권한이 없으면 ID만), "
+              f"사용자 권한 범위 files, 코드 {APP_ROOT}/{args.app} (워크스페이스 관리자만 쓰기. 만들 권한이 없으면 내 홈 폴더)")
         if args.apply:
             app = _deploy_app(w, args, wheel_path, me)
             print(f"  {app.url}  (서비스 주체 {app.service_principal_client_id})")
@@ -130,9 +130,18 @@ def cmd_admin(args: argparse.Namespace) -> int:
         for grant in grants:
             print(f"  {grant}")
         if args.apply:
+            failed = []
             for grant in grants:
-                sql.run(grant)
-            print("  ok")
+                try:
+                    sql.run(grant)
+                except Exception as error:  # e.g. no MANAGE on the catalog in a shared workspace
+                    failed.append((grant, str(error).splitlines()[0][:160]))
+            if not failed:
+                print("  ok")
+            else:
+                print("  aops: 아래 권한은 지금 계정으로 줄 수 없습니다. 그 카탈로그·스키마의 주인에게 부탁하세요:")
+                for grant, why in failed:
+                    print(f"    {grant};   -- {why}")
 
     if not args.apply:
         print("\n미리보기입니다. 실행하려면 --apply를 붙이세요.")
@@ -148,13 +157,23 @@ def _deploy_app(w: Any, args: argparse.Namespace, wheel_path: str | None, me: st
     except Exception:
         resource = AppResource(name="sql-warehouse", sql_warehouse=AppResourceSqlWarehouse(
             id=args.warehouse, permission=AppResourceSqlWarehouseSqlWarehousePermission.CAN_USE))
-        app = w.apps.create_and_wait(App(name=args.app, description="aops 서버: console 화면과 /api/v1",
-                                         resources=[resource], user_api_scopes=["files"]))
+        description = "aops 서버: console 화면과 /api/v1"
+        try:
+            app = w.apps.create_and_wait(App(name=args.app, description=description, resources=[resource], user_api_scopes=["files"]))
+        except Exception as error:
+            if "permission" not in str(error).lower():
+                raise
+            # Adding a warehouse as an app resource needs Can manage on it. Without that the app gets the
+            # warehouse ID only and uses it through its own Can use (for example the users group's).
+            print(f"  aops: warehouse를 앱 자원으로 붙일 권한이 없어 ID만 넘깁니다 ({str(error).splitlines()[0][:120]})")
+            app = w.apps.create_and_wait(App(name=args.app, description=description, user_api_scopes=["files"]))
+    has_resource = any(r.name == "sql-warehouse" for r in (app.resources or []))
     build = Path(tempfile.mkdtemp(prefix="aops-app-"))
     shutil.copytree(PACKAGE, build / "src" / "aops", ignore=shutil.ignore_patterns("__pycache__"))
     (build / "requirements.txt").write_text(APP_REQUIREMENTS)
     env = [{"name": "PYTHONPATH", "value": "src"}, {"name": "AOPS_REGISTRY", "value": args.registry},
-           {"name": "AOPS_WAREHOUSE_ID", "valueFrom": "sql-warehouse"}, {"name": "AOPS_DIST_WHEEL", "value": wheel_path or ""}]
+           {"name": "AOPS_WAREHOUSE_ID", **({"valueFrom": "sql-warehouse"} if has_resource else {"value": args.warehouse})},
+           {"name": "AOPS_DIST_WHEEL", "value": wheel_path or ""}]
     command = ["python", "-m", "uvicorn", "aops.server.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     lines = ["command: " + json.dumps(command), "env:"]
     for item in env:
@@ -162,15 +181,25 @@ def _deploy_app(w: Any, args: argparse.Namespace, wheel_path: str | None, me: st
         lines.append(f"  - name: {item['name']}\n    {key}: {json.dumps(item[key])}")
     (build / "app.yaml").write_text("\n".join(lines) + "\n")
     target = f"{APP_ROOT}/{args.app}"
-    w.workspace.mkdirs(target)
+    try:
+        w.workspace.mkdirs(target)
+    except Exception as error:
+        if "permission" not in str(error).lower():
+            raise
+        # No right to make a folder under the workspace root: a home folder is also writable only by its
+        # owner and workspace admins (it just has to move if the admin changes).
+        target = f"/Workspace/Users/{me}/aops/server/{args.app}"
+        print(f"  aops: {APP_ROOT}를 만들 권한이 없어 내 홈 폴더({target})에 둡니다. 본인과 워크스페이스 관리자만 고칠 수 있습니다")
+        w.workspace.mkdirs(target)
     subprocess.run(["databricks", "workspace", "import-dir", str(build), target, "--overwrite", "-p", args.profile],
                    check=True, capture_output=True)
     w.apps.deploy_and_wait(args.app, AppDeployment(source_code_path=target))
     _report_code_folder(w, target)
     old = f"/Workspace/Users/{me}/{args.app}"
     try:
-        w.workspace.get_status(old)
-        print(f"  옛 코드 위치 {old}는 더 쓰지 않습니다 (지워도 됩니다)")
+        if old != target:
+            w.workspace.get_status(old)
+            print(f"  옛 코드 위치 {old}는 더 쓰지 않습니다 (지워도 됩니다)")
     except Exception:
         pass
     return w.apps.get(args.app)

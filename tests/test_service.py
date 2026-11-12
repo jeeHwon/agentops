@@ -51,6 +51,10 @@ class FakeSql:
     def one(self, statement, params=None):
         return None
 
+    def atomic(self, statements):
+        self.transactions = getattr(self, "transactions", 0) + 1
+        self.statements.extend(statements)
+
 
 def gate_service(gate, policy=None, spec=None):
     from aops.dbx.service import DEFAULT_POLICY
@@ -137,3 +141,64 @@ def test_register_does_not_create_uc_skills(tmp_path):
     assert row["version"] == "1.0.0"
     inserted = [p for stmt, p in svc.sql.statements if "agent_version_skills" in stmt]
     assert inserted and inserted[0]["uc"] == "c.s.agent-x__my-skill"
+    assert svc.sql.transactions == 1  # agent, version, skills and the audit line commit together
+    assert [stmt.split()[0] for stmt, _ in svc.sql.statements[1:]] == ["INSERT"] * 4
+
+
+def registered(tmp_path, agent, spec_edit=None, upload_fails=False):
+    from aops import init, package
+
+    project = init.create(tmp_path, "agent-x", edition="dbx")
+    if spec_edit:
+        spec = project.root / "SPEC.md"
+        spec.write_text(spec_edit(spec.read_text(encoding="utf-8")), encoding="utf-8")
+    data = package.build(project).data
+    deleted = []
+    svc = object.__new__(Service)
+    svc.config = SimpleNamespace(registry="c.s", catalog="c", schema="s")
+    svc.sql = FakeSql()
+    if upload_fails:
+        def fail(statements):
+            raise RuntimeError("transaction failed")
+        svc.sql.atomic = fail
+    svc.w = SimpleNamespace(files=SimpleNamespace(upload=lambda *a, **k: None, delete=deleted.append))
+    svc.agent = lambda agent_id: agent
+    svc._is_owner = lambda caller, row: True
+    svc.versions = lambda agent_id: [{"version": "1.0.0", "source_sha256": "old"}] if agent else []
+    svc.version = lambda agent_id, v: {"version": v}
+    svc.version_skills = lambda agent_id, v: []
+    return svc, data, deleted
+
+
+def test_register_again_refreshes_the_agent_columns(tmp_path):
+    def edit(text):
+        return (text.replace("service_criticality: medium", "service_criticality: low")
+                .replace("\nowner_group:\n", "\nowner_group: team-b\n"))
+
+    svc, data, _ = registered(tmp_path, {"agent_id": "agent-x", "owner": "dev@x.com"}, edit)
+    svc.register(Caller("dev@x.com"), "agent-x", data)
+    stmt, params = next((s, p) for s, p in svc.sql.statements if s.startswith("UPDATE c.s.agents"))
+    for column in ("name", "description", "owner_group", "service_criticality", "data_sensitivity", "security_level", "spec"):
+        assert f"{column} = " in stmt
+    assert "owner = coalesce(:owner, owner)" in stmt  # no owner in the SPEC keeps the current owner
+    assert params["crit"] == "low" and params["group"] == "team-b" and params["owner"] is None
+
+
+def test_register_takes_the_zip_back_when_the_registry_write_fails(tmp_path):
+    svc, data, deleted = registered(tmp_path, None, upload_fails=True)
+    with pytest.raises(RuntimeError):
+        svc.register(Caller("dev@x.com"), "agent-x", data)
+    assert deleted == ["/Volumes/c/s/agent-x/1.0.0.zip"]
+
+
+def test_atomic_block_keeps_each_statement_parameters_apart():
+    from aops.dbx.sql import atomic_block
+
+    body, params = atomic_block([
+        ("UPDATE t SET v = :v WHERE a = :a", {"a": "x", "v": "1"}),
+        ("INSERT INTO e VALUES (:a, '10:30', CAST(:v AS STRING), x::int)", {"a": "y", "v": "2"}),
+    ])
+    assert body.startswith("BEGIN ATOMIC\n") and body.endswith("\nEND")
+    assert "UPDATE t SET v = :s0_v WHERE a = :s0_a;" in body
+    assert "INSERT INTO e VALUES (:s1_a, '10:30', CAST(:s1_v AS STRING), x::int);" in body
+    assert params == {"s0_a": "x", "s0_v": "1", "s1_a": "y", "s1_v": "2"}

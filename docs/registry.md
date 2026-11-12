@@ -69,7 +69,7 @@
 | 테이블 | 내용 | 쓰는 곳 |
 | --- | --- | --- |
 | `policies` | 관리자 정책과 버전 | `aops admin setup` |
-| `agents` | 등록된 에이전트와 SPEC 정보 (담당자·담당 팀·중요도·민감도) | `register` (노코드는 배포 Job) |
+| `agents` | 등록된 에이전트와 SPEC 정보 (담당자·담당 팀·중요도·민감도). 다시 등록하면 새 SPEC 값으로 바뀌고, 담당자는 SPEC에 적혀 있을 때만 바뀜 | `register` (노코드는 배포 Job) |
 | `agent_versions` | 저장된 버전, 버전 zip 경로·해시·크기, 상태(`registered`·`production`·`retired`) | `register`, 배포 Job |
 | `agent_version_skills` | 버전마다 들어 있는 스킬과 UC Skill 이름(첫 배포 때 만들어짐)·해시 | `register` |
 | `genie_agents` | 노코드: 개발용·운영용 Genie Agent와 에이전트 폴더 | 노코드 경로 (설계) |
@@ -83,4 +83,7 @@
 | `rate_cards` | 모델별 단가 (비용 계산용) | 관리자 (설계) |
 | `agent_status` (뷰) | 에이전트별 최신 버전, 운영 버전, 상태, 담당 (`aops list`가 읽음) | – |
 
-- 여러 테이블을 한 번에 바꾸는 곳(요청 상태 변경과 승인 이력 추가 등)은 한 트랜잭션으로 묶는 것이 설계입니다. **지금:** 조건부 `UPDATE`로 상태를 옮기고, 두 곳이 동시에 쓰다 부딪히면 다시 읽습니다.
+- 여러 테이블을 함께 바꾸는 곳은 한 트랜잭션(`BEGIN ATOMIC … END`)으로 묶어, 모두 반영되거나 하나도 반영되지 않습니다. 레지스트리 테이블은 이를 위해 catalog-managed commit을 켜고 만듭니다(`delta.feature.catalogManaged`).
+  - `register`: 에이전트 행, 버전, 스킬, 감사 기록. 실패하면 먼저 올린 버전 zip도 지웁니다.
+  - 배포 Job의 운영 반영: 버전 상태(`production`·`retired`), 운영 포인터(`agent_production`), `agents.lifecycle`, 배포 결과, 감사 기록. 운영 버전이 세 곳에 있어도 서로 어긋나지 않습니다.
+  - 배포 요청의 상태 변경은 조건부 `UPDATE`(앞 상태일 때만 바꿈)로 옮기고, 두 곳이 동시에 쓰다 부딪히면 다시 읽습니다. 사람의 승인·반려 이력은 상태를 옮기기 전에 먼저 남깁니다(필요한 승인 수를 셉니다).
