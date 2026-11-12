@@ -37,6 +37,13 @@ def cmd_register(args: argparse.Namespace) -> int:
     _say(f"  볼륨: {row['artifact_path']}")
     for skill in row.get("skills") or []:
         _say(f"  스킬 {skill['skill_alias']} → 배포하면 UC Skill {skill.get('uc_name')}에 반영")
+    git = row.get("git")
+    if git and git["status"] == "synced":
+        _say(f"  Git: {git['url']}")
+    elif git and git["status"] == "skipped":
+        _say(f"  Git: 올리지 않음 ({git.get('error')})")
+    elif git:
+        _say(f"  Git 반영 실패: {git.get('error')}\n    등록은 됐습니다. 다음 register나 deploy 때 다시 올립니다")
     return 0
 
 

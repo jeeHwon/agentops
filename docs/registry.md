@@ -64,7 +64,7 @@
 
 ## 레지스트리 테이블
 
-`[dbx] registry` 스키마의 Unity Catalog managed Delta 테이블 13개와 뷰 1개입니다. 정의는 [`bundles/registry/tables.sql`](../bundles/registry/tables.sql)에 있고, `aops admin setup`이 만듭니다. 모든 테이블·컬럼에 한글 설명이 있으며 허용 값은 CHECK 제약으로 막습니다. 쓰기는 aops 서비스 주체만 하고, 사람에게는 조회 권한만 줍니다.
+`[dbx] registry` 스키마의 Unity Catalog managed Delta 테이블 14개와 뷰 1개입니다. 정의는 [`bundles/registry/tables.sql`](../bundles/registry/tables.sql)에 있고, `aops admin setup`이 만듭니다. 모든 테이블·컬럼에 한글 설명이 있으며 허용 값은 CHECK 제약으로 막습니다. 쓰기는 aops 서비스 주체만 하고, 사람에게는 조회 권한만 줍니다.
 
 | 테이블 | 내용 | 쓰는 곳 |
 | --- | --- | --- |
@@ -79,7 +79,8 @@
 | `approvals` | 승인·반려 이력 (추가만). 자동 승인은 `policy:auto` | aops 서버 |
 | `deployments` | 배포 결과 (`running`·`succeeded`·`failed`) | aops 서버, 배포 Job |
 | `agent_production` | 에이전트별 운영 버전과 이전 버전 | 배포 Job |
-| `agent_events` | 감사 이력: `register`·`gate_requested`·`validate`·`gate_approved`·`gate_rejected`·`gate_canceled`·`deploy`·`rollback`·`promote`·`load` | 각 단계 |
+| `agent_version_git` | Git 사본(선택): 버전마다 저장소·커밋·태그·상태(`synced`·`failed`·`skipped`)와 이유 | `register`, 배포 Job (정책에 `git`이 있을 때) |
+| `agent_events` | 감사 이력: `register`·`gate_requested`·`validate`·`gate_approved`·`gate_rejected`·`gate_canceled`·`deploy`·`rollback`·`promote`·`load`·`git` | 각 단계 |
 | `rate_cards` | 모델별 단가 (비용 계산용) | 관리자 (설계) |
 | `agent_status` (뷰) | 에이전트별 최신 버전, 운영 버전, 상태, 담당 (`aops list`가 읽음) | – |
 

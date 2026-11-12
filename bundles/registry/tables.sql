@@ -185,11 +185,26 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__.agent_production (
 COMMENT '운영 포인터. 에이전트당 1행. 배포 Job이 바꾼다'
 TBLPROPERTIES ('delta.feature.catalogManaged' = 'supported');
 
+CREATE TABLE IF NOT EXISTS __SCHEMA__.agent_version_git (
+  agent_id STRING NOT NULL COMMENT '에이전트 ID',
+  version STRING NOT NULL COMMENT '버전',
+  repo STRING NOT NULL COMMENT '저장소 (<조직>/<저장소 이름>)',
+  url STRING COMMENT '이 버전 태그의 웹 주소 (synced일 때)',
+  commit_sha STRING COMMENT '이 버전의 커밋 (synced일 때)',
+  tag STRING COMMENT '태그 (v<버전>)',
+  status STRING NOT NULL COMMENT 'synced(올림) | failed(실패, 다음 register·deploy 때 다시) | skipped(비밀값이 있어 올리지 않음)',
+  error STRING COMMENT '실패하거나 건너뛴 이유',
+  updated_at TIMESTAMP NOT NULL COMMENT '마지막으로 바뀐 시각 (UTC)',
+  CONSTRAINT agent_version_git_pk PRIMARY KEY (agent_id, version)
+)
+COMMENT 'Git 사본(선택): 버전마다 에이전트 저장소의 커밋·태그. 정본은 볼륨의 버전 zip이다. 정책에 git이 있을 때만 쓴다'
+TBLPROPERTIES ('delta.feature.catalogManaged' = 'supported');
+
 CREATE TABLE IF NOT EXISTS __SCHEMA__.agent_events (
   event_id STRING NOT NULL COMMENT '이벤트 ID',
   agent_id STRING NOT NULL COMMENT '에이전트 ID',
   version STRING COMMENT '관련 버전',
-  event_type STRING NOT NULL COMMENT 'register | validate | gate_requested | gate_approved | gate_rejected | gate_canceled | deploy | rollback | promote | load',
+  event_type STRING NOT NULL COMMENT 'register | validate | gate_requested | gate_approved | gate_rejected | gate_canceled | deploy | rollback | promote | load | git',
   actor STRING NOT NULL COMMENT '한 사람 (정책 자동 승인은 policy:auto)',
   at TIMESTAMP NOT NULL COMMENT '시각 (UTC)',
   detail VARIANT COMMENT '세부 (권한 대상, 배포 대상 등)',
@@ -246,7 +261,9 @@ ALTER TABLE __SCHEMA__.deployments ADD CONSTRAINT deployments_environment CHECK 
 ALTER TABLE __SCHEMA__.deployments DROP CONSTRAINT IF EXISTS deployments_status;
 ALTER TABLE __SCHEMA__.deployments ADD CONSTRAINT deployments_status CHECK (status IN ('running', 'succeeded', 'failed'));
 ALTER TABLE __SCHEMA__.agent_events DROP CONSTRAINT IF EXISTS agent_events_type;
-ALTER TABLE __SCHEMA__.agent_events ADD CONSTRAINT agent_events_type CHECK (event_type IN ('register', 'validate', 'gate_requested', 'gate_approved', 'gate_rejected', 'gate_canceled', 'deploy', 'rollback', 'promote', 'load'));
+ALTER TABLE __SCHEMA__.agent_events ADD CONSTRAINT agent_events_type CHECK (event_type IN ('register', 'validate', 'gate_requested', 'gate_approved', 'gate_rejected', 'gate_canceled', 'deploy', 'rollback', 'promote', 'load', 'git'));
+ALTER TABLE __SCHEMA__.agent_version_git DROP CONSTRAINT IF EXISTS agent_version_git_status;
+ALTER TABLE __SCHEMA__.agent_version_git ADD CONSTRAINT agent_version_git_status CHECK (status IN ('synced', 'failed', 'skipped'));
 
 CREATE OR REPLACE VIEW __SCHEMA__.agent_status
 COMMENT 'console 레지스트리 화면과 aops list가 쓰는 에이전트별 현황'

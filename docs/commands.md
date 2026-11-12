@@ -220,6 +220,10 @@ aops register [--version x.y.z] [--bump fix|minor|major]
 - 노코드: 따로 실행하지 않습니다. 배포에 성공하면 배포 Job이 그 정의로 버전을 등록합니다.
 - Delta `agents`·`agent_versions`에 버전 해시, 하네스·SDK 버전, UC 모델 버전, SPEC 정보를 남깁니다.
 - omni: Omnigent 에이전트로도 등록합니다.
+- Git 사본 (선택): 정책에 `git`이 있으면 버전을 에이전트 저장소(`<접두어><agent_id>`, 비공개)의 `main`에 커밋하고 `v<버전>` 태그를 답니다. 커밋 내용은 버전 zip의 파일 그대로입니다. 정본은 계속 볼륨 zip이고, Git은 사람이 보고 비교하는 사본입니다.
+  - GitHub는 Unity Catalog HTTP 연결의 프록시로 부릅니다. 토큰은 연결(시크릿)에만 있고, 연결을 쓸 수 있는 주체는 aops 서비스 주체뿐입니다.
+  - Git 반영이 실패해도 등록은 성공합니다. 실패는 `agent_version_git`에 남고, 다음 `register`·`deploy` 때 빠진 버전부터 순서대로 다시 올립니다. 비밀값이 있는 버전은 올리지 않습니다(Git 이력에서 지우기 어려움).
+  - 배포하면 `production` 브랜치가 운영 버전 커밋으로 옮겨 갑니다(되돌리기도 같음).
 - **지금:** 스킬 기반이 동작합니다. 담당자·담당 팀만 새 버전을 등록하고, 마지막 버전과 내용이 같거나 이미 있는 버전 번호면 막습니다. UC Skill 이름은 `<registry>.<agent_id>__<스킬 이름>`이고, 첫 배포 때 aops 서버 서비스 주체가 주인으로 만듭니다. `agent_versions`에는 해시·zip 경로·크기·스킬 해시·기본 하네스·SPEC을 남깁니다(SDK·UC 모델 버전은 설계). 코드·노코드는 501을 돌려줍니다.
 
 ### `aops validate`
@@ -362,7 +366,8 @@ aops harness upgrade claude|codex
 ```bash
 aops admin setup --profile <프로필> --registry <catalog>.<schema> --warehouse <SQL warehouse ID> \
   [--app aops-server] [--validation-mode mandatory|optional|exempt] [--approval-mode required|optional|auto] \
-  [--approver-group <그룹>] [--only tables,policy,dist,app,grants] [--apply]
+  [--approver-group <그룹>] [--git-connection <UC 연결> --git-owner <GitHub 조직> [--git-repo-prefix aops-] | --no-git] \
+  [--only tables,policy,dist,app,grants] [--apply]
 aops admin policy set <policy.toml>
 aops admin policy show|diff
 ```
@@ -379,11 +384,12 @@ aops admin policy show|diff
 - 권한 부여는 미리 보여 주고 `--apply`일 때만 실행합니다.
 - `policy`: 관리자 정책을 올리고 버전을 관리합니다.
 - **지금:** `setup`이 다섯 단계로 동작합니다. 미리보기가 기본이고 `--apply`일 때만 실행합니다.
-  1. `tables`: 레지스트리 테이블 13개와 뷰 `agent_status`
-  2. `policy`: 옵션의 검사·승인 방식으로 정책 버전을 올림 (`policy` 명령 대신)
+  1. `tables`: 레지스트리 테이블 14개와 뷰 `agent_status`
+  2. `policy`: 옵션의 검사·승인 방식으로 정책 버전을 올림 (`policy` 명령 대신). Git 사본은 `--git-connection`·`--git-owner`로 켜고 `--no-git`으로 끔. git 옵션이 없으면 지금 정책의 git 설정을 그대로 둠
   3. `dist`: Job이 설치할 aops 패키지를 빌드해 볼륨 `aops_dist`에 올림
   4. `app`: aops 서버(Databricks App)를 배포하고 레지스트리·웨어하우스·패키지 경로를 환경변수로 넣음. 코드는 `/Workspace/aops/server/<앱>`(워크스페이스 관리자만 쓰기)에 올리고, 루트에 폴더를 만들 권한이 없으면 실행한 관리자의 홈 폴더(본인과 관리자만 쓰기)에 둡니다. 그 폴더에 쓸 수 있는 주체를 보여 줌. `/Workspace/Shared`는 모든 사용자가 `CAN_MANAGE`를 물려받아 쓰지 않습니다. warehouse를 앱 자원으로 붙일 권한이 없으면 ID만 넘기고, 권한 부여가 실패하면 멈추지 않고 주인에게 부탁할 `GRANT` 문을 보여 줍니다
-  5. `grants`: 서버 서비스 주체에 카탈로그·스키마·`aops_dist` 권한 (사람에게는 사용·조회만)
+  5. `grants`: 서버 서비스 주체에 카탈로그·스키마·`aops_dist` 권한, Git 사본이 켜져 있으면 그 연결의 `USE CONNECTION` (사람에게는 사용·조회만)
+  - Git 사본에 쓸 연결은 관리자가 먼저 만듭니다: 토큰을 시크릿에 넣고 `CREATE CONNECTION <이름> TYPE HTTP OPTIONS (host 'https://api.github.com', port '443', base_path '/', bearer_token secret('<scope>', '<key>'))`. 토큰은 조직 저장소 전체에 코드(Contents) 쓰기와 저장소 만들기 권한이 필요합니다. GitHub Enterprise Server는 host만 바꿉니다
   - validate·배포 Job은 서버가 처음 쓸 때 서비스 주체로 만들고, 서버의 패키지·설명이 바뀌면 Job 설정을 맞춥니다.
   - 번들 배포, monitor 뷰, 태그 정책, Apps telemetry, `policy` 명령은 설계입니다.
 
