@@ -1,7 +1,8 @@
 """`aops admin setup`: the organisation's shared pieces, shown first and applied with `--apply`.
 
-Steps: registry tables, the active policy, the aops package for the Jobs, the aops server app and the
-grants its service principal needs. Run by a workspace admin with their own Databricks login.
+Steps: registry tables, the active policy, the aops package for the Jobs, the aops server app, the
+grants its service principal (and, if named, the users group) needs, and the Genie Code skill that
+runs aops commands in the workspace. Run by a workspace admin with their own Databricks login.
 """
 
 from __future__ import annotations
@@ -16,13 +17,18 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-STEPS = ("tables", "policy", "dist", "app", "grants")
+STEPS = ("tables", "policy", "dist", "app", "grants", "genie")
 PACKAGE = Path(__file__).resolve().parent
 REPO = PACKAGE.parents[1]  # the source checkout, when aops runs from one
 # Server code lives under the workspace root, where only admins have rights (and they flow down).
 # /Workspace/Shared would not do: it gives every user CAN_MANAGE, which a child folder cannot take away.
 APP_ROOT = "/Workspace/aops/server"
 APP_REQUIREMENTS = "fastapi>=0.162\nuvicorn>=0.54\npython-multipart>=0.0.20\ndatabricks-sdk>=0.158\n"
+# Workspace skills (everyone's Genie Code reads them; only workspace admins write there).
+GENIE_SKILLS = "/Workspace/.assistant/skills"
+# The same aops code the CLI runs, as readable source: Genie Code imports it from here and can read
+# what a command does before running it (an installed package is opaque to it).
+GENIE_SOURCE = "/Workspace/aops/genie"
 
 
 def ddl() -> str:
@@ -53,6 +59,10 @@ def add_command(sub: argparse._SubParsersAction) -> None:
     setup.add_argument("--git-owner", help="Git 사본: 에이전트 저장소를 둘 GitHub 조직")
     setup.add_argument("--git-repo-prefix", help="Git 사본: 저장소 이름 = <접두어><agent_id> (기본 aops-)")
     setup.add_argument("--no-git", action="store_true", help="Git 사본을 끈다 (저장소는 그대로 둔다)")
+    setup.add_argument("--users-group", help="aops를 쓰는 사람들의 계정 그룹. 레지스트리 조회(USE·SELECT)와 "
+                       "Genie Code가 쓰는 aops 코드 폴더 읽기(CAN_READ)를 준다")
+    setup.add_argument("--genie-skills", default=GENIE_SKILLS,
+                       help=f"Genie Code 스킬 폴더 (기본 {GENIE_SKILLS}: 워크스페이스 전체. 내 것만이면 /Users/<나>/.assistant/skills)")
     setup.add_argument("--only", help=f"쉼표로 고른 단계만 ({', '.join(STEPS)})")
     setup.add_argument("--apply", action="store_true", help="미리보기 대신 실행")
 
@@ -134,6 +144,12 @@ def cmd_admin(args: argparse.Namespace) -> int:
         ]
         if git:  # the Git mirror calls GitHub through this connection; only the aops service principal may use it
             grants.append(f"GRANT USE CONNECTION ON CONNECTION `{git['connection']}` TO `{sp}`")
+        if args.users_group:  # people read the registry and install aops in a notebook; they write nothing
+            group = args.users_group
+            grants += [
+                f"GRANT USE CATALOG ON CATALOG `{catalog}` TO `{group}`",
+                f"GRANT USE SCHEMA, SELECT ON SCHEMA `{catalog}`.`{schema}` TO `{group}`",
+            ]
         print("\n[grants] aops 서버 서비스 주체 권한 (사람에게는 USE·SELECT만 준다)")
         for grant in grants:
             print(f"  {grant}")
@@ -151,9 +167,64 @@ def cmd_admin(args: argparse.Namespace) -> int:
                 for grant, why in failed:
                     print(f"    {grant};   -- {why}")
 
+    if "genie" in steps:
+        target = f"{args.genie_skills.rstrip('/')}/aops/SKILL.md"
+        print(f"\n[genie] Genie Code 스킬 {target}: \"이 에이전트 등록해줘\" → 노트북에서 aops register와 같은 명령. "
+              f"aops 코드는 {GENIE_SOURCE}/src (읽기만, 관리자만 쓰기)")
+        if args.apply:
+            source = _put_genie_source(w, args, me)
+            _put_genie_skill(w, target, genie_skill(source, args.app))
+
     if not args.apply:
         print("\n미리보기입니다. 실행하려면 --apply를 붙이세요.")
     return 0
+
+
+def genie_skill(source: str, app: str) -> str:
+    """The workspace skill: import this aops from its source folder, then run the same CLI commands."""
+    text = resources.files("aops.dbx").joinpath("genie_skill.md").read_text(encoding="utf-8")
+    return text.replace("__SRC__", source).replace("__APP__", app)
+
+
+def _put_genie_source(w: Any, args: argparse.Namespace, me: str) -> str:
+    """Copy this aops package (without the server) to the Genie source folder; the folder for sys.path."""
+    root = GENIE_SOURCE
+    try:
+        w.workspace.mkdirs(f"{root}/src")
+    except Exception as error:
+        if "permission" not in str(error).lower():
+            raise
+        root = f"/Workspace/Users/{me}/aops/genie"
+        print(f"  aops: {GENIE_SOURCE}를 만들 권한이 없어 내 홈 폴더({root})에 둡니다")
+        w.workspace.mkdirs(f"{root}/src")
+    build = Path(tempfile.mkdtemp(prefix="aops-genie-"))
+    shutil.copytree(PACKAGE, build / "aops", ignore=shutil.ignore_patterns("__pycache__", "server"))
+    subprocess.run(["databricks", "workspace", "import-dir", str(build), f"{root}/src", "--overwrite", "-p", args.profile],
+                   check=True, capture_output=True)
+    print(f"  aops 코드: {root}/src/aops")
+    if args.users_group:
+        from databricks.sdk.service.workspace import WorkspaceObjectAccessControlRequest, WorkspaceObjectPermissionLevel
+
+        status = w.workspace.get_status(root)
+        try:
+            w.workspace.update_permissions("directories", str(status.object_id), access_control_list=[
+                WorkspaceObjectAccessControlRequest(group_name=args.users_group, permission_level=WorkspaceObjectPermissionLevel.CAN_READ)])
+            print(f"  {args.users_group}: CAN_READ")
+        except Exception as error:
+            print(f"  aops: {args.users_group}에 읽기 권한을 주지 못했습니다 ({str(error).splitlines()[0][:120]})")
+    return f"{root}/src"
+
+
+def _put_genie_skill(w: Any, target: str, text: str) -> None:
+    from databricks.sdk.service.workspace import ImportFormat
+
+    try:
+        w.workspace.mkdirs(target.rsplit("/", 1)[0])
+        w.workspace.upload(target, io.BytesIO(text.encode("utf-8")), format=ImportFormat.AUTO, overwrite=True)
+        print("  ok (새 Genie Code 대화부터 읽힘)")
+    except Exception as error:
+        print(f"  aops: 스킬을 올리지 못했습니다 ({str(error).splitlines()[0][:160]}). "
+              "워크스페이스 스킬 폴더는 워크스페이스 관리자만 씁니다. 내 것만 쓰려면 --genie-skills /Users/<나>/.assistant/skills")
 
 
 def policy_body(args: argparse.Namespace, current: dict[str, Any] | None) -> dict[str, Any]:

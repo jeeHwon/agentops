@@ -367,7 +367,7 @@ aops harness upgrade claude|codex
 aops admin setup --profile <프로필> --registry <catalog>.<schema> --warehouse <SQL warehouse ID> \
   [--app aops-server] [--validation-mode mandatory|optional|exempt] [--approval-mode required|optional|auto] \
   [--approver-group <그룹>] [--git-connection <UC 연결> --git-owner <GitHub 조직> [--git-repo-prefix aops-] | --no-git] \
-  [--only tables,policy,dist,app,grants] [--apply]
+  [--users-group <그룹>] [--genie-skills <스킬 폴더>] [--only tables,policy,dist,app,grants,genie] [--apply]
 aops admin policy set <policy.toml>
 aops admin policy show|diff
 ```
@@ -383,12 +383,14 @@ aops admin policy show|diff
 - custom이면 Custom Front가 쓸 그룹·서비스 주체에도 aops 서버 앱의 `CAN USE`를 줍니다 (앱을 따로 만들지 않습니다).
 - 권한 부여는 미리 보여 주고 `--apply`일 때만 실행합니다.
 - `policy`: 관리자 정책을 올리고 버전을 관리합니다.
-- **지금:** `setup`이 다섯 단계로 동작합니다. 미리보기가 기본이고 `--apply`일 때만 실행합니다.
+- **지금:** `setup`이 여섯 단계로 동작합니다. 미리보기가 기본이고 `--apply`일 때만 실행합니다.
   1. `tables`: 레지스트리 테이블 14개와 뷰 `agent_status`
   2. `policy`: 옵션의 검사·승인 방식으로 정책 버전을 올림 (`policy` 명령 대신). Git 사본은 `--git-connection`·`--git-owner`로 켜고 `--no-git`으로 끔. git 옵션이 없으면 지금 정책의 git 설정을 그대로 둠
   3. `dist`: Job이 설치할 aops 패키지를 빌드해 볼륨 `aops_dist`에 올림
   4. `app`: aops 서버(Databricks App)를 배포하고 레지스트리·웨어하우스·패키지 경로를 환경변수로 넣음. 코드는 `/Workspace/aops/server/<앱>`(워크스페이스 관리자만 쓰기)에 올리고, 루트에 폴더를 만들 권한이 없으면 실행한 관리자의 홈 폴더(본인과 관리자만 쓰기)에 둡니다. 그 폴더에 쓸 수 있는 주체를 보여 줌. `/Workspace/Shared`는 모든 사용자가 `CAN_MANAGE`를 물려받아 쓰지 않습니다. warehouse를 앱 자원으로 붙일 권한이 없으면 ID만 넘기고, 권한 부여가 실패하면 멈추지 않고 주인에게 부탁할 `GRANT` 문을 보여 줍니다
   5. `grants`: 서버 서비스 주체에 카탈로그·스키마·`aops_dist` 권한, Git 사본이 켜져 있으면 그 연결의 `USE CONNECTION` (사람에게는 사용·조회만)
+  - `--users-group`을 주면 그 그룹에 레지스트리 조회(카탈로그·스키마 USE, 스키마 SELECT)를 줍니다. 쓰기 권한은 주지 않습니다
+  6. `genie`: Genie Code 워크스페이스 스킬 `aops`(`/Workspace/.assistant/skills/aops/SKILL.md`)와 그 스킬이 쓰는 aops 코드(`/Workspace/aops/genie/src`, 관리자만 쓰기, `--users-group`에 읽기). Genie Code에 "이 에이전트 등록해줘", "배포해줘"라고 하면 노트북에서 PC의 `aops register`·`aops deploy`와 같은 코드가 요청한 사람의 신원으로 서버를 부릅니다. 노트북 토큰은 서버 앱용 토큰으로 바꿔 씁니다. Genie Code의 Auto Mode는 실행 전에 한 번 확인을 받습니다
   - Git 사본에 쓸 연결은 관리자가 먼저 만듭니다: 토큰을 시크릿에 넣고 `CREATE CONNECTION <이름> TYPE HTTP OPTIONS (host 'https://api.github.com', port '443', base_path '/', bearer_token secret('<scope>', '<key>'))`. 토큰은 조직 저장소 전체에 코드(Contents) 쓰기와 저장소 만들기 권한이 필요합니다. GitHub Enterprise Server는 host만 바꿉니다
   - validate·배포 Job은 서버가 처음 쓸 때 서비스 주체로 만들고, 서버의 패키지·설명이 바뀌면 Job 설정을 맞춥니다.
   - 번들 배포, monitor 뷰, 태그 정책, Apps telemetry, `policy` 명령은 설계입니다.
