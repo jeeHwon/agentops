@@ -2,7 +2,7 @@
 
 [README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md)
 
-> **지금** 열: ● 동작 (스킬 기반) · ◐ 일부 동작 · – 설계. 명령마다 **지금:** 줄에 현재 구현을 적었습니다. 노코드·코드 기반 경로는 아직 없습니다(코드 `register`는 501, `init`은 안내만).
+> **지금** 열: ● 동작 (스킬 기반) · ◐ 일부 동작 · – 설계. 명령마다 **지금:** 줄에 현재 구현을 적었습니다. 코드 기반·노코드는 dbx 에디션의 aops 서버·console 화면에서 동작합니다(각 명령의 **지금:** 줄).
 
 명령은 22개입니다(console 화면의 배포 요청함과 같은 일을 하는 승인 명령 `gates`·`approve`·`reject` 포함). 등록·배포 명령은 [console 화면](console.md)에서도 모두 됩니다. 개발자가 매일 쓰는 것은 개발 명령 7개입니다. 찾기·가져오기와 등록·배포는 dbx 이상에서만 쓰고, `admin`은 관리자만 씁니다. custom 에디션은 모든 명령이 dbx와 같고, 같은 기능을 `aops serve` API로도 씁니다.
 
@@ -61,7 +61,7 @@ aops init <name> [--type skill|code|no-code] [--harness claude|codex] [--edition
 - 하네스 프로젝트 설정을 만듭니다. 이 폴더에서 `claude`·`codex`를 직접 실행해도 aops 설정과 기록이 적용됩니다. 하네스에서 이 폴더와 hook을 신뢰로 승인해야 하고, 회사 관리 설정이 프로젝트 hook을 막지 않아야 합니다.
 - 예시 질문 3개와 기본 가드레일 규칙을 넣고, 끝나면 `aops dev`를 엽니다. `--no-ui`면 열지 않습니다.
 - omni: 같은 정의로 Omnigent 에이전트 YAML을 만듭니다.
-- **지금:** `--type skill`만 폴더를 만듭니다: `README.md`·`SPEC.md`·`aops.toml`·`agent/instructions.md`·스킬 템플릿 `agent/skills/my-skill/`·`evals/questions.yaml`과 하네스 설정([프로젝트 폴더](project.md)). `uv sync`, 가드레일 규칙, `aops dev` 열기, `--no-ui`는 아직 없습니다. `--type code`·`no-code`는 어디서 만드는지 안내만 합니다. 폴더에서 `claude`·`codex`를 직접 실행하면 지시·스킬은 같지만 aops 세션 기록과 trace는 남지 않습니다(hook 없음).
+- **지금:** `--type skill`만 폴더를 만듭니다: `README.md`·`SPEC.md`·`aops.toml`·`agent/instructions.md`·스킬 템플릿 `agent/skills/my-skill/`·`evals/questions.yaml`과 하네스 설정([프로젝트 폴더](project.md)). `uv sync`, 가드레일 규칙, `aops dev` 열기, `--no-ui`는 아직 없습니다. `--type code`는 `agentbricks init` 템플릿에 `aops.toml`·`SPEC.md`(`build_type: code`)를 더합니다(PATH에 `agentbricks` 필요). 노코드는 console [새 에이전트] → 노코드(`POST /api/v1/projects`)에서 만듭니다: SPEC 항목을 받아 aops 서비스 주체가 에이전트 폴더(`/Workspace/aops/no-code/<이름>`)를 만들고 요청자·담당 팀에 `CAN MANAGE`를 준 뒤 `SPEC.md`를 쓰고, 개발용 Genie를 요청자의 토큰으로 그 폴더에 만듭니다(테이블로 새로·기존 스페이스 복사·옮기기). 서비스 주체로 대신 만들지 않습니다(작성자가 못 읽는 테이블의 값이 정의에 들어갈 수 있어서). 레지스트리에는 `agents`·`genie_agents`와 `create` 기록이 남고, 버전은 첫 배포 때 생깁니다. console에서 스킬·코드 기반을 고르면 같은 SPEC 항목이 든 폴더(zip)를 받습니다. CLI `aops init --type no-code`는 console로 안내합니다. 폴더에서 `claude`·`codex`를 직접 실행하면 지시·스킬은 같지만 aops 세션 기록과 trace는 남지 않습니다(hook 없음).
 
 ### `aops dev`
 
@@ -179,7 +179,7 @@ aops load <agent_id> [--version x.y.z] [--dir <폴더>]
   - 권한이 없으면 "담당자에게 promote를 요청하세요"를 보여 줍니다.
 - `--version`: 운영 버전이 아닌 버전은 담당자·담당 팀만 가져옵니다.
 - 가져온 폴더는 사본입니다. 새 운영 버전이 나오면 세션을 열 때 알려 주고, `aops load`로 다시 받습니다. 고친 내용은 `register`로 새 버전을 만듭니다.
-- **지금:** 스킬 기반이 동작합니다. 빈 폴더(기본 `./<agent_id>`)에 풀고 해시를 확인한 뒤 하네스 설정을 만듭니다. 하네스 세션은 열지 않으니 그 폴더에서 `aops run`으로 씁니다. 받는 사람의 기록은 그 사람의 MLflow 실험에 남습니다. 새 운영 버전 알림과 노코드·코드 링크는 설계입니다.
+- **지금:** 스킬 기반이 동작합니다. 빈 폴더(기본 `./<agent_id>`)에 풀고 해시를 확인한 뒤 하네스 설정을 만듭니다. 하네스 세션은 열지 않으니 그 폴더에서 `aops run`으로 씁니다. 받는 사람의 기록은 그 사람의 MLflow 실험에 남습니다. 코드 기반은 운영 앱 링크, 노코드는 운영용 Genie 링크를 줍니다(console [가져오기]. 실제 사용 권한은 앱 `CAN_USE`·Genie `CAN RUN`이 막음). 새 운영 버전 알림은 설계입니다.
 
 ## 등록·배포 (dbx·omni)
 
@@ -224,7 +224,7 @@ aops register [--version x.y.z] [--bump fix|minor|major]
   - GitHub는 Unity Catalog HTTP 연결의 프록시로 부릅니다. 토큰은 연결(시크릿)에만 있고, 연결을 쓸 수 있는 주체는 aops 서비스 주체뿐입니다.
   - Git 반영이 실패해도 등록은 성공합니다. 실패는 `agent_version_git`에 남고, 다음 `register`·`deploy` 때 빠진 버전부터 순서대로 다시 올립니다. 비밀값이 있는 버전은 올리지 않습니다(Git 이력에서 지우기 어려움).
   - 배포하면 `production` 브랜치가 운영 버전 커밋으로 옮겨 갑니다(되돌리기도 같음).
-- **지금:** 스킬 기반이 동작합니다. 담당자·담당 팀만 새 버전을 등록하고, 마지막 버전과 내용이 같거나 이미 있는 버전 번호면 막습니다. UC Skill 이름은 `<registry>.<agent_id>__<스킬 이름>`이고, 첫 배포 때 aops 서버 서비스 주체가 주인으로 만듭니다. `agent_versions`에는 해시·zip 경로·크기·스킬 해시·기본 하네스·SPEC을 남깁니다(SDK·UC 모델 버전은 설계). 코드 기반은 Agent Bricks 프로젝트(`agent.toml`·`app.yaml`·`pyproject.toml`, SPEC `build_type: code`)를 같은 방식으로 등록하고, 검사는 스킬 대신 `project`(Agent Bricks 형식, `server = agentbricks`)를 봅니다. 배포는 승인 뒤 aops 서버가 서비스 주체로 등록된 zip을 풀어 `agent.toml`의 추적 실험만 운영 위치로 바꾼 사본에서 `agentbricks deploy`를 실행해 운영 앱 `agent-bricks-<이름>`을 바꿉니다(서버리스 Job에서는 `databricks` CLI가 대화형 전용이라 앱 안에서 돌림). `promote`는 앱 `CAN_USE`, `load`는 앱 링크입니다. 노코드는 501을 돌려줍니다.
+- **지금:** 스킬 기반이 동작합니다. 담당자·담당 팀만 새 버전을 등록하고, 마지막 버전과 내용이 같거나 이미 있는 버전 번호면 막습니다. UC Skill 이름은 `<registry>.<agent_id>__<스킬 이름>`이고, 첫 배포 때 aops 서버 서비스 주체가 주인으로 만듭니다. `agent_versions`에는 해시·zip 경로·크기·스킬 해시·기본 하네스·SPEC을 남깁니다(SDK·UC 모델 버전은 설계). 코드 기반은 Agent Bricks 프로젝트(`agent.toml`·`app.yaml`·`pyproject.toml`, SPEC `build_type: code`)를 같은 방식으로 등록하고, 검사는 스킬 대신 `project`(Agent Bricks 형식, `server = agentbricks`)를 봅니다. 배포는 승인 뒤 aops 서버가 서비스 주체로 등록된 zip을 풀어 `agent.toml`의 추적 실험만 운영 위치로 바꾼 사본에서 `agentbricks deploy`를 실행해 운영 앱 `agent-bricks-<이름>`을 바꿉니다(서버리스 Job에서는 `databricks` CLI가 대화형 전용이라 앱 안에서 돌림). `promote`는 앱 `CAN_USE`, `load`는 앱 링크입니다. 노코드는 등록하지 않습니다(501): 배포가 성공할 때 배포 Job이 버전을 매겨 등록합니다.
 
 ### `aops validate`
 
@@ -245,7 +245,7 @@ aops validate [--version x.y.z] [--local]
 - 노코드는 검사하는 동안 Genie Agent 정의가 바뀌면 판정하지 않고 "점검 중 수정됨(`stale`)"으로 남깁니다. 배포는 검사한 스냅샷으로 하므로, 검사하지 않은 수정이 운영에 섞이지 않습니다.
 - 개발 중 기록에 기대지 않습니다. 개발 중 trace나 평가를 했는지는 보지 않고, 필요한 증거는 이 Job이 직접 만듭니다. 개발 중 hook을 꺼 둔 사람도 불리하지 않습니다.
 - `--local`: 같은 단계를 내 PC에서 돌립니다. 결과는 참고용이고 배포 근거가 되지 않습니다. local 에디션에는 이 방식만 있습니다.
-- **지금:** validate Job(`aops-validate`, 서버리스, 서비스 주체 실행)이 스킬 기반을 네 가지로 검사합니다: `format`(SPEC.md 필수 항목과 허용 값), `skills`(Agent Skills 형식, 이름 = 폴더 이름, description 1~1024자), `secrets`(토큰·키 패턴, 금지 파일), `record`(볼륨의 zip이 등록 때 해시와 같은지). `init` 템플릿을 고치지 않은 채(`my-skill`, SPEC·스킬의 템플릿 description)면 `format`·`skills`에서 반려합니다. Job 화면의 설명과 실행 출력에 검사 대상·규칙·실행 코드·검사별 결과가 남고, 결과는 `validation_runs`에 들어갑니다. 평가·가드레일·호환 검사와 `--local`은 설계입니다.
+- **지금:** validate Job(`aops-validate`, 서버리스, 서비스 주체 실행)이 스킬 기반을 네 가지로 검사합니다: `format`(SPEC.md 필수 항목과 허용 값), `skills`(Agent Skills 형식, 이름 = 폴더 이름, description 1~1024자), `secrets`(토큰·키 패턴, 금지 파일), `record`(볼륨의 zip이 등록 때 해시와 같은지). `init` 템플릿을 고치지 않은 채(`my-skill`, SPEC·스킬의 템플릿 description)면 `format`·`skills`에서 반려합니다. Job 화면의 설명과 실행 출력에 검사 대상·규칙·실행 코드·검사별 결과가 남고, 결과는 `validation_runs`에 들어갑니다. 노코드는 배포 요청 때 뜬 스냅샷(에이전트 볼륨 `checks/<해시>.zip`: `SPEC.md`·`aops.toml`·`genie/space.json`)을 `format`(SPEC.md, `build_type: no_code`, description 필수)·`definition`(Genie 정의 규칙 15개: ERROR 위반 0건, 준수율이 정책 `no_code.lint_min` 기본 90% 이상. 단계에 규칙별 결과와 고치는 곳)·`secrets`·`integrity`(끝날 때 개발용 정의가 스냅샷과 같은지. 다르면 `stale`로 반려)·`record`로 검사합니다. 통과한 검사는 버전 번호가 아니라 내용 해시로 다시 씁니다. 평가(노코드 벤치마크 정확도·회귀 포함)·가드레일·호환 검사와 `--local`은 설계입니다.
 
 ### `aops deploy`
 
@@ -274,6 +274,9 @@ aops deploy --dev
   - 사람이 판단해야 하면 CLI는 gate ID와 승인·반려·취소 명령을 보여 주고 끝납니다. `aops deploy`를 다시 치면 그 요청을 이어서 보여 줍니다.
   - `--cancel`: 요청자나 담당자·담당 팀이 검사 중·승인 대기인 요청을 취소합니다(`gate_canceled`). 운영 반영 뒤에는 이전 버전을 배포해 되돌립니다.
   - 배포 Job(`aops-deploy`, 서비스 주체 실행)이 승인과 zip 해시를 다시 확인하고, 스킬마다 UC Skill을 처음이면 만들고 아니면 내용을 이 버전으로 바꿉니다. 이전 운영 버전에 있던 스킬이 이 버전에 없으면 지우지 않고 Job 출력에 알립니다.
+- **지금(노코드):** console [배포 요청]처럼 버전 없이 요청하면 서버가 개발용 정의와 에이전트 폴더의 `SPEC.md`를 스냅샷으로 떠서 제안 버전으로 Gate를 엽니다(처음 1.0.0, 데이터 소스가 바뀌면 major, 그 밖은 minor). 운영과 같은 내용이면 409, 이전 버전과 같은 내용이면 그 버전으로 되돌리기 요청이 됩니다.
+  - 승인되면 배포 Job이 스냅샷 해시를 다시 확인하고 운영용 Genie를 `<에이전트 폴더의 상위>/_production/<이름>`(서비스 주체만 쓰기)에 만들거나 정의를 바꿉니다(space ID 유지). 다시 읽은 정의 해시가 스냅샷과 같은지 남기고, 담당자·담당 팀·SPEC의 `consumer_group`에 `CAN RUN`을 준 뒤(실패해도 배포는 그대로, 결과는 `deployments.detail.grants`) 스냅샷을 `<버전>.zip`으로 등록합니다. 버전·운영 포인터·`genie_agents.prod_space_id`·기록이 한 트랜잭션으로 바뀝니다.
+  - 운영용 Genie는 서비스 주체가 만들므로 쓰는 테이블에 서비스 주체의 `SELECT`가 있어야 합니다. 되돌리기는 이전 버전의 zip으로 같은 운영용 Genie를 고칩니다.
   - 운영 버전보다 낮은 버전을 `--version`으로 배포하면 되돌리기(`rollback`)로 기록합니다.
   - `--dev`, `--target`, 운영 기록 켜기, 가드레일 패키지는 설계입니다.
 
@@ -306,7 +309,7 @@ aops promote <agent_id> --to group:<그룹> [--to user:<이메일>] [--to sp:<ap
 - 그룹은 계정 그룹이어야 합니다. 작업 공간 그룹에는 Unity Catalog 권한을 줄 수 없습니다.
 - 운영 버전이 있어야 합니다. 요청자는 담당자·담당 팀이어야 하고, 서버가 보안 등급별 공개 범위를 검사합니다.
 - 권한은 Databricks 권한(Unity Catalog, 앱·Genie 권한)으로 걸리고 Databricks가 강제합니다. aops는 부여·회수 이력을 남깁니다.
-- **지금:** 스킬 기반이 동작합니다(UC Skill `READ_VOLUME` 부여·회수, `agent_events`에 기록). 사용자와 계정 그룹(`account users`) 대상으로 확인했습니다. 담당자·담당 팀이 운영 버전이 있을 때만 할 수 있습니다. 보안 등급별 공개 범위 검사는 설계입니다.
+- **지금:** 스킬 기반이 동작합니다(UC Skill `READ_VOLUME` 부여·회수, `agent_events`에 기록). 사용자와 계정 그룹(`account users`) 대상으로 확인했습니다. 담당자·담당 팀이 운영 버전이 있을 때만 할 수 있습니다. 코드 기반은 운영 앱 `CAN_USE`, 노코드는 운영용 Genie `CAN RUN`을 부여·회수합니다(회수는 그 대상만 뺀 목록으로 다시 설정). 보안 등급별 공개 범위 검사는 설계입니다.
 
 ## 운영·관리
 
@@ -388,7 +391,8 @@ aops admin policy show|diff
   2. `policy`: 옵션의 검사·승인 방식으로 정책 버전을 올림 (`policy` 명령 대신). Git 사본은 `--git-connection`·`--git-owner`로 켜고 `--no-git`으로 끔. git 옵션이 없으면 지금 정책의 git 설정을 그대로 둠
   3. `dist`: Job이 설치할 aops 패키지를 빌드해 볼륨 `aops_dist`에 올림
   4. `app`: aops 서버(Databricks App)를 배포하고 레지스트리·웨어하우스·패키지 경로를 환경변수로 넣음. 코드는 `/Workspace/aops/server/<앱>`(워크스페이스 관리자만 쓰기)에 올리고, 루트에 폴더를 만들 권한이 없으면 실행한 관리자의 홈 폴더(본인과 관리자만 쓰기)에 둡니다. 그 폴더에 쓸 수 있는 주체를 보여 줌. `/Workspace/Shared`는 모든 사용자가 `CAN_MANAGE`를 물려받아 쓰지 않습니다. warehouse를 앱 자원으로 붙일 권한이 없으면 ID만 넘기고, 권한 부여가 실패하면 멈추지 않고 주인에게 부탁할 `GRANT` 문을 보여 줍니다
-  5. `grants`: 서버 서비스 주체에 카탈로그·스키마·`aops_dist` 권한, Git 사본이 켜져 있으면 그 연결의 `USE CONNECTION` (사람에게는 사용·조회만)
+  5. `grants`: 서버 서비스 주체에 카탈로그·스키마·`aops_dist` 권한, Git 사본이 켜져 있으면 그 연결의 `USE CONNECTION` (사람에게는 사용·조회만). 노코드 에이전트 폴더의 상위 `/Workspace/aops/no-code`를 만들고 서비스 주체에 `CAN_MANAGE`(실패하면 서버는 서비스 주체의 홈 폴더를 씀)
+  - `app`은 앱의 사용자 권한 범위에 `files`(스킬 load)·`genie`(노코드 개발용 Genie를 요청자 권한으로)·`workspace.workspace`(요청자 폴더에 템플릿)를 더합니다. 워크스페이스가 모르는 범위는 건너뛰고 알립니다. 범위가 바뀌면 사용자는 화면을 다시 열 때 동의합니다
   - `--users-group`을 주면 그 그룹에 레지스트리 조회(카탈로그·스키마 USE, 스키마 SELECT)를 줍니다. 쓰기 권한은 주지 않습니다
   6. `genie`: Genie Code 워크스페이스 스킬 `aops`(`/Workspace/.assistant/skills/aops/SKILL.md`)와 그 스킬이 쓰는 aops 코드(`/Workspace/aops/genie/src`, 관리자만 쓰기, `--users-group`에 읽기). Genie Code에 "이 에이전트 등록해줘", "배포해줘"라고 하면 노트북에서 PC의 `aops register`·`aops deploy`와 같은 코드가 요청한 사람의 신원으로 서버를 부릅니다. 노트북 토큰은 서버 앱용 토큰으로 바꿔 씁니다. Genie Code의 Auto Mode는 실행 전에 한 번 확인을 받습니다
   - Git 사본에 쓸 연결은 관리자가 먼저 만듭니다: 토큰을 시크릿에 넣고 `CREATE CONNECTION <이름> TYPE HTTP OPTIONS (host 'https://api.github.com', port '443', base_path '/', bearer_token secret('<scope>', '<key>'))`. 토큰은 조직 저장소 전체에 코드(Contents) 쓰기와 저장소 만들기 권한이 필요합니다. GitHub Enterprise Server는 host만 바꿉니다
@@ -410,4 +414,4 @@ dbx 기능을 HTTP API 서버로 엽니다. 조직의 웹·서비스가 자기 �
 - **실행:** 하네스는 세션마다 Databricks Sandbox에서 돕니다. 프로젝트는 Workspace 폴더(Git 폴더)나 UC Volume에 둡니다.
 - `/`는 console 화면입니다([console](console.md)). 요청·응답 형식은 `/api/v1/docs`에서 보고, 명령 ↔ API 대응은 `GET /api/v1/meta/commands`로 받습니다.
 - `--cors-origin`: 다른 도메인의 브라우저 화면이 직접 부를 때 허용할 주소입니다. 조직 서버에서 띄울 때만 씁니다.
-- **지금:** 동작합니다. 환경변수 `AOPS_REGISTRY`·`AOPS_WAREHOUSE_ID`(Job용 `AOPS_DIST_WHEEL`)가 있으면 스킬 기반 경로(등록·검사·배포·승인·권한·가져오기, 에이전트·버전·검사·배포·운영 버전·이력 조회, 정책 조회·변경, 내 계정, 새 에이전트 폴더)가 레지스트리에 연결되고, 없으면 `501`입니다([API](api.md)). PC에서 프로필(`AOPS_PROFILE`)로 띄우면 브라우저의 사용자는 그 프로필 사용자입니다. 하네스 실행(대화 경로)과 Sandbox는 아직 없습니다.
+- **지금:** 동작합니다. 환경변수 `AOPS_REGISTRY`·`AOPS_WAREHOUSE_ID`(Job용 `AOPS_DIST_WHEEL`)가 있으면 스킬·코드 기반·노코드 경로(등록·검사·배포·승인·권한·가져오기, 노코드 만들기·자가 점검, 에이전트·버전·검사·배포·운영 버전·이력 조회, 정책 조회·변경, 내 계정, 새 에이전트 폴더)가 레지스트리에 연결되고, 없으면 `501`입니다([API](api.md)). PC에서 프로필(`AOPS_PROFILE`)로 띄우면 브라우저의 사용자는 그 프로필 사용자입니다. 하네스 실행(대화 경로)과 Sandbox는 아직 없습니다.

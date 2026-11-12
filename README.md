@@ -20,7 +20,7 @@ Databricks 위에서 AI 에이전트를 개발부터 운영까지 관리하는 �
 
 ## 지금 되는 것 (스킬 기반)
 
-지금은 **스킬 기반 에이전트**의 만들기부터 가져다 쓰기까지 dbx 에디션에서 동작합니다. **코드 기반(Agent Bricks)** 은 만들기(`aops init --type code`)·등록·검사·배포(aops 서버가 서비스 주체로 `agentbricks deploy`)·권한(앱 `CAN_USE`)·가져오기(앱 링크)가 들어갔고 운영 실측은 다음 차례입니다. 노코드(Genie Agent)는 연결 작업 중입니다.
+지금은 **스킬 기반 에이전트**의 만들기부터 가져다 쓰기까지 dbx 에디션에서 동작합니다. **코드 기반(Agent Bricks)** 은 만들기(`aops init --type code`)·등록·검사·배포(aops 서버가 서비스 주체로 `agentbricks deploy`)·권한(앱 `CAN_USE`)·가져오기(앱 링크)가 들어갔고 운영 실측은 다음 차례입니다. **노코드(Genie Agent)** 는 console에서 만들기(에이전트 폴더·SPEC.md·개발용 Genie)·점검·배포 요청(스냅샷 검사 → 승인 → 운영용 Genie, 이때 버전 등록)·권한(`CAN RUN`)·가져오기(운영용 Genie 링크)가 들어갔고, 벤치마크 평가와 운영 실측은 다음 차례입니다.
 
 | 단계 | 명령 | 도는 곳 | 쓰는 Databricks 기능 |
 | --- | --- | --- | --- |

@@ -56,6 +56,26 @@ description: {spec_description}
 이 에이전트가 하는 일, 쓰는 사람, 주의할 점을 적습니다.
 """
 
+SPEC_KEYS = ("agent_id", "name", "build_type", "owner", "owner_group", "service_criticality", "data_sensitivity",
+             "security_level", "consumer_group", "description")
+SPEC_HINTS = {"service_criticality": "low | medium | high", "data_sensitivity": "public | internal | confidential | personal",
+              "consumer_group": "공개 그룹 (노코드: 배포 때 운영 Genie에 CAN RUN)"}
+
+
+def render_spec(values: dict[str, str | None], body: str | None = None) -> str:
+    """SPEC.md from the fields a screen asks for (one line each; the front matter reader takes `key: value`)."""
+    lines = ["---"]
+    for key in SPEC_KEYS:
+        if key == "consumer_group" and values.get("build_type") != "no_code" and not values.get(key):
+            continue
+        value = " ".join(str(values.get(key) or "").split()).replace(" #", " ＃")  # " #" would start a comment
+        hint = SPEC_HINTS.get(key)
+        lines.append(f"{key}: {value}" + (f"    # {hint}" if hint else ""))
+    name = values.get("name") or values.get("agent_id") or ""
+    lines += ["---", "", f"# {name}", "", body or "이 에이전트가 하는 일, 쓰는 사람, 주의할 점을 적습니다.", ""]
+    return "\n".join(lines)
+
+
 INSTRUCTIONS_MD = """\
 당신은 {name} 에이전트입니다.
 

@@ -96,10 +96,11 @@ class AgentVersionDetail(AgentVersion):
 
 
 class ValidationStep(BaseModel):
-    name: str = Field(examples=["format", "skills", "secrets", "evaluate", "guardrails", "compat", "record"])
+    name: str = Field(examples=["format", "skills", "secrets", "definition", "integrity", "evaluate", "compat", "record"])
     status: Literal["pending", "running", "passed", "failed", "skipped"]
     detail: str | None = Field(None, examples=["correctness 0.86 ≥ 0.80"])
     metrics: dict[str, float] = Field(default_factory=dict)
+    rules: list[dict[str, Any]] = Field(default_factory=list, description="노코드 definition 단계: 규칙별 결과 {id, level, passed, message, fix}")
 
 
 class ValidationRun(BaseModel):
@@ -151,7 +152,7 @@ class AgentEvent(BaseModel):
     event_id: str
     agent_id: str
     version: str | None = None
-    event_type: Literal["register", "validate", "gate_requested", "gate_approved", "gate_rejected", "gate_canceled", "deploy",
+    event_type: Literal["create", "register", "validate", "gate_requested", "gate_approved", "gate_rejected", "gate_canceled", "deploy",
                         "promote", "rollback", "load", "git"]
     actor: str
     at: datetime

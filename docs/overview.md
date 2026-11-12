@@ -2,7 +2,7 @@
 
 [README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md)
 
-> **지금 동작하는 범위:** 스킬 기반 에이전트의 dbx 흐름(`init` → `run`·`session` → `register` → `deploy` → `list` → `promote` → `load`)입니다. 코드 기반(Agent Bricks)은 등록·검사·배포·권한·가져오기가 들어갔고 운영 실측 전입니다. 노코드는 연결 작업 중입니다. 나머지는 설계이고, 표의 **지금** 열과 [명령어](commands.md)에 구분해 두었습니다.
+> **지금 동작하는 범위:** 스킬 기반 에이전트의 dbx 흐름(`init` → `run`·`session` → `register` → `deploy` → `list` → `promote` → `load`)입니다. 코드 기반(Agent Bricks)은 등록·검사·배포·권한·가져오기가 들어갔고 운영 실측 전입니다. 노코드는 만들기·점검·배포 요청·운영용 Genie 반영·권한·가져오기가 들어갔고 벤치마크 평가와 운영 실측 전입니다. 나머지는 설계이고, 표의 **지금** 열과 [명령어](commands.md)에 구분해 두었습니다.
 
 ## 에이전트 3종
 
@@ -43,7 +43,7 @@
 - **세션:** 세션과 메모리를 Agent sessions·memory(Lakebase)에 저장해 다른 PC에서도 이어 갑니다.
 - **평가:** `mlflow.genai.evaluate`, UC 평가 데이터셋, Unity Gateway 서비스 정책(가드레일)을 씁니다.
 - **등록:** 에이전트마다 UC Volume을 하나 두고 버전을 zip으로 한 번만 씁니다. 코드 에이전트는 UC registered model 버전도 만듭니다.
-- **검사:** Lakeflow Job(서버리스)이 등록된 버전을 관리자 정책으로 검사합니다. 노코드는 Genie 벤치마크로 정확도와 회귀를 봅니다. 결과는 MLflow와 Delta 테이블에 남습니다. **지금:** validate Job(`aops-validate`)이 스킬 기반을 네 가지(형식·스킬·비밀값·기록)로 검사하고 `validation_runs`와 Job 출력에 남깁니다.
+- **검사:** Lakeflow Job(서버리스)이 등록된 버전을 관리자 정책으로 검사합니다. 노코드는 Genie 벤치마크로 정확도와 회귀를 봅니다. 결과는 MLflow와 Delta 테이블에 남습니다. **지금:** validate Job(`aops-validate`)이 스킬 기반을 네 가지(형식·스킬·비밀값·기록), 코드 기반을 형식·프로젝트·비밀값·기록, 노코드 스냅샷을 형식·정의 규칙·비밀값·무결성(stale)·기록으로 검사하고 `validation_runs`와 Job 출력에 남깁니다.
 - **배포:** 배포 요청은 검사 결과와 승인(console 화면)을 거칩니다. 그 뒤 배포 Job이 코드 에이전트는 운영 앱에, 노코드는 운영용 Genie Agent에, 스킬 기반은 Unity Gateway Skills의 내용에 반영합니다. 되돌리기는 이전 버전을 다시 배포합니다.
 - **운영:** `promote`가 대상자에게 Databricks 권한을 줍니다. system tables(사용량·비용·감사·쿼리), Apps telemetry, 예산 API로 운영 현황을 봅니다.
 

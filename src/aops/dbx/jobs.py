@@ -20,12 +20,15 @@ def print_validation(run_id: str, registry: str, report: dict[str, Any]) -> None
     say(f"  에이전트    {report['agent_id']} {report['version']}  (validation_run_id {run_id})")
     if report.get("artifact_path"):
         say(f"  검사 대상   {report['artifact_path']}  (파일 {len(report['files'])}개, sha256 {(report['sha256'] or '')[:12]})")
-    say(f"  실행 코드   aops_cli {__version__} · aops.dbx.service.check_skill_agent")
+    say(f"  실행 코드   aops_cli {__version__} · aops.dbx.service.Service.run_validation (스킬·코드: check_agent, 노코드: nocode.check_steps)")
     for i, step in enumerate(report.get("steps") or [], 1):
         mark = "✓" if step["status"] == "passed" else "✗"
         say(f"\n  [{i}] {step['name']:<8}{mark} {step.get('detail') or ''}")
         if step["name"] in CHECK_RULES:
             say(f"      규칙: {CHECK_RULES[step['name']]}")
+        for rule in step.get("rules") or []:  # no-code definition rules, one line each
+            say(f"      {'✓' if rule['passed'] else '✗'} {rule['id']:<30} {rule['level']:<5} {rule['message']}"
+                + ("" if rule["passed"] else f"  → {rule['fix']}"))
     if report.get("files"):
         say("\n  검사한 파일")
         for rel in report["files"]:
@@ -43,6 +46,11 @@ def print_deploy(gate_id: str, registry: str, report: dict[str, Any]) -> None:
     say(f"  버전 zip    {report.get('artifact_path')}  (승인 상태와 해시를 다시 확인함)")
     say(f"  실행 코드   aops_cli {__version__} · aops.dbx.service.Service.run_deploy")
     words = {"created": "새로 만들고 내용을 넣음", "updated": "내용을 이 버전으로 바꿈", "unchanged": "이미 이 버전이라 그대로"}
+    if report.get("space_id"):  # no-code: the production Genie space
+        say(f"\n  운영용 Genie {report['space_id']}: {words.get(report.get('space_action'), report.get('space_action'))} "
+            f"(정의 해시 {'일치' if report.get('definition_match') else '불일치: 확인 필요'})  {report.get('space_url') or ''}")
+        for grant in report.get("grants") or []:
+            say(f"    CAN RUN {grant['principal']}: {'부여' if grant['granted'] else '실패 ' + grant.get('error', '')}")
     for skill in report.get("skills") or []:
         say(f"\n  UC Skill {skill['uc_name']}: {words.get(skill['action'], skill['action'])}")
         for rel in skill["files"]:
@@ -67,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.kind == "validate":
         report = service.run_validation(args.id)
         print_validation(args.id, args.registry, report)
-        return 0 if report["status"] in ("passed", "failed") else 1
+        return 0 if report["status"] in ("passed", "failed", "stale") else 1  # a verdict; only an error fails the run
     report = service.run_deploy(args.id)
     print_deploy(args.id, args.registry, report)
     return 0

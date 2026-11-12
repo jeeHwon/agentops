@@ -189,3 +189,6 @@ table.data .num { text-align: right; }
 .row { display: flex; gap: 8px; align-items: center; }
 .mt { margin-top: 16px; }
 .cmd { font-family: var(--mono); font-size: 12px; background: #0f172a; color: #e2e8f0; border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; word-break: break-all; }
+ul.rules { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+ul.rules .muted { font-size: 12px; margin-top: 2px; }
+ol.steps-plain { margin: 0; padding-left: 18px; line-height: 1.9; }

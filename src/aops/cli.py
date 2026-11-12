@@ -26,7 +26,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"next: cd {args.name} → SPEC.md의 description, agent/agent.py를 고친 뒤 agentbricks dev로 시험, aops register")
         return 0
     if args.type != "skill":
-        print("aops: 노코드 에이전트는 워크스페이스에서 만듭니다 (aops 서버가 만든 에이전트 폴더의 Genie 화면).", file=sys.stderr)
+        print("aops: 노코드 에이전트는 aops console의 [새 에이전트] → 노코드에서 만듭니다 (에이전트 폴더·SPEC.md·개발용 Genie).", file=sys.stderr)
         return 2
     harness.get(args.harness)  # fail early on an unknown harness
     project = init.create(Path.cwd(), args.name, harness=args.harness, edition=args.edition)

@@ -104,6 +104,7 @@
 | `GET /api/v1/batches/{batch_id}/usage` | 질문별 스킬·도구 사용률 | 개발 화면 Batch 히트맵 |
 | `GET /api/v1/projects/{project_id}/evaluations` | 평가 목록 | 개발 화면 Evaluate |
 | `GET /api/v1/evaluations/{evaluation_id}` | 평가 결과 (점수표·실패 사례) | 개발 화면 Evaluate |
+| `GET /api/v1/no-code/agents/{agent_id}` | 노코드 에이전트의 폴더·개발용·운영용 Genie | console 에이전트 |
 | `GET /api/v1/validations/{validation_run_id}` | 검증 결과 (단계별) | 검증 진행 화면 |
 | `GET /api/v1/validations/{validation_run_id}/events` | 검증 진행 (SSE) | 검증 진행 화면 |
 | `GET /api/v1/release-gates/{gate_id}` | 배포 심사 보기 | console 배포 요청·승인 |

@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__.agent_events (
   event_id STRING NOT NULL COMMENT '이벤트 ID',
   agent_id STRING NOT NULL COMMENT '에이전트 ID',
   version STRING COMMENT '관련 버전',
-  event_type STRING NOT NULL COMMENT 'register | validate | gate_requested | gate_approved | gate_rejected | gate_canceled | deploy | rollback | promote | load | git',
+  event_type STRING NOT NULL COMMENT 'create(노코드 만들기) | register | validate | gate_requested | gate_approved | gate_rejected | gate_canceled | deploy | rollback | promote | load | git',
   actor STRING NOT NULL COMMENT '한 사람 (정책 자동 승인은 policy:auto)',
   at TIMESTAMP NOT NULL COMMENT '시각 (UTC)',
   detail VARIANT COMMENT '세부 (권한 대상, 배포 대상 등)',
@@ -261,7 +261,7 @@ ALTER TABLE __SCHEMA__.deployments ADD CONSTRAINT deployments_environment CHECK 
 ALTER TABLE __SCHEMA__.deployments DROP CONSTRAINT IF EXISTS deployments_status;
 ALTER TABLE __SCHEMA__.deployments ADD CONSTRAINT deployments_status CHECK (status IN ('running', 'succeeded', 'failed'));
 ALTER TABLE __SCHEMA__.agent_events DROP CONSTRAINT IF EXISTS agent_events_type;
-ALTER TABLE __SCHEMA__.agent_events ADD CONSTRAINT agent_events_type CHECK (event_type IN ('register', 'validate', 'gate_requested', 'gate_approved', 'gate_rejected', 'gate_canceled', 'deploy', 'rollback', 'promote', 'load', 'git'));
+ALTER TABLE __SCHEMA__.agent_events ADD CONSTRAINT agent_events_type CHECK (event_type IN ('create', 'register', 'validate', 'gate_requested', 'gate_approved', 'gate_rejected', 'gate_canceled', 'deploy', 'rollback', 'promote', 'load', 'git'));
 ALTER TABLE __SCHEMA__.agent_version_git DROP CONSTRAINT IF EXISTS agent_version_git_status;
 ALTER TABLE __SCHEMA__.agent_version_git ADD CONSTRAINT agent_version_git_status CHECK (status IN ('synced', 'failed', 'skipped'));
 

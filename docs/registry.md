@@ -2,7 +2,7 @@
 
 [README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md)
 
-> **지금 동작하는 범위:** 스킬 기반. 정책은 `aops admin setup`의 옵션으로 정하고, 승인은 `aops gates`·`approve`·`reject`(aops 서버의 승인 API)로 합니다. console 화면, `aops admin policy`, 코드·노코드 경로는 설계입니다. 아래에서 **지금:**으로 표시한 줄이 현재 구현입니다.
+> **지금 동작하는 범위:** 스킬 기반·코드 기반·노코드(벤치마크 평가 제외). 정책은 `aops admin setup`의 옵션이나 console 정책 화면(관리자)으로 정하고, 승인은 console 배포 요청함이나 `aops gates`·`approve`·`reject`(aops 서버의 승인 API)로 합니다. `aops admin policy`는 설계입니다. 아래에서 **지금:**으로 표시한 줄이 현재 구현입니다.
 
 ## 관리자 정책
 
@@ -72,7 +72,7 @@
 | `agents` | 등록된 에이전트와 SPEC 정보 (담당자·담당 팀·중요도·민감도). 다시 등록하면 새 SPEC 값으로 바뀌고, 담당자는 SPEC에 적혀 있을 때만 바뀜 | `register` (노코드는 배포 Job) |
 | `agent_versions` | 저장된 버전, 버전 zip 경로·해시·크기, 상태(`registered`·`production`·`retired`) | `register`, 배포 Job |
 | `agent_version_skills` | 버전마다 들어 있는 스킬과 UC Skill 이름(첫 배포 때 만들어짐)·해시 | `register` |
-| `genie_agents` | 노코드: 개발용·운영용 Genie Agent와 에이전트 폴더 | 노코드 경로 (설계) |
+| `genie_agents` | 노코드: 개발용·운영용 Genie Agent와 에이전트 폴더, 공개 그룹, warehouse | console 노코드 만들기, 배포 Job(운영용 space ID) |
 | `validation_runs` | 검사 결과 (정책 버전, 검사별 결과, 실패 이유) | validate Job |
 | `eval_results` | 평가 점수 | 평가 (설계) |
 | `release_gates` | 배포 요청과 판정 (`validating` → `pending_approval` → `approved`·`rejected`·`canceled`). 승인 대기 이유는 `decision_reason` | `deploy`, aops 서버 |
@@ -80,7 +80,7 @@
 | `deployments` | 배포 결과 (`running`·`succeeded`·`failed`) | aops 서버, 배포 Job |
 | `agent_production` | 에이전트별 운영 버전과 이전 버전 | 배포 Job |
 | `agent_version_git` | Git 사본(선택): 버전마다 저장소·커밋·태그·상태(`synced`·`failed`·`skipped`)와 이유 | `register`, 배포 Job (정책에 `git`이 있을 때) |
-| `agent_events` | 감사 이력: `register`·`gate_requested`·`validate`·`gate_approved`·`gate_rejected`·`gate_canceled`·`deploy`·`rollback`·`promote`·`load`·`git` | 각 단계 |
+| `agent_events` | 감사 이력: `create`(노코드 만들기)·`register`·`gate_requested`(노코드는 스냅샷 해시·경로·변경 내용)·`validate`·`gate_approved`·`gate_rejected`·`gate_canceled`·`deploy`·`rollback`·`promote`·`load`·`git` | 각 단계 |
 | `rate_cards` | 모델별 단가 (비용 계산용) | 관리자 (설계) |
 | `agent_status` (뷰) | 에이전트별 최신 버전, 운영 버전, 상태, 담당 (`aops list`가 읽음) | – |
 

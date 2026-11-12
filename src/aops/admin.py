@@ -29,6 +29,8 @@ GENIE_SKILLS = "/Workspace/.assistant/skills"
 # The same aops code the CLI runs, as readable source: Genie Code imports it from here and can read
 # what a command does before running it (an installed package is opaque to it).
 GENIE_SOURCE = "/Workspace/aops/genie"
+# No-code agent folders: the aops service principal makes one per agent and gives its author CAN MANAGE.
+NO_CODE_ROOT = "/Workspace/aops/no-code"
 
 
 def ddl() -> str:
@@ -125,7 +127,7 @@ def cmd_admin(args: argparse.Namespace) -> int:
     app = None
     if "app" in steps:
         print(f"\n[app] aops 서버 앱 {args.app}: SQL warehouse {args.warehouse}(자원으로 붙이거나, 권한이 없으면 ID만), "
-              f"사용자 권한 범위 files, 코드 {APP_ROOT}/{args.app} (워크스페이스 관리자만 쓰기. 만들 권한이 없으면 내 홈 폴더)")
+              f"사용자 권한 범위 {', '.join(USER_SCOPES)}, 코드 {APP_ROOT}/{args.app} (워크스페이스 관리자만 쓰기. 만들 권한이 없으면 내 홈 폴더)")
         if args.apply:
             app = _deploy_app(w, args, wheel_path, me)
             print(f"  {app.url}  (서비스 주체 {app.service_principal_client_id})")
@@ -153,6 +155,8 @@ def cmd_admin(args: argparse.Namespace) -> int:
         print("\n[grants] aops 서버 서비스 주체 권한 (사람에게는 USE·SELECT만 준다)")
         for grant in grants:
             print(f"  {grant}")
+        print(f"  워크스페이스 폴더 {NO_CODE_ROOT}: {sp} CAN_MANAGE (노코드 에이전트 폴더를 만들고 작성자에게 CAN MANAGE를 줌)")
+        print("  노코드 에이전트가 쓰는 테이블: 운영용 Genie를 만드는 서비스 주체에 SELECT가 필요 (데이터 주인이 줌)")
         if args.apply:
             failed = []
             for grant in grants:
@@ -166,6 +170,8 @@ def cmd_admin(args: argparse.Namespace) -> int:
                 print("  aops: 아래 권한은 지금 계정으로 줄 수 없습니다. 그 카탈로그·스키마의 주인에게 부탁하세요:")
                 for grant, why in failed:
                     print(f"    {grant};   -- {why}")
+            if app is not None:
+                _put_no_code_root(w, sp)
 
     if "genie" in steps:
         target = f"{args.genie_skills.rstrip('/')}/aops/SKILL.md"
@@ -213,6 +219,21 @@ def _put_genie_source(w: Any, args: argparse.Namespace, me: str) -> str:
         except Exception as error:
             print(f"  aops: {args.users_group}에 읽기 권한을 주지 못했습니다 ({str(error).splitlines()[0][:120]})")
     return f"{root}/src"
+
+
+def _put_no_code_root(w: Any, sp: str) -> None:
+    """The folder that holds no-code agent folders; the aops service principal manages what is inside."""
+    from databricks.sdk.service.workspace import WorkspaceObjectAccessControlRequest, WorkspaceObjectPermissionLevel
+
+    try:
+        w.workspace.mkdirs(NO_CODE_ROOT)
+        status = w.workspace.get_status(NO_CODE_ROOT)
+        w.workspace.update_permissions("directories", str(status.object_id), access_control_list=[
+            WorkspaceObjectAccessControlRequest(service_principal_name=sp, permission_level=WorkspaceObjectPermissionLevel.CAN_MANAGE)])
+        print(f"  {NO_CODE_ROOT}: 서비스 주체 CAN_MANAGE")
+    except Exception as error:
+        print(f"  aops: {NO_CODE_ROOT}를 준비하지 못했습니다 ({str(error).splitlines()[0][:120]}). "
+              "서버는 서비스 주체의 홈 폴더(/Workspace/Users/<서비스 주체>/aops/no-code)를 대신 씁니다")
 
 
 def _put_genie_skill(w: Any, target: str, text: str) -> None:
@@ -312,10 +333,14 @@ def _deploy_app(w: Any, args: argparse.Namespace, wheel_path: str | None, me: st
     return w.apps.get(args.app)
 
 
-# files: read the requester's UC skill (load). Who the requester is and their groups (so the console in a
-# browser knows owners, approvers and admins like the CLI does) come with the default scopes every app
-# gets (iam.current-user:read, iam.access-control:read); they cannot be set and are not listed here.
-USER_SCOPES = ("files",)
+# What the server does with the requester's own token (Databricks Apps user authorization):
+# - files: read the requester's UC skill (load)
+# - genie: make, copy or move the dev Genie space of a no-code agent with the author's rights
+# - workspace.workspace: write a new agent's template into the requester's workspace folder
+# Who the requester is and their groups (so the console in a browser knows owners, approvers and admins like
+# the CLI does) come with the default scopes every app gets (iam.current-user:read, iam.access-control:read);
+# they cannot be set and are not listed here.
+USER_SCOPES = ("files", "genie", "workspace.workspace")
 IDENTITY_SCOPES = ("iam.current-user:read",)
 
 
@@ -325,15 +350,31 @@ def _ensure_user_scopes(w: Any, app: Any) -> None:
     missing = [s for s in IDENTITY_SCOPES if s not in effective]
     if missing:
         print(f"  aops: 앱에 {', '.join(missing)} 범위가 없어 화면이 그룹(담당 팀·승인 그룹·관리자)을 모릅니다")
-    if set(USER_SCOPES) <= current:
+    wanted = [s for s in USER_SCOPES if s not in current]
+    if not wanted:
         return
     try:
-        app.user_api_scopes = sorted(current | set(USER_SCOPES))
+        app.user_api_scopes = sorted(current | set(wanted))
         w.apps.update(app.name, app)
         print(f"  사용자 권한 범위: {', '.join(app.user_api_scopes)}")
+        return
     except Exception as error:
-        print(f"  aops: 앱 사용자 권한 범위를 바꾸지 못했습니다 ({str(error).splitlines()[0][:120]}). "
-              f"앱 설정 → User authorization에서 {', '.join(USER_SCOPES)}를 더하세요")
+        first = str(error).splitlines()[0][:120]
+    added, failed = [], []
+    for scope in wanted:  # one at a time: a scope this workspace does not know must not block the others
+        try:
+            app.user_api_scopes = sorted(current | {scope})
+            w.apps.update(app.name, app)
+            current.add(scope)
+            added.append(scope)
+        except Exception as error:
+            failed.append(f"{scope} ({str(error).splitlines()[0][:80]})")
+    app.user_api_scopes = sorted(current)
+    if added:
+        print(f"  사용자 권한 범위: {', '.join(sorted(current))}")
+    if failed:
+        print(f"  aops: 앱 사용자 권한 범위를 더하지 못했습니다: {'; '.join(failed) or first}. "
+              "앱 설정 → User authorization에서 더하세요")
 
 
 def _report_code_folder(w: Any, path: str) -> None:

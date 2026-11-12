@@ -136,6 +136,25 @@ def genie_check(body: GenieCheckRequest, request: Request) -> dict:
     return svc.genie_check(caller_of(request, svc), body.space_id.strip())
 
 
+class NoCodeAgent(BaseModel):
+    agent_id: str
+    folder_path: str | None = Field(None, examples=["/Workspace/aops/no-code/sales-genie"], description="에이전트 폴더 (SPEC.md, 개발용 Genie)")
+    folder_url: str | None = None
+    dev_space_id: str | None = None
+    dev_url: str | None = Field(None, description="개발용 Genie (작성자가 고치는 곳)")
+    prod_space_id: str | None = None
+    prod_url: str | None = Field(None, description="운영용 Genie (서비스 주체 소유, 공개 그룹 CAN RUN)")
+    consumer_group: str | None = None
+    warehouse_id: str | None = None
+
+
+@router.get("/no-code/agents/{agent_id}", summary="노코드 에이전트의 폴더·개발용·운영용 Genie", **command(None, DBX, screen="console 에이전트"))
+def no_code_agent(agent_id: str, request: Request) -> NoCodeAgent:
+    svc = service_for(None)
+    caller_of(request, svc)
+    return NoCodeAgent(**svc.no_code_links(agent_id))
+
+
 @router.get("/validations/{validation_run_id}", summary="검증 결과 (단계별)", **command(None, DBX, screen="검증 진행 화면"))
 def get_validation(validation_run_id: str, request: Request) -> ValidationRun:
     svc = service_for(None)

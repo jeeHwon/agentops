@@ -5,7 +5,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from ..common import ALL, DBX, Page, command, todo
+from ..common import ALL, DBX, Link, Page, command, todo
 
 router = APIRouter(tags=["프로젝트"])
 
@@ -18,6 +18,18 @@ class ProjectCreate(BaseModel):
     harness: str = Field("claude", examples=["claude", "codex"], description="`--harness` 기본 하네스")
     edition: Literal["local", "dbx", "omni", "custom"] = "dbx"
     genie_space_id: str | None = Field(None, description="`--genie`: no_code일 때 가져올 Genie Agent. 없으면 새로 만든다")
+    genie_mode: Literal["new", "copy", "move"] | None = Field(
+        None, description="no_code: new(테이블로 새로 만들기) · copy(genie_space_id를 에이전트 폴더로 복사) · move(genie_space_id를 에이전트 폴더로 옮기기). "
+                          "비우면 genie_space_id가 있을 때 copy, 없으면 new")
+    tables: list[str] = Field(default_factory=list, examples=[["main.sales.orders"]], description="no_code new: 데이터 소스 <catalog>.<schema>.<table> (1~30개)")
+    warehouse_id: str | None = Field(None, description="no_code: Genie가 쓸 SQL warehouse. 비우면 복사 원본이나 aops 서버의 warehouse")
+    display_name: str | None = Field(None, examples=["매출 도우미"], description="SPEC name (표시 이름). 비우면 name")
+    description: str | None = Field(None, examples=["지역별 매출과 할인 효과를 답한다"], description="SPEC description (이 에이전트가 하는 일)")
+    owner_group: str | None = Field(None, description="SPEC owner_group (담당 팀, 계정 그룹)")
+    service_criticality: Literal["low", "medium", "high"] = "medium"
+    data_sensitivity: Literal["public", "internal", "confidential", "personal"] = "internal"
+    security_level: str = Field("general", description="관리자 정책의 보안 등급 코드")
+    consumer_group: str | None = Field(None, description="no_code: 공개 그룹 (배포 때 운영 Genie에 CAN RUN)")
     location: str | None = Field(
         None,
         examples=["/Workspace/Users/me@example.com/aops/price-helper"],
@@ -131,8 +143,7 @@ def project_template(body: ProjectCreate, request: Request) -> Response:
         svc = service_for("aops init")
     except Exception:
         svc = None  # no registry configured (API contract only): the template needs nothing from it
-    if svc is not None:
-        caller_of(request, svc)
+    owner = caller_of(request, svc).email if svc is not None else ""
     if body.type not in ("skill", "code"):
         raise ServiceError(501, "not_implemented", "지금은 스킬 기반·코드 기반 에이전트를 만듭니다 (노코드는 준비 중)", "aops init")
     host = request.headers.get("x-forwarded-host")
@@ -150,6 +161,11 @@ def project_template(body: ProjectCreate, request: Request) -> Response:
             raise ServiceError(400, "bad_name", "이름은 영문 소문자·숫자·하이픈 63자 이하입니다", "aops init") from error
         toml = project.root / "aops.toml"
         toml.write_text(toml.read_text(encoding="utf-8").replace('server = ""', f'server = "{server}"', 1), encoding="utf-8")
+        if body.description:  # the SPEC fields from the screen become SPEC.md
+            spec = {"agent_id": body.name, "name": body.display_name or body.name, "build_type": body.type, "owner": owner,
+                    "owner_group": body.owner_group, "service_criticality": body.service_criticality,
+                    "data_sensitivity": body.data_sensitivity, "security_level": body.security_level, "description": body.description}
+            (project.root / "SPEC.md").write_text(init.render_spec(spec), encoding="utf-8")
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             for path in sorted(project.root.rglob("*")):
                 if path.is_file():
@@ -158,9 +174,41 @@ def project_template(body: ProjectCreate, request: Request) -> Response:
                     headers={"Content-Disposition": f'attachment; filename="{body.name}.zip"'})
 
 
-@router.post("/projects", status_code=201, summary="프로젝트 만들기", **command("aops init", ALL))
-def create_project(body: ProjectCreate) -> Project:
-    raise todo("aops init")
+class ProjectCreated(BaseModel):
+    agent_id: str = Field(examples=["sales-genie"])
+    type: AgentType
+    location: str = Field(examples=["/Workspace/aops/no-code/sales-genie"], description="에이전트 폴더 (SPEC.md가 있는 곳)")
+    dev_space_id: str | None = Field(None, description="no_code: 개발용 Genie 스페이스")
+    genie_mode: str | None = None
+    warehouse_id: str | None = None
+    links: list[Link] = Field(default_factory=list, description="Genie에서 열기, 폴더 열기")
+    warnings: list[str] = Field(default_factory=list)
+
+
+@router.post(
+    "/projects", status_code=201, summary="새 에이전트 만들기 (노코드)",
+    **command("aops init", ALL, note=(
+        "no_code: aops 서비스 주체가 에이전트 폴더(/Workspace/aops/no-code/<이름>)를 만들고 요청자(와 담당 팀)에게 CAN MANAGE를 준 뒤 "
+        "SPEC.md를 쓴다. 개발용 Genie는 요청자의 토큰(앱의 genie 사용자 권한 범위)으로 그 폴더에 만든다: 테이블로 새로(new), "
+        "기존 스페이스 복사(copy), 기존 스페이스 옮기기(move). 서비스 주체는 폴더에서 권한을 받아 정의를 읽는다. "
+        "레지스트리에 agents·genie_agents 행과 create 기록을 남긴다. 버전은 첫 배포가 성공할 때 생긴다."
+    )),
+)
+def create_project(body: ProjectCreate, request: Request) -> ProjectCreated:
+    from ...dbx.service import ServiceError
+
+    from ..dbx import caller_of, service_for
+
+    svc = service_for("aops init")
+    caller = caller_of(request, svc)
+    if body.type != "no_code":
+        raise ServiceError(501, "not_implemented", "스킬 기반·코드 기반은 지금 폴더 받기(POST /projects/template)로 만듭니다", "aops init")
+    row = svc.create_no_code(caller, body.model_dump())
+    links = [Link(label="Genie에서 열기 (개발용)", url=row["dev_url"])] if row.get("dev_url") else []
+    if row.get("folder_url"):
+        links.append(Link(label="에이전트 폴더", url=row["folder_url"]))
+    return ProjectCreated(agent_id=row["agent_id"], type="no_code", location=row["folder_path"], dev_space_id=row["dev_space_id"],
+                          genie_mode=row["genie_mode"], warehouse_id=row["warehouse_id"], links=links, warnings=row["warnings"])
 
 
 @router.get("/projects/{project_id}", summary="프로젝트 보기", **command(None, ALL))
