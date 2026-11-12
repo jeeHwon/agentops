@@ -69,3 +69,60 @@ def test_a_code_deploy_cut_by_a_restart_is_marked_failed():
     assert svc._reconcile_code_deploy(gate) is gate and updates == []  # still running here
     CODE_DEPLOYS.discard("g1")
     assert svc._reconcile_code_deploy(gate)["deployment_status"] == "failed" and updates[0]["id"] == "d1"
+
+
+def test_zip_names_that_leave_the_folder_are_refused(tmp_path):
+    import io
+    import zipfile
+
+    import pytest
+
+    from aops import package
+
+    for name in ("../../evil.py", "/etc/passwd", "a/../../b", "a\\b", "C:/x"):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr(name, "x")
+        with pytest.raises(ValueError):
+            package.read(buf.getvalue())
+        assert not package.included(name)
+    with pytest.raises(ValueError):
+        code.prepare({"../x": b"x", **project()}, tmp_path / "src", "/e")
+
+
+def test_register_refuses_bad_names_and_a_changed_kind():
+    import pytest
+
+    from aops.dbx.service import Caller, Service, ServiceError
+
+    svc = object.__new__(Service)
+    with pytest.raises(ServiceError) as bad:
+        svc.register(Caller("dev@x.com"), "../x", b"")
+    assert bad.value.code == "bad_agent_id"
+    svc.agent = lambda agent_id: {"agent_id": agent_id, "owner": "dev@x.com", "build_type": "skill"}
+    svc._is_owner = lambda caller, agent: True
+    buf = __import__("io").BytesIO()
+    with __import__("zipfile").ZipFile(buf, "w") as zf:
+        for k, v in project().items():
+            zf.writestr(k, v)
+    with pytest.raises(ServiceError) as changed:
+        svc.register(Caller("dev@x.com"), "price-bot", buf.getvalue())
+    assert changed.value.code == "build_type_changed"
+
+
+def test_one_approver_counts_once():
+    import pytest
+
+    from aops.dbx.service import Caller, Service, ServiceError
+
+    svc = object.__new__(Service)
+    gate = {"gate_id": "g", "agent_id": "a", "version": "1.0.0", "requester": "dev@x.com", "decision": "pending_approval",
+            "required_approvals": 2}
+    svc.gate = lambda gate_id: dict(gate)
+    svc._check_approver = lambda caller, g, action: None
+    svc.sql = type("Sql", (), {"table": staticmethod(lambda n: n),
+                               "one": staticmethod(lambda s, p: {"x": 1} if "SELECT 1" in s else {"n": 1}),
+                               "run": staticmethod(lambda s, p: pytest.fail("a second approval was recorded"))})()
+    with pytest.raises(ServiceError) as again:
+        svc.approve(Caller("boss@x.com"), "g")
+    assert again.value.status == 409

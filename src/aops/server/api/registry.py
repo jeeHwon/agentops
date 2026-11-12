@@ -274,7 +274,7 @@ def get_production(agent_id: str, request: Request) -> AgentProduction:
     row = svc.production(agent_id)
     if not row:
         raise ServiceError(404, "no_production", "운영 버전이 없습니다", "aops deploy")
-    return AgentProduction(**row)
+    return AgentProduction(**{**row, "app_name": row.get("target") if "agent-bricks-" in (row.get("target") or "") else None})
 
 
 def _version(row: dict) -> dict:
@@ -284,8 +284,10 @@ def _version(row: dict) -> dict:
 
 def _deployment(row: dict) -> Deployment:
     detail = row.get("detail") or {}
-    return Deployment(**{**row, "app_name": "", "job_run_id": int(row["job_run_id"]) if row.get("job_run_id") else None,
-                         "error": detail.get("error")})
+    target = row.get("target") or ""
+    return Deployment(**{**row, "app_name": target if target.startswith("agent-bricks-") else "",
+                         "job_run_id": int(row["job_run_id"]) if row.get("job_run_id") else None,
+                         "changed_files": detail.get("changed_files") or [], "error": detail.get("error")})
 
 
 @router.get("/agents/{agent_id}/events", summary="수명주기 이력 (감사 로그)", **command(None, DBX, screen="console 운영 지정 이력"))

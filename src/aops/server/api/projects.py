@@ -125,6 +125,14 @@ def project_template(body: ProjectCreate, request: Request) -> Response:
     from ... import init
     from ...dbx.service import ServiceError
 
+    from ..dbx import caller_of, service_for
+
+    try:
+        svc = service_for("aops init")
+    except Exception:
+        svc = None  # no registry configured (API contract only): the template needs nothing from it
+    if svc is not None:
+        caller_of(request, svc)
     if body.type not in ("skill", "code"):
         raise ServiceError(501, "not_implemented", "지금은 스킬 기반·코드 기반 에이전트를 만듭니다 (노코드는 준비 중)", "aops init")
     host = request.headers.get("x-forwarded-host")

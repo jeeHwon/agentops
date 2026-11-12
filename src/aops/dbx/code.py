@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -60,8 +61,11 @@ def prepare(files: dict[str, bytes], dest: Path, experiment: str) -> list[str]:
     """
     if dest.exists():
         shutil.rmtree(dest)
+    root = dest.resolve()
     for rel, data in files.items():
-        target = dest / rel
+        target = (dest / rel).resolve()
+        if not target.is_relative_to(root):  # package.read already refuses these; never write outside the copy
+            raise ValueError(f"unsafe path in the version zip: {rel}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
     toml = dest / "agent.toml"
@@ -78,8 +82,16 @@ def prepare(files: dict[str, bytes], dest: Path, experiment: str) -> list[str]:
     return ["agent.toml"]
 
 
+_BOOTSTRAP = threading.Lock()
+
+
 def agentbricks_cli() -> Path:
     """The agentbricks CLI in its own environment (kept apart from the server's packages)."""
+    with _BOOTSTRAP:
+        return _agentbricks_cli()
+
+
+def _agentbricks_cli() -> Path:
     exe = VENV / "bin" / "agentbricks"
     if exe.exists():
         return exe

@@ -14,6 +14,7 @@ import re
 import threading
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,6 +34,7 @@ DEFAULT_POLICY = {
     "security_levels": ["general", "important", "secret"],
 }
 CRITICALITY = {"low", "medium", "high"}
+AGENT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")  # the init rule: volume names, paths and app names use it
 # Gates whose code deploy runs in this server process now (a restart forgets them: see _reconcile_code_deploy)
 CODE_DEPLOYS: set[str] = set()
 SENSITIVITY = {"public", "internal", "confidential", "personal"}
@@ -115,7 +117,7 @@ class Service:
             me = self._as_user(token, "GET", "/api/2.0/preview/scim/v2/Me")
             if me.get("status") == 200:
                 body = me["body"]
-                email = email or body.get("userName")
+                email = body.get("userName") or email  # the token's user wins over a header
                 groups = [g.get("display") for g in body.get("groups", []) if g.get("display")]
         if not email:
             raise ServiceError(401, "unauthenticated", "요청한 사람을 확인할 수 없습니다")
@@ -249,8 +251,8 @@ class Service:
                 raise ServiceError(400, "bad_policy", f"{key}는 {', '.join(sorted(values))} 중 하나입니다")
         version, current = self.policy()
         body = {**current, **{k: v for k, v in changes.items() if k in (*allowed, "approver_group")}}
-        if body == current:
-            return self.policies()[0] if version else {"policy_version": 0, "body": current}
+        if body == current and version:
+            return self.policies()[0]
         new_version = version + 1
         self.sql.atomic([
             (f"UPDATE {self.sql.table('policies')} SET status = 'retired' WHERE status = 'active'", {}),
@@ -271,7 +273,12 @@ class Service:
 
     def register(self, caller: Caller, agent_id: str, data: bytes, version: str | None = None,
                  bump: str | None = None) -> dict[str, Any]:
-        files = package.read(data)
+        if not AGENT_ID.match(agent_id):
+            raise ServiceError(400, "bad_agent_id", "에이전트 이름은 영문 소문자·숫자·하이픈 63자 이하입니다 (첫 글자는 영문 소문자·숫자)", "aops register")
+        try:
+            files = package.read(data)
+        except (ValueError, zipfile.BadZipFile) as error:
+            raise ServiceError(400, "bad_zip", f"버전 zip을 읽을 수 없습니다: {error}", "aops register") from error
         if "aops.toml" not in files or "SPEC.md" not in files:
             raise ServiceError(400, "not_an_agent", "버전 zip에 aops.toml과 SPEC.md가 있어야 합니다", "aops register")
         spec = package.front_matter(files["SPEC.md"].decode("utf-8"))
@@ -287,6 +294,9 @@ class Service:
         agent = self.agent(agent_id)
         if agent and not self._is_owner(caller, agent):
             raise ServiceError(403, "not_owner", "담당자·담당 팀만 새 버전을 등록할 수 있습니다", "aops register")
+        if agent and agent.get("build_type") and agent["build_type"] != build_type:
+            raise ServiceError(409, "build_type_changed", f"{agent_id}는 {agent['build_type']} 에이전트입니다 (SPEC build_type: {build_type}). "
+                               "종류를 바꾸려면 새 이름으로 등록하세요", "aops register")
         existing = self.versions(agent_id)
         if existing and existing[-1]["source_sha256"] == sha:
             raise ServiceError(409, "unchanged", f"마지막 버전({existing[-1]['version']})과 내용이 같습니다", "aops register")
@@ -712,9 +722,12 @@ class Service:
     def approve(self, caller: Caller, gate_id: str, comment: str | None = None) -> dict[str, Any]:
         gate = self.gate(gate_id)
         self._check_approver(caller, gate, "approve")
+        if self.sql.one(f"SELECT 1 AS x FROM {self.sql.table('approvals')} WHERE gate_id = :g AND approver = :by AND decision = 'approve'",
+                        {"g": gate_id, "by": caller.email}):
+            raise ServiceError(409, "already_approved", "이미 승인했습니다. 필요한 승인 수는 서로 다른 승인자로 채웁니다", "aops approve")
         self.sql.run(f"INSERT INTO {self.sql.table('approvals')} VALUES (:id, :g, :by, 'approve', :c, 'console', current_timestamp())",
                      {"id": now_id(), "g": gate_id, "by": caller.email, "c": comment})
-        approved = self.sql.one(f"SELECT count(*) AS n FROM {self.sql.table('approvals')} WHERE gate_id = :g AND decision = 'approve'",
+        approved = self.sql.one(f"SELECT count(DISTINCT approver) AS n FROM {self.sql.table('approvals')} WHERE gate_id = :g AND decision = 'approve'",
                                 {"g": gate_id})
         if int(approved["n"]) >= int(gate["required_approvals"]):
             self._approved(gate, caller.email)
@@ -726,13 +739,15 @@ class Service:
                                "updated_at = current_timestamp() WHERE gate_id = :g AND decision = 'pending_approval'",
                                {"g": gate["gate_id"], "d": deployment_id}):
             return
+        is_code = (self.agent(gate["agent_id"]) or {}).get("build_type") == "code"
+        if is_code:
+            CODE_DEPLOYS.add(gate["gate_id"])  # before the row exists, so a status read never takes it for a lost deploy
         self.sql.run(f"INSERT INTO {self.sql.table('deployments')} VALUES (:d, :g, :a, :v, 'production', NULL, NULL, 'running', NULL, "
                      "NULL, current_timestamp(), NULL)", {"d": deployment_id, "g": gate["gate_id"], "a": gate["agent_id"], "v": gate["version"]})
         self.event(gate["agent_id"], gate["version"], "gate_approved", actor,
                    {"gate_id": gate["gate_id"], "approval_mode": gate["approval_mode"]})
-        if (self.agent(gate["agent_id"]) or {}).get("build_type") == "code":
+        if is_code:
             # `agentbricks deploy` drives the databricks CLI, which only works here (inside the app), not in a Job
-            CODE_DEPLOYS.add(gate["gate_id"])
             threading.Thread(target=self._code_deploy_thread, args=(gate["gate_id"],), daemon=True).start()
             return
         job_run = self._run_job("deploy", gate["gate_id"])
@@ -751,8 +766,10 @@ class Service:
             return gate
         moved = self.sql.update(
             f"UPDATE {self.sql.table('deployments')} SET status = 'failed', detail = parse_json(:d), ended_at = current_timestamp() "
-            "WHERE deployment_id = :id AND status = 'running' AND job_run_id IS NULL",
-            {"d": {"error": "aops 서버가 다시 시작되어 배포가 끊겼습니다. 운영은 그대로이고, aops deploy로 다시 요청하세요"},
+            "WHERE deployment_id = :id AND status = 'running' AND job_run_id IS NULL "
+            "AND started_at < current_timestamp() - INTERVAL 2 MINUTES",
+            {"d": {"error": "aops 서버가 다시 시작되어 배포가 끊겼습니다. 레지스트리의 운영 버전은 그대로지만 운영 앱은 "
+                            "새 버전으로 바뀌었을 수 있습니다. 앱을 확인하고 aops deploy로 다시 요청하세요"},
              "id": gate["deployment_id"]})
         return self.gate(gate["gate_id"]) if moved else gate
 
@@ -777,8 +794,8 @@ class Service:
             source = Path(tempfile.mkdtemp(prefix=f"aops-{agent_id}-")) / "src"
             changed = code.prepare(files, source, f"{home}/traces")
             rc, log = code.deploy(source, code.app_base(agent_id), f"/Workspace{home}/app", self.config.profile)
-            if rc != 0:
-                raise RuntimeError(f"agentbricks deploy 실패 (exit {rc})")
+            if rc != 0:  # agentbricks may have changed the app before it failed
+                raise RuntimeError(f"agentbricks deploy 실패 (exit {rc}). 운영 앱이 일부 바뀌었을 수 있어 확인이 필요합니다")
             name = code.app_name(agent_id)
             url = self.w.apps.get(name).url
             production = self.production(agent_id)

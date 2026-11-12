@@ -152,9 +152,11 @@ def register(
 ) -> AgentVersionDetail:
     svc = service_for("aops register")
     if archive is not None:
-        data = archive.file.read()
+        data = archive.file.read(MAX_UPLOAD + 1)
     elif files:
-        data = folder_zip([(f.filename or "", f.file.read()) for f in files])
+        data = folder_zip([(f.filename or "", f.file.read(MAX_UPLOAD + 1)) for f in files])
+    if (archive is not None or files) and len(data) > MAX_UPLOAD:
+        raise ServiceError(413, "too_large", f"버전은 {MAX_UPLOAD // 2**20}MB까지입니다 (데이터는 UC 테이블·볼륨에 두세요)", "aops register")
     else:
         raise ServiceError(400, "no_files", "버전 zip(archive)이나 폴더의 파일(files)을 보내세요", "aops register")
     row = svc.register(caller_of(request, svc), project_id, data, version, bump)
@@ -244,6 +246,9 @@ def cancel_gate(gate_id: str, request: Request) -> ReleaseGate:
 )
 def external_decision(body: ExternalDecision, x_aops_signature: str = Header()) -> Approval:
     raise todo(None)
+
+
+MAX_UPLOAD = 100 * 2**20
 
 
 def folder_zip(files: list[tuple[str, bytes]]) -> bytes:

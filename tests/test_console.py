@@ -113,16 +113,24 @@ def test_a_local_console_is_the_profile_user(monkeypatch):
                           w=SimpleNamespace(config=SimpleNamespace(authenticate=lambda: {"Authorization": "Bearer pc-token"})),
                           identify=lambda token, email: seen.append((token, email)) or Caller(email or "me@x.com"))
     monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
-    request = SimpleNamespace(headers={}, client=SimpleNamespace(host="127.0.0.1"))
-    dbx.caller_of(request, svc)
+
+    def req(headers, client="127.0.0.1"):
+        return SimpleNamespace(headers=headers, client=SimpleNamespace(host=client))
+
+    local = {"host": "127.0.0.1:8000"}
+    dbx.caller_of(req(local), svc)
     assert seen == [("pc-token", None)]
-    seen.clear()  # from another machine, or inside Databricks Apps: never the server's own login
-    dbx.caller_of(SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.5")), svc)
+    seen.clear()  # never the profile login for: another machine, another site (CSRF), a rebound name, Databricks Apps
+    dbx.caller_of(req(local, client="10.0.0.5"), svc)
+    dbx.caller_of(req({**local, "origin": "https://evil.example"}), svc)
+    dbx.caller_of(req({"host": "rebound.example:8000"}), svc)
     monkeypatch.setenv("DATABRICKS_APP_NAME", "aops-server")
-    dbx.caller_of(request, svc)
-    assert seen == [(None, None), (None, None)]
-    monkeypatch.delenv("DATABRICKS_APP_NAME")
-    svc.config.profile = None  # in Databricks Apps: never borrow the server's own identity
-    seen.clear()
-    dbx.caller_of(SimpleNamespace(headers={"x-forwarded-email": "u@x.com", "x-forwarded-access-token": "t"}), svc)
+    dbx.caller_of(req(local), svc)
+    assert seen == [(None, None)] * 4
+    seen.clear()  # inside Apps the proxy's headers name the user
+    dbx.caller_of(req({"x-forwarded-email": "u@x.com", "x-forwarded-access-token": "t"}), svc)
     assert seen == [("t", "u@x.com")]
+    monkeypatch.delenv("DATABRICKS_APP_NAME")
+    seen.clear()  # outside Apps nobody may claim to be someone with a header
+    dbx.caller_of(req({"x-forwarded-email": "boss@x.com", "host": "aops.example"}), svc)
+    assert seen == [(None, None)]

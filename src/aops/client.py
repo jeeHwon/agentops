@@ -68,6 +68,10 @@ class Server:
                 payload = resp.read()
                 return payload if raw else (json.loads(payload) if payload else None)
         except urllib.error.HTTPError as error:
+            if error.code == 401 and self.notebook and self._token is not None:
+                self._token = None  # the exchanged token expired: exchange again, once
+                return self.request(method, path, body=body, data=data if body is None else None,
+                                    content_type=content_type if body is None else None, raw=raw)
             text = error.read()
             try:
                 problem = json.loads(text)
