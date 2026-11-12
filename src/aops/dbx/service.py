@@ -751,6 +751,7 @@ class Service:
             if package.files_sha256(list(files.items())) != target["source_sha256"]:
                 raise RuntimeError("버전 zip이 등록 때 해시와 다릅니다")
             home = f"/Users/{self.w.current_user.me().user_name}/aops/agents/{agent_id}"
+            self.w.workspace.mkdirs(f"/Workspace{home}")  # MLflow and the source sync need the parent folder
             source = Path(tempfile.mkdtemp(prefix=f"aops-{agent_id}-")) / "src"
             changed = code.prepare(files, source, f"{home}/traces")
             rc, log = code.deploy(source, code.app_base(agent_id), f"/Workspace{home}/app", self.config.profile)

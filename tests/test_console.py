@@ -112,9 +112,16 @@ def test_a_local_console_is_the_profile_user(monkeypatch):
     svc = SimpleNamespace(config=SimpleNamespace(profile="my-profile"),
                           w=SimpleNamespace(config=SimpleNamespace(authenticate=lambda: {"Authorization": "Bearer pc-token"})),
                           identify=lambda token, email: seen.append((token, email)) or Caller(email or "me@x.com"))
-    request = SimpleNamespace(headers={})
+    monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
+    request = SimpleNamespace(headers={}, client=SimpleNamespace(host="127.0.0.1"))
     dbx.caller_of(request, svc)
     assert seen == [("pc-token", None)]
+    seen.clear()  # from another machine, or inside Databricks Apps: never the server's own login
+    dbx.caller_of(SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.5")), svc)
+    monkeypatch.setenv("DATABRICKS_APP_NAME", "aops-server")
+    dbx.caller_of(request, svc)
+    assert seen == [(None, None), (None, None)]
+    monkeypatch.delenv("DATABRICKS_APP_NAME")
     svc.config.profile = None  # in Databricks Apps: never borrow the server's own identity
     seen.clear()
     dbx.caller_of(SimpleNamespace(headers={"x-forwarded-email": "u@x.com", "x-forwarded-access-token": "t"}), svc)

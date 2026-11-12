@@ -5,6 +5,7 @@ Without AOPS_REGISTRY and AOPS_WAREHOUSE_ID the routes keep returning 501 (contr
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 from fastapi import Request
@@ -37,7 +38,8 @@ def caller_of(request: Request, svc: Service) -> Caller:
         auth = request.headers.get("authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else None
     email = request.headers.get("x-forwarded-email")
-    if not token and not email and svc.config.profile:
+    local = getattr(getattr(request, "client", None), "host", "127.0.0.1") in ("127.0.0.1", "::1", "localhost")
+    if not token and not email and svc.config.profile and local and not os.environ.get("DATABRICKS_APP_NAME"):
         auth = svc.w.config.authenticate().get("Authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else None
     return svc.identify(token, email)
