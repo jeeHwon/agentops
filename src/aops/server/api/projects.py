@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from ..common import ALL, DBX, Page, command, todo
@@ -109,6 +109,40 @@ class GenieSpace(BaseModel):
 @router.get("/projects", summary="프로젝트 목록", **command(None, ALL, screen="프로젝트 선택"))
 def list_projects(cursor: str | None = None, limit: int = Query(50, le=200)) -> Page[ProjectSummary]:
     raise todo(None)
+
+
+_TEMPLATE = command("aops init", ALL, note="`aops init <이름> --edition dbx`와 같은 폴더를 zip으로 내준다. 받은 폴더를 PC나 워크스페이스에 풀고 스킬·SPEC을 고친 뒤 등록한다. 서버 주소가 aops.toml에 들어 있다. 지금은 스킬 기반만")
+_TEMPLATE["responses"] = {200: {"content": {"application/zip": {}}, "description": "새 에이전트 폴더 zip"}, **_TEMPLATE["responses"]}
+
+
+@router.post("/projects/template", summary="새 에이전트 폴더 받기 (zip)", response_class=Response, **_TEMPLATE)
+def project_template(body: ProjectCreate, request: Request) -> Response:
+    import io
+    import tempfile
+    import zipfile
+    from pathlib import Path
+
+    from ... import init
+    from ...dbx.service import ServiceError
+
+    if body.type != "skill":
+        raise ServiceError(501, "not_implemented", "지금은 스킬 기반 에이전트만 만듭니다", "aops init")
+    host = request.headers.get("x-forwarded-host")
+    server = f"https://{host}" if host else str(request.base_url).rstrip("/")
+    buffer = io.BytesIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            project = init.create(Path(tmp), body.name, harness=body.harness, edition="dbx")
+        except ValueError as error:
+            raise ServiceError(400, "bad_name", "이름은 영문 소문자·숫자·하이픈 63자 이하입니다", "aops init") from error
+        toml = project.root / "aops.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace('server = ""', f'server = "{server}"', 1), encoding="utf-8")
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in sorted(project.root.rglob("*")):
+                if path.is_file():
+                    zf.write(path, f"{body.name}/{path.relative_to(project.root).as_posix()}")
+    return Response(buffer.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{body.name}.zip"'})
 
 
 @router.post("/projects", status_code=201, summary="프로젝트 만들기", **command("aops init", ALL))

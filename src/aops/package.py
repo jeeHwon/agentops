@@ -45,16 +45,26 @@ def collect(project: Project) -> list[tuple[str, bytes, int]]:
     out = []
     for path in sorted(project.root.rglob("*")):
         rel = path.relative_to(project.root)
-        if not path.is_file() or rel.parts[0] in EXCLUDE_DIRS or any(p in EXCLUDE_DIRS for p in rel.parts):
-            continue
-        if len(rel.parts) == 1 and rel.name in EXCLUDE_FILES or rel.name == ".DS_Store":
-            continue
-        out.append((rel.as_posix(), path.read_bytes(), stat.S_IMODE(path.stat().st_mode)))
+        if path.is_file() and included(rel.as_posix()):
+            out.append((rel.as_posix(), path.read_bytes(), stat.S_IMODE(path.stat().st_mode)))
     return out
 
 
+def included(rel: str) -> bool:
+    """Whether a file (path relative to the agent folder) goes into the version zip."""
+    parts = PurePosixPath(rel).parts
+    if not parts or any(p in EXCLUDE_DIRS for p in parts):
+        return False
+    return not (len(parts) == 1 and parts[0] in EXCLUDE_FILES or parts[-1] == ".DS_Store")
+
+
 def build(project: Project) -> Archive:
-    entries = collect(project)
+    return build_entries(collect(project))
+
+
+def build_entries(entries: list[tuple[str, bytes, int]]) -> Archive:
+    """The version zip from (relative path, content, file mode); same bytes and hash as `build` for the same files."""
+    entries = sorted(entries)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for rel, data, mode in entries:

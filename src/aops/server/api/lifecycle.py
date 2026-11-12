@@ -14,10 +14,12 @@ from fastapi.sse import EventSourceResponse
 from pydantic import BaseModel, Field
 
 from ..common import DBX, Page, command, pending, todo
+from ... import package
+from ...dbx.service import ServiceError
 from ...dbx.sql import loads
 from ..dbx import caller_of, service_for
 from ..events import ProgressEvent
-from .registry import AgentVersion, AgentVersionDetail, AgentVersionSkill, Deployment, ValidationRun
+from .registry import AgentVersionDetail, AgentVersionSkill, Deployment, ValidationRun
 
 router = APIRouter(tags=["검증·등록·배포"])
 
@@ -143,12 +145,19 @@ async def stream_validation(validation_run_id: str) -> AsyncIterable[ProgressEve
 )
 def register(
     project_id: str, request: Request,
-    archive: UploadFile = File(description="버전 zip (aops.toml, SPEC.md, agent/…)"),
+    archive: UploadFile | None = File(None, description="버전 zip (aops.toml, SPEC.md, agent/…)"),
+    files: list[UploadFile] | None = File(None, description="zip 대신 폴더의 파일들 (filename = 폴더 안 상대 경로). 서버가 `aops register`와 같은 규칙으로 묶는다"),
     version: str | None = Form(None, description="`--version`. 비우면 register가 매긴다 (최초 1.0.0)"),
     bump: Literal["fix", "minor", "major"] | None = Form(None, description="버전을 올리는 폭. 비우면 minor"),
 ) -> AgentVersionDetail:
     svc = service_for("aops register")
-    row = svc.register(caller_of(request, svc), project_id, archive.file.read(), version, bump)
+    if archive is not None:
+        data = archive.file.read()
+    elif files:
+        data = folder_zip([(f.filename or "", f.file.read()) for f in files])
+    else:
+        raise ServiceError(400, "no_files", "버전 zip(archive)이나 폴더의 파일(files)을 보내세요", "aops register")
+    row = svc.register(caller_of(request, svc), project_id, data, version, bump)
     skills = [AgentVersionSkill(**s) for s in row.pop("skills", [])]
     return AgentVersionDetail(**{**row, "created_at": row["registered_at"], "spec": loads(row.get("spec")) or {}}, skills=skills)
 
@@ -235,6 +244,19 @@ def cancel_gate(gate_id: str, request: Request) -> ReleaseGate:
 )
 def external_decision(body: ExternalDecision, x_aops_signature: str = Header()) -> Approval:
     raise todo(None)
+
+
+def folder_zip(files: list[tuple[str, bytes]]) -> bytes:
+    """A browser folder upload as the version zip: one top folder is dropped, `aops register` rules apply."""
+    paths = [name.replace("\\", "/").lstrip("/") for name, _ in files]
+    tops = {p.split("/", 1)[0] for p in paths if "/" in p}
+    strip = len(tops) == 1 and all("/" in p for p in paths)
+    entries = []
+    for path, (_, data) in zip(paths, files):
+        rel = path.split("/", 1)[1] if strip else path
+        if package.included(rel):
+            entries.append((rel, data, 0o644))
+    return package.build_entries(entries).data
 
 
 def _gate(row: dict) -> ReleaseGate:

@@ -265,14 +265,15 @@ def _deploy_app(w: Any, args: argparse.Namespace, wheel_path: str | None, me: st
             id=args.warehouse, permission=AppResourceSqlWarehouseSqlWarehousePermission.CAN_USE))
         description = "aops 서버: console 화면과 /api/v1"
         try:
-            app = w.apps.create_and_wait(App(name=args.app, description=description, resources=[resource], user_api_scopes=["files"]))
+            app = w.apps.create_and_wait(App(name=args.app, description=description, resources=[resource], user_api_scopes=list(USER_SCOPES)))
         except Exception as error:
             if "permission" not in str(error).lower():
                 raise
             # Adding a warehouse as an app resource needs Can manage on it. Without that the app gets the
             # warehouse ID only and uses it through its own Can use (for example the users group's).
             print(f"  aops: warehouse를 앱 자원으로 붙일 권한이 없어 ID만 넘깁니다 ({str(error).splitlines()[0][:120]})")
-            app = w.apps.create_and_wait(App(name=args.app, description=description, user_api_scopes=["files"]))
+            app = w.apps.create_and_wait(App(name=args.app, description=description, user_api_scopes=list(USER_SCOPES)))
+    _ensure_user_scopes(w, app)
     has_resource = any(r.name == "sql-warehouse" for r in (app.resources or []))
     build = Path(tempfile.mkdtemp(prefix="aops-app-"))
     shutil.copytree(PACKAGE, build / "src" / "aops", ignore=shutil.ignore_patterns("__pycache__"))
@@ -309,6 +310,24 @@ def _deploy_app(w: Any, args: argparse.Namespace, wheel_path: str | None, me: st
     except Exception:
         pass
     return w.apps.get(args.app)
+
+
+# files: read the requester's UC skill (load). iam.*: who the requester is and their groups, so the
+# console (browser) knows owners, approvers and admins like the CLI does.
+USER_SCOPES = ("files", "iam.current-user:read", "iam.access-control:read")
+
+
+def _ensure_user_scopes(w: Any, app: Any) -> None:
+    current = set(app.user_api_scopes or [])
+    if set(USER_SCOPES) <= current:
+        return
+    try:
+        app.user_api_scopes = sorted(current | set(USER_SCOPES))
+        w.apps.update(app.name, app)
+        print(f"  사용자 권한 범위: {', '.join(app.user_api_scopes)}")
+    except Exception as error:
+        print(f"  aops: 앱 사용자 권한 범위를 바꾸지 못했습니다 ({str(error).splitlines()[0][:120]}). "
+              "앱 설정 → User authorization에서 iam.current-user:read를 더하세요")
 
 
 def _report_code_folder(w: Any, path: str) -> None:

@@ -85,7 +85,7 @@ dbx는 local을 포함합니다. omni와 custom은 dbx 위에 화면을 붙이�
 ### aops 서버
 
 - dbx 이상은 조직에 aops 서버(Databricks App) 하나를 둡니다. 관리자가 `aops admin setup`으로 한 번 배포하고, 사용자는 CLI만 설치합니다.
-- 레지스트리 기록, Job 실행, 권한 변경은 서버가 서비스 주체로 합니다. 그래서 사람이 기록을 고치거나 자기 요청을 승인할 수 없습니다. 승인 화면(console)도 이 서버에 있습니다. **지금:** console 화면은 아직 없고, 승인은 같은 API를 부르는 `aops gates`·`approve`·`reject`로 합니다.
+- 레지스트리 기록, Job 실행, 권한 변경은 서버가 서비스 주체로 합니다. 그래서 사람이 기록을 고치거나 자기 요청을 승인할 수 없습니다. 승인 화면(console)도 이 서버에 있습니다. **지금:** 서버 주소의 console 화면에서 목록·등록·검사·배포·되돌리기·승인·반려·취소·권한·가져오기·정책을 합니다([console](console.md)). CLI의 `aops gates`·`approve`·`reject`도 같은 API입니다.
 - 개발(`init`·`run`·`session`·`evaluate` 등)은 서버 없이 됩니다. 등록·검사·배포·권한 부여와 스킬 `load`는 서버를 거칩니다.
 
 ### custom 에디션

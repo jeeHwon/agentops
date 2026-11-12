@@ -11,7 +11,9 @@ from typing import Any, Literal
 from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from ..common import DBX, Link, Page, command, todo
+from ...dbx.service import ServiceError
+from ...dbx.sql import loads
+from ..common import DBX, Link, Page, command
 from ..dbx import caller_of, service_for
 
 router = APIRouter(tags=["레지스트리"])
@@ -25,6 +27,7 @@ RunStatus = Literal["queued", "running", "passed", "failed", "stale", "error"]
 class Agent(BaseModel):
     agent_id: str = Field(examples=["price-helper"])
     name: str = Field(examples=["가격 도우미"])
+    description: str | None = Field(None, examples=["대량 구매 할인 규정으로 합계를 계산한다"])
     build_type: BuildType
     owner: str = Field(examples=["owner@example.com"])
     owner_group: str | None = Field(None, examples=["AI-CoE"])
@@ -44,6 +47,7 @@ class AgentStatus(Agent):
     last_validation: RunStatus | None = None
     pending_gates: int = Field(0, examples=[1])
     source_missing: bool = Field(False, description="고등급이라 소스 없이 정보만 등록됨 (\"소스 없음\")")
+    updated_at: datetime | None = None
 
 
 class AgentVersionSkill(BaseModel):
@@ -63,6 +67,10 @@ class AgentVersion(BaseModel):
     harness_sha256: str | None = None
     skills_sha256: str | None = None
     git_commit: str | None = Field(None, examples=["ff6530d"])
+    git_url: str | None = Field(None, examples=["https://github.com/my-org/aops-price-helper/tree/v1.2.0"], description="Git 사본의 이 버전 (정책에 git이 있을 때)")
+    git_status: Literal["synced", "failed", "skipped"] | None = None
+    size_bytes: int | None = None
+    registered_by: str | None = None
     harness: str | None = Field(None, examples=["claude"])
     harness_version: str | None = Field(None, examples=["2.1.317"])
     uc_model_version: int | None = Field(None, examples=[3])
@@ -120,6 +128,9 @@ class Deployment(BaseModel):
     app_name: str = Field(examples=["agent-bricks-price-helper"], description="실제 앱 이름(agent-bricks-<base>) 또는 운영용 Genie Agent 이름. 스킬은 비어 있음")
     app_url: str | None = None
     status: Literal["running", "succeeded", "failed"]
+    target: str | None = Field(None, description="반영한 대상 (스킬: UC Skill 이름 목록)")
+    job_run_id: int | None = None
+    error: str | None = Field(None, description="실패했을 때 이유")
     dependencies_match: bool | None = Field(None, description="앱에 깔린 의존 버전이 등록 때 uv.lock과 같은지")
     changed_files: list[str] = Field(default_factory=list, examples=[["app.yaml", "agent.toml"]], description="배포 도구가 고쳐 쓴 파일 (스냅샷 사본 기준)")
     guardrail_checks: list[dict[str, Any]] = Field(default_factory=list)
@@ -208,38 +219,73 @@ def get_archive(agent_id: str, version: str, request: Request) -> Response:
 
 
 @router.get("/agents/{agent_id}", summary="에이전트 보기", **command(None, DBX, screen="console 레지스트리"))
-def get_agent(agent_id: str) -> AgentStatus:
-    raise todo(None)
+def get_agent(agent_id: str, request: Request) -> AgentStatus:
+    svc = service_for(None)
+    caller_of(request, svc)
+    row = svc.agent_status(agent_id)
+    return AgentStatus(**{**row, "pending_gates": int(row.get("pending_gates") or 0)})
 
 
 @router.get("/agents/{agent_id}/versions", summary="버전 목록", **command(None, DBX, screen="console 레지스트리"))
-def list_versions(agent_id: str, status: VersionStatus | None = None, cursor: str | None = None) -> Page[AgentVersion]:
-    raise todo(None)
+def list_versions(agent_id: str, request: Request, status: VersionStatus | None = None, cursor: str | None = None) -> Page[AgentVersion]:
+    svc = service_for(None)
+    caller_of(request, svc)
+    rows = [r for r in svc.version_rows(agent_id) if not status or r["status"] == status]
+    return Page(items=[AgentVersion(**_version(r)) for r in rows])
 
 
 @router.get("/agents/{agent_id}/versions/{version}", summary="버전 보기 (스킬 포함)", **command(None, DBX, screen="console 레지스트리"))
-def get_version(agent_id: str, version: str) -> AgentVersionDetail:
-    raise todo(None)
+def get_version(agent_id: str, version: str, request: Request) -> AgentVersionDetail:
+    svc = service_for(None)
+    caller_of(request, svc)
+    row = svc.version_detail(agent_id, version)
+    skills = [AgentVersionSkill(**s) for s in row.pop("skills", [])]
+    return AgentVersionDetail(**_version(row), skills=skills)
 
 
 @router.get("/agents/{agent_id}/validation-runs", summary="검증 이력", **command(None, DBX, screen="console 레지스트리"))
-def list_validation_runs(agent_id: str, cursor: str | None = None) -> Page[ValidationRun]:
-    raise todo(None)
+def list_validation_runs(agent_id: str, request: Request, cursor: str | None = None) -> Page[ValidationRun]:
+    svc = service_for(None)
+    caller_of(request, svc)
+    return Page(items=[ValidationRun(**r) for r in svc.validation_runs(agent_id)])
 
 
 @router.get("/agents/{agent_id}/deployments", summary="배포 이력", **command(None, DBX, screen="console 운영 지정 이력"))
-def list_deployments(agent_id: str, cursor: str | None = None) -> Page[Deployment]:
-    raise todo(None)
+def list_deployments(agent_id: str, request: Request, cursor: str | None = None) -> Page[Deployment]:
+    svc = service_for(None)
+    caller_of(request, svc)
+    return Page(items=[_deployment(r) for r in svc.deployment_rows(agent_id=agent_id)])
 
 
 @router.get("/deployments/{deployment_id}", summary="배포 보기", **command(None, DBX))
-def get_deployment(deployment_id: str) -> Deployment:
-    raise todo(None)
+def get_deployment(deployment_id: str, request: Request) -> Deployment:
+    svc = service_for(None)
+    caller_of(request, svc)
+    rows = svc.deployment_rows(deployment_id=deployment_id)
+    if not rows:
+        raise ServiceError(404, "not_found", "배포 기록이 없습니다")
+    return _deployment(rows[0])
 
 
 @router.get("/agents/{agent_id}/production", summary="운영 버전", **command(None, DBX, screen="console 운영 지정 이력"))
-def get_production(agent_id: str) -> AgentProduction:
-    raise todo(None)
+def get_production(agent_id: str, request: Request) -> AgentProduction:
+    svc = service_for(None)
+    caller_of(request, svc)
+    row = svc.production(agent_id)
+    if not row:
+        raise ServiceError(404, "no_production", "운영 버전이 없습니다", "aops deploy")
+    return AgentProduction(**row)
+
+
+def _version(row: dict) -> dict:
+    return {**row, "size_bytes": int(row["size_bytes"]) if row.get("size_bytes") is not None else None,
+            "spec": loads(row.get("spec")) or {}}
+
+
+def _deployment(row: dict) -> Deployment:
+    detail = row.get("detail") or {}
+    return Deployment(**{**row, "app_name": "", "job_run_id": int(row["job_run_id"]) if row.get("job_run_id") else None,
+                         "error": detail.get("error")})
 
 
 @router.get("/agents/{agent_id}/events", summary="수명주기 이력 (감사 로그)", **command(None, DBX, screen="console 운영 지정 이력"))

@@ -7,10 +7,12 @@ admin screen can preview and re-apply it here. Only the admin group may call the
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
+from ...dbx.service import ServiceError
 from ..common import DBX, Page, command, todo
+from ..dbx import caller_of, service_for
 
 router = APIRouter(prefix="/admin", tags=["관리자"])
 
@@ -51,9 +53,18 @@ class Policy(BaseModel):
 
 class PolicyVersion(BaseModel):
     policy_version: int = Field(examples=[4])
+    status: Literal["active", "retired"] = "active"
     created_by: str
     created_at: datetime
-    policy: Policy
+    policy: dict[str, Any] = Field(description="지금 쓰는 정책 본문: validation_mode, approval_mode, approver_group, git 등")
+
+
+class PolicyChange(BaseModel):
+    """What the console changes (the same keys as `aops admin setup --only policy`). Other keys (Git) stay."""
+
+    validation_mode: Literal["mandatory", "optional", "exempt"] | None = None
+    approval_mode: Literal["required", "optional", "auto"] | None = None
+    approver_group: str | None = None
 
 
 class PolicySet(BaseModel):
@@ -87,18 +98,30 @@ def setup_apply(body: SetupApply) -> SetupPlan:
 
 
 @router.get("/policies", summary="정책 버전 목록", **command("aops admin policy show", DBX))
-def list_policies(cursor: str | None = None) -> Page[PolicyVersion]:
-    raise todo("aops admin policy show")
+def list_policies(request: Request, cursor: str | None = None) -> Page[PolicyVersion]:
+    svc = service_for("aops admin policy show")
+    caller_of(request, svc)
+    return Page(items=[_policy(r) for r in svc.policies()])
 
 
 @router.get("/policies/current", summary="현재 정책", **command("aops admin policy show", DBX))
-def current_policy() -> PolicyVersion:
-    raise todo("aops admin policy show")
+def current_policy(request: Request) -> PolicyVersion:
+    svc = service_for("aops admin policy show")
+    caller_of(request, svc)
+    rows = [r for r in svc.policies() if r["status"] == "active"]
+    if not rows:
+        raise ServiceError(404, "no_policy", "적용된 정책이 없습니다", "aops admin setup --only policy")
+    return _policy(rows[0])
 
 
 @router.post("/policies", status_code=201, summary="정책 올리기", **command("aops admin policy set", DBX))
-def set_policy(body: PolicySet) -> PolicyVersion:
-    raise todo("aops admin policy set")
+def set_policy(body: PolicyChange, request: Request) -> PolicyVersion:
+    svc = service_for("aops admin policy set")
+    return _policy(svc.set_policy(caller_of(request, svc), body.model_dump(exclude_none=True)))
+
+
+def _policy(row: dict) -> PolicyVersion:
+    return PolicyVersion(**{**row, "policy": row["body"]})
 
 
 @router.get("/policies/diff", summary="정책 버전 비교", **command("aops admin policy diff", DBX))

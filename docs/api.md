@@ -23,7 +23,7 @@
 
 | 명령 | API |
 | --- | --- |
-| `aops init` | `POST /api/v1/projects` |
+| `aops init` | `POST /api/v1/projects`<br>`POST /api/v1/projects/template` |
 | `aops init --type no-code` | `GET /api/v1/genie/spaces` |
 | `aops dev` | 없음: 내 PC에 개발 화면을 여는 명령이다. 그 화면이 이 API를 쓴다 |
 | `aops run "<질문>"` | `POST /api/v1/sessions/{session_id}/turns/stream` |

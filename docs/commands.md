@@ -4,7 +4,7 @@
 
 > **지금** 열: ● 동작 (스킬 기반) · ◐ 일부 동작 · – 설계. 명령마다 **지금:** 줄에 현재 구현을 적었습니다. 노코드·코드 기반 경로는 아직 없습니다(코드 `register`는 501, `init`은 안내만).
 
-명령은 22개입니다(console 화면 전까지 쓰는 승인 명령 `gates`·`approve`·`reject` 포함). 개발자가 매일 쓰는 것은 개발 명령 7개입니다. 찾기·가져오기와 등록·배포는 dbx 이상에서만 쓰고, `admin`은 관리자만 씁니다. custom 에디션은 모든 명령이 dbx와 같고, 같은 기능을 `aops serve` API로도 씁니다.
+명령은 22개입니다(console 화면의 배포 요청함과 같은 일을 하는 승인 명령 `gates`·`approve`·`reject` 포함). 등록·배포 명령은 [console 화면](console.md)에서도 모두 됩니다. 개발자가 매일 쓰는 것은 개발 명령 7개입니다. 찾기·가져오기와 등록·배포는 dbx 이상에서만 쓰고, `admin`은 관리자만 씁니다. custom 에디션은 모든 명령이 dbx와 같고, 같은 기능을 `aops serve` API로도 씁니다.
 
 **개발 (모든 에디션, 강제 없음)**
 
@@ -188,7 +188,7 @@ aops load <agent_id> [--version x.y.z] [--dir <폴더>]
 1. `aops register`: 버전 저장 → `agents`·`agent_versions`·`agent_version_skills` (노코드는 5에서 자동)
 2. `aops validate`: 등록된 버전을 Lakeflow Job이 관리자 정책으로 검사 → `validation_runs` (배포 요청 때 결과가 없으면 자동으로 돌림)
 3. `aops deploy`: 배포 요청 → 검사 결과 확인 → `release_gates`
-4. console 화면: 승인 그룹이 [승인]·[반려] → `approvals` (정책에 따라 자동 승인). **지금:** console 화면 대신 `aops approve`·`aops reject`(같은 API)
+4. console 화면: 승인 그룹이 [승인]·[반려] → `approvals` (정책에 따라 자동 승인). CLI는 `aops approve`·`aops reject`(같은 API)
 5. 배포 Job: 승인 기록 재확인 → 운영 반영 → `deployments`, `agent_production`
 6. `aops promote --to <대상>`: 대상자 권한 부여
 
@@ -270,7 +270,7 @@ aops deploy --dev
 - **지금:** 스킬 기반이 동작합니다.
   - 같은 버전을 다시 요청하면 진행 중인 요청을 이어서 보여 주고, 다른 버전의 요청이 진행 중이면 막습니다.
   - 이 버전·이 정책으로 통과한 검사가 없으면 validate Job을 먼저 돌립니다(`exempt`면 건너뜀). 실패하면 `mandatory`는 승인자에게 가기 전에 반려하고, `optional`은 실패 결과를 남긴 채 승인자에게 넘깁니다(승인 방식이 `auto`여도 사람이 판단).
-  - 승인: `auto`면 `policy:auto`로 자동 승인합니다. `optional`이면 SPEC의 중요도가 `low`이고 민감도가 `public`·`internal`일 때만 자동 승인하고, 아니면 승인자가 필요합니다(이유가 `decision_reason`에 남음). `required`면 늘 승인자가 [`aops approve`](#aops-gates--approve--reject)로 합니다. console 화면은 설계입니다.
+  - 승인: `auto`면 `policy:auto`로 자동 승인합니다. `optional`이면 SPEC의 중요도가 `low`이고 민감도가 `public`·`internal`일 때만 자동 승인하고, 아니면 승인자가 필요합니다(이유가 `decision_reason`에 남음). `required`면 늘 승인자가 console 화면의 배포 요청함이나 [`aops approve`](#aops-gates--approve--reject)로 합니다.
   - 사람이 판단해야 하면 CLI는 gate ID와 승인·반려·취소 명령을 보여 주고 끝납니다. `aops deploy`를 다시 치면 그 요청을 이어서 보여 줍니다.
   - `--cancel`: 요청자나 담당자·담당 팀이 검사 중·승인 대기인 요청을 취소합니다(`gate_canceled`). 운영 반영 뒤에는 이전 버전을 배포해 되돌립니다.
   - 배포 Job(`aops-deploy`, 서비스 주체 실행)이 승인과 zip 해시를 다시 확인하고, 스킬마다 UC Skill을 처음이면 만들고 아니면 내용을 이 버전으로 바꿉니다. 이전 운영 버전에 있던 스킬이 이 버전에 없으면 지우지 않고 Job 출력에 알립니다.
@@ -408,6 +408,6 @@ dbx 기능을 HTTP API 서버로 엽니다. 조직의 웹·서비스가 자기 �
 - **위치:** 조직 서버나 컨테이너에서 이 명령으로 띄웁니다. Databricks App(aops 서버)은 `aops admin setup`이 배포합니다.
 - **인증:** Databricks OAuth 토큰(`Authorization: Bearer`)만 받습니다. 사람 권한이 필요한 확인은 그 사람 권한으로, 레지스트리 기록·Job 실행·권한 변경은 서비스 주체로 합니다.
 - **실행:** 하네스는 세션마다 Databricks Sandbox에서 돕니다. 프로젝트는 Workspace 폴더(Git 폴더)나 UC Volume에 둡니다.
-- 화면 없이 API만 엽니다. 요청·응답 형식은 `/api/v1/docs`에서 보고, 명령 ↔ API 대응은 `GET /api/v1/meta/commands`로 받습니다.
+- `/`는 console 화면입니다([console](console.md)). 요청·응답 형식은 `/api/v1/docs`에서 보고, 명령 ↔ API 대응은 `GET /api/v1/meta/commands`로 받습니다.
 - `--cors-origin`: 다른 도메인의 브라우저 화면이 직접 부를 때 허용할 주소입니다. 조직 서버에서 띄울 때만 씁니다.
-- **지금:** 동작합니다. 환경변수 `AOPS_REGISTRY`·`AOPS_WAREHOUSE_ID`(Job용 `AOPS_DIST_WHEEL`)가 있으면 스킬 기반의 11개 경로가 레지스트리에 연결되고, 없으면 모든 경로가 `501`입니다([API](api.md)). 하네스 실행(대화 경로)과 Sandbox는 아직 없습니다.
+- **지금:** 동작합니다. 환경변수 `AOPS_REGISTRY`·`AOPS_WAREHOUSE_ID`(Job용 `AOPS_DIST_WHEEL`)가 있으면 스킬 기반 경로(등록·검사·배포·승인·권한·가져오기, 에이전트·버전·검사·배포·운영 버전·이력 조회, 정책 조회·변경, 내 계정, 새 에이전트 폴더)가 레지스트리에 연결되고, 없으면 `501`입니다([API](api.md)). PC에서 프로필(`AOPS_PROFILE`)로 띄우면 브라우저의 사용자는 그 프로필 사용자입니다. 하네스 실행(대화 경로)과 Sandbox는 아직 없습니다.

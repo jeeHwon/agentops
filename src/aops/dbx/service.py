@@ -174,6 +174,87 @@ class Service:
             row["detail"] = loads(row.get("detail")) or {}
         return rows
 
+    def agent_status(self, agent_id: str) -> dict[str, Any]:
+        row = self.sql.one(f"SELECT * FROM {self.sql.table('agent_status')} WHERE agent_id = :id", {"id": agent_id})
+        if not row:
+            raise ServiceError(404, "not_found", f"등록된 에이전트가 없습니다: {agent_id}", "aops list")
+        return row
+
+    def version_rows(self, agent_id: str) -> list[dict[str, Any]]:
+        """Versions, newest first, with their Git copy when there is one (for the registry screen)."""
+        self._agent_or_404(agent_id)
+        try:
+            git = self.git_records(agent_id)
+        except Exception:  # no agent_version_git table yet
+            git = {}
+        rows = list(reversed(self.versions(agent_id)))
+        for row in rows:
+            record = git.get(row["version"])
+            row["git_commit"] = (record or {}).get("commit_sha")
+            row["git_url"] = (record or {}).get("url")
+            row["git_status"] = (record or {}).get("status")
+            row["created_at"] = row["registered_at"]
+        return rows
+
+    def version_detail(self, agent_id: str, version: str) -> dict[str, Any]:
+        row = next((r for r in self.version_rows(agent_id) if r["version"] == version), None)
+        if not row:
+            raise ServiceError(404, "not_found", f"{agent_id}에 {version} 버전이 없습니다")
+        record = None
+        try:
+            record = self.git_records(agent_id).get(version)
+        except Exception:
+            pass
+        return {**row, "spec": loads(row.get("spec")) or {}, "skills": self.version_skills(agent_id, version), "git": record}
+
+    def validation_runs(self, agent_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self.sql.run(f"SELECT * FROM {self.sql.table('validation_runs')} WHERE agent_id = :a "
+                            f"ORDER BY started_at DESC LIMIT {int(limit)}", {"a": agent_id})
+        for row in rows:
+            row["steps"] = loads(row.get("steps")) or []
+            row["policy_version"] = int(row["policy_version"])
+        return rows
+
+    def deployment_rows(self, agent_id: str | None = None, deployment_id: str | None = None) -> list[dict[str, Any]]:
+        where, params = ("deployment_id = :d", {"d": deployment_id}) if deployment_id else ("agent_id = :a", {"a": agent_id})
+        rows = self.sql.run(f"SELECT * FROM {self.sql.table('deployments')} WHERE {where} ORDER BY started_at DESC LIMIT 50", params)
+        for row in rows:
+            row["detail"] = loads(row.get("detail")) or {}
+        return rows
+
+    def policies(self) -> list[dict[str, Any]]:
+        rows = self.sql.run(f"SELECT * FROM {self.sql.table('policies')} ORDER BY policy_version DESC")
+        for row in rows:
+            row["policy_version"] = int(row["policy_version"])
+            row["body"] = {**DEFAULT_POLICY, **(loads(row.get("body")) or {})}
+        return rows
+
+    def me(self, caller: Caller) -> dict[str, Any]:
+        _, policy = self.policy()
+        group = policy.get("approver_group")
+        roles = ["developer"] + (["approver"] if not group or group in caller.groups else []) + (["admin"] if is_admin(caller) else [])
+        return {"user": caller.email, "groups": caller.groups, "roles": roles}
+
+    def set_policy(self, caller: Caller, changes: dict[str, Any]) -> dict[str, Any]:
+        """A new policy version from the console. Workspace admins only; keys that are not changed (Git) stay."""
+        if not is_admin(caller):
+            raise ServiceError(403, "not_admin", "정책은 워크스페이스 관리자(admins)만 바꿉니다", "aops admin setup --only policy")
+        allowed = {"validation_mode": {"mandatory", "optional", "exempt"}, "approval_mode": {"required", "optional", "auto"}}
+        for key, values in allowed.items():
+            if key in changes and changes[key] not in values:
+                raise ServiceError(400, "bad_policy", f"{key}는 {', '.join(sorted(values))} 중 하나입니다")
+        version, current = self.policy()
+        body = {**current, **{k: v for k, v in changes.items() if k in (*allowed, "approver_group")}}
+        if body == current:
+            return self.policies()[0] if version else {"policy_version": 0, "body": current}
+        new_version = version + 1
+        self.sql.atomic([
+            (f"UPDATE {self.sql.table('policies')} SET status = 'retired' WHERE status = 'active'", {}),
+            (f"INSERT INTO {self.sql.table('policies')} VALUES (:v, 'active', parse_json(:b), :by, current_timestamp())",
+             {"v": new_version, "b": body, "by": caller.email}),
+        ])
+        return self.policies()[0]
+
     def event(self, agent_id: str, version: str | None, kind: str, actor: str, detail: dict[str, Any] | None = None) -> None:
         self.sql.run(*self._event_statement(agent_id, version, kind, actor, detail))
 
@@ -951,6 +1032,10 @@ def check_skill_agent(files: dict[str, bytes]) -> list[dict[str, Any]]:
     steps.append({"name": "secrets", "status": "failed" if leaks else "passed",
                   "detail": "비밀값·금지 파일: " + ", ".join(leaks) if leaks else "비밀값·금지 파일이 없습니다"})
     return steps
+
+
+def is_admin(caller: Caller) -> bool:
+    return "admins" in caller.groups
 
 
 def find_secrets(files: dict[str, bytes]) -> list[str]:
