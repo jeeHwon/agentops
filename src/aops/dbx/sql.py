@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
 VARIANT_PREFIX = "{", "["
+PARAM = re.compile(r"(?<!:):([A-Za-z_]\w*)")  # a named parameter marker, not a :: cast
 # Delta concurrent-write conflicts: another transaction changed the same rows first.
 CONFLICTS = ("DELTA_CONCURRENT_APPEND", "DELTA_CONCURRENT_DELETE", "DELTA_CONCURRENT_TRANSACTION",
              "ConcurrentAppendException", "ConcurrentDeleteReadException", "ConcurrentTransactionException")
@@ -68,6 +70,30 @@ class Sql:
     def one(self, statement: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
         rows = self.run(statement, params)
         return rows[0] if rows else None
+
+    def atomic(self, statements: list[tuple[str, dict[str, Any]]]) -> None:
+        """Run the statements as one transaction (`BEGIN ATOMIC … END`): all of them commit, or none.
+
+        Needs Unity Catalog managed tables with catalog-managed commits (the registry DDL turns it on).
+        Each statement keeps its own parameter names; they are prefixed here so they cannot collide.
+        """
+        if not statements:
+            return
+        body, params = atomic_block(statements)
+        self.run(body, params)
+
+
+def atomic_block(statements: list[tuple[str, dict[str, Any]]]) -> tuple[str, dict[str, Any]]:
+    parts, merged = [], {}
+    for i, (statement, values) in enumerate(statements):
+        names = set(values or {})
+
+        def rename(match: re.Match, i: int = i, names: set[str] = names) -> str:
+            return f":s{i}_{match.group(1)}" if match.group(1) in names else match.group(0)
+
+        parts.append("  " + PARAM.sub(rename, statement.strip().rstrip(";")) + ";")
+        merged.update({f"s{i}_{k}": v for k, v in (values or {}).items()})
+    return "BEGIN ATOMIC\n" + "\n".join(parts) + "\nEND", merged
 
 
 def _text(value: Any) -> str | None:

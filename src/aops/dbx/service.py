@@ -174,8 +174,12 @@ class Service:
         return rows
 
     def event(self, agent_id: str, version: str | None, kind: str, actor: str, detail: dict[str, Any] | None = None) -> None:
-        self.sql.run(f"INSERT INTO {self.sql.table('agent_events')} VALUES (:e, :a, :v, :k, :actor, current_timestamp(), parse_json(:d))",
-                     {"e": now_id(), "a": agent_id, "v": version, "k": kind, "actor": actor, "d": detail or {}})
+        self.sql.run(*self._event_statement(agent_id, version, kind, actor, detail))
+
+    def _event_statement(self, agent_id: str, version: str | None, kind: str, actor: str,
+                         detail: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
+        return (f"INSERT INTO {self.sql.table('agent_events')} VALUES (:e, :a, :v, :k, :actor, current_timestamp(), parse_json(:d))",
+                {"e": now_id(), "a": agent_id, "v": version, "k": kind, "actor": actor, "d": detail or {}})
 
     # ── register ────────────────────────────────────────────────────────────
 
@@ -214,33 +218,45 @@ class Service:
         hashes = {alias: package.files_sha256(list(content.items())) for alias, content in skills.items()}
         published = {alias: f"{self.config.registry}.{uc_skill_id(agent_id, alias)}" for alias in skills}
 
-        # 3. the registry
+        # 3. the registry, in one transaction: an agent row whose columns follow this SPEC, the version,
+        #    its skills and the audit line. If it fails, the zip written above is taken back.
+        fields = {"name": spec.get("name") or agent_id, "desc": spec.get("description"),
+                  "group": spec.get("owner_group") or None, "crit": pick(spec.get("service_criticality"), CRITICALITY, "medium"),
+                  "sens": pick(spec.get("data_sensitivity"), SENSITIVITY, "internal"),
+                  "sec": spec.get("security_level") or "general", "spec": spec}
+        statements: list[tuple[str, dict[str, Any]]] = []
         if not agent:
-            owner = spec.get("owner") or caller.email
-            self.sql.run(
+            statements.append((
                 f"INSERT INTO {self.sql.table('agents')} VALUES (:id, :name, :desc, 'skill', :owner, :group, :crit, :sens, :sec, "
                 "'registered', parse_json(:spec), :by, current_timestamp(), current_timestamp())",
-                {"id": agent_id, "name": spec.get("name") or agent_id, "desc": spec.get("description"), "owner": owner,
-                 "group": spec.get("owner_group") or None, "crit": pick(spec.get("service_criticality"), CRITICALITY, "medium"),
-                 "sens": pick(spec.get("data_sensitivity"), SENSITIVITY, "internal"),
-                 "sec": spec.get("security_level") or "general", "spec": spec, "by": caller.email},
-            )
+                {**fields, "id": agent_id, "owner": spec.get("owner") or caller.email, "by": caller.email}))
         else:
-            self.sql.run(f"UPDATE {self.sql.table('agents')} SET spec = parse_json(:spec), updated_at = current_timestamp() "
-                         "WHERE agent_id = :id", {"id": agent_id, "spec": spec})
+            # The owner changes only when the SPEC names one; an empty owner keeps the current owner.
+            statements.append((
+                f"UPDATE {self.sql.table('agents')} SET name = :name, description = :desc, owner = coalesce(:owner, owner), "
+                "owner_group = :group, service_criticality = :crit, data_sensitivity = :sens, security_level = :sec, "
+                "spec = parse_json(:spec), updated_at = current_timestamp() WHERE agent_id = :id",
+                {**fields, "id": agent_id, "owner": spec.get("owner") or None}))
         harness = re.search(r'harness\s*=\s*"(\w+)"', files["aops.toml"].decode("utf-8"))
-        self.sql.run(
+        statements.append((
             f"INSERT INTO {self.sql.table('agent_versions')} VALUES (:id, :v, 'registered', :sha, :path, :size, :skills, "
             ":harness, NULL, parse_json(:spec), :by, current_timestamp())",
             {"id": agent_id, "v": new_version, "sha": sha, "path": path, "size": len(data), "skills": skills_sha256(hashes),
-             "harness": harness.group(1) if harness else None, "spec": spec, "by": caller.email},
-        )
+             "harness": harness.group(1) if harness else None, "spec": spec, "by": caller.email}))
         for alias, uc_name in published.items():
-            self.sql.run(f"INSERT INTO {self.sql.table('agent_version_skills')} VALUES (:id, :v, :alias, :uc, :sha, :src, 'agent')",
-                         {"id": agent_id, "v": new_version, "alias": alias, "uc": uc_name, "sha": hashes[alias],
-                          "src": f"agent/skills/{alias}"})
-        self.event(agent_id, new_version, "register", caller.email,
-                   {"artifact_path": path, "skills": published, "first": not existing})
+            statements.append((f"INSERT INTO {self.sql.table('agent_version_skills')} VALUES (:id, :v, :alias, :uc, :sha, :src, 'agent')",
+                               {"id": agent_id, "v": new_version, "alias": alias, "uc": uc_name, "sha": hashes[alias],
+                                "src": f"agent/skills/{alias}"}))
+        statements.append(self._event_statement(agent_id, new_version, "register", caller.email,
+                                                {"artifact_path": path, "skills": published, "first": not existing}))
+        try:
+            self.sql.atomic(statements)
+        except Exception:
+            try:
+                self.w.files.delete(path)  # the zip is written once; without its rows it would block this version
+            except Exception:
+                pass
+            raise
         return {**self.version(agent_id, new_version), "skills": self.version_skills(agent_id, new_version)}
 
     # ── UC skills ───────────────────────────────────────────────────────────
@@ -561,24 +577,26 @@ class Service:
             removed = [s["uc_name"] for s in (self.version_skills(agent_id, production["current_version"]) if production else [])
                        if s["skill_alias"] not in kept and s["uc_name"]]
             previous = production["current_version"] if production else None
-            self.sql.run(f"UPDATE {self.sql.table('agent_versions')} SET status = 'retired' WHERE agent_id = :a AND status = 'production'",
-                         {"a": agent_id})
-            self.sql.run(f"UPDATE {self.sql.table('agent_versions')} SET status = 'production' WHERE agent_id = :a AND version = :v",
-                         {"a": agent_id, "v": version})
-            self.sql.run(
-                f"MERGE INTO {self.sql.table('agent_production')} t USING (SELECT :a AS agent_id) s ON t.agent_id = s.agent_id "
-                "WHEN MATCHED THEN UPDATE SET previous_version = t.current_version, current_version = :v, target = :t, updated_by = :by, "
-                "updated_at = current_timestamp() WHEN NOT MATCHED THEN INSERT (agent_id, current_version, previous_version, target, updated_by, updated_at) "
-                "VALUES (:a, :v, NULL, :t, :by, current_timestamp())",
-                {"a": agent_id, "v": version, "t": ", ".join(names), "by": gate["requester"]},
-            )
-            self.sql.run(f"UPDATE {self.sql.table('agents')} SET lifecycle = 'production', updated_at = current_timestamp() WHERE agent_id = :a",
-                         {"a": agent_id})
-            self.sql.run(f"UPDATE {self.sql.table('deployments')} SET status = 'succeeded', target = :t, ended_at = current_timestamp() "
-                         "WHERE deployment_id = :d", {"t": ", ".join(names), "d": deployment_id})
             kind = "rollback" if gate["upgrade_type"] == "rollback" else "deploy"
-            self.event(agent_id, version, kind, gate["requester"],
-                       {"gate_id": gate_id, "previous": previous, "skills": names, "not_in_version": removed})
+            # Which version is in production lives in three places (versions, the pointer, the agent): they
+            # change together with the deployment result and the audit line, or not at all.
+            self.sql.atomic([
+                (f"UPDATE {self.sql.table('agent_versions')} SET status = 'retired' WHERE agent_id = :a AND status = 'production'",
+                 {"a": agent_id}),
+                (f"UPDATE {self.sql.table('agent_versions')} SET status = 'production' WHERE agent_id = :a AND version = :v",
+                 {"a": agent_id, "v": version}),
+                (f"MERGE INTO {self.sql.table('agent_production')} t USING (SELECT :a AS agent_id) s ON t.agent_id = s.agent_id "
+                 "WHEN MATCHED THEN UPDATE SET previous_version = t.current_version, current_version = :v, target = :t, updated_by = :by, "
+                 "updated_at = current_timestamp() WHEN NOT MATCHED THEN INSERT (agent_id, current_version, previous_version, target, updated_by, updated_at) "
+                 "VALUES (:a, :v, NULL, :t, :by, current_timestamp())",
+                 {"a": agent_id, "v": version, "t": ", ".join(names), "by": gate["requester"]}),
+                (f"UPDATE {self.sql.table('agents')} SET lifecycle = 'production', updated_at = current_timestamp() WHERE agent_id = :a",
+                 {"a": agent_id}),
+                (f"UPDATE {self.sql.table('deployments')} SET status = 'succeeded', target = :t, ended_at = current_timestamp() "
+                 "WHERE deployment_id = :d", {"t": ", ".join(names), "d": deployment_id}),
+                self._event_statement(agent_id, version, kind, gate["requester"],
+                                      {"gate_id": gate_id, "previous": previous, "skills": names, "not_in_version": removed}),
+            ])
             return {"status": "succeeded", "agent_id": agent_id, "version": version, "previous": previous,
                     "approval_mode": gate.get("approval_mode"), "requester": gate["requester"], "skills": skills,
                     "not_in_version": removed, "artifact_path": target["artifact_path"]}
