@@ -123,6 +123,19 @@ def create_validation(project_id: str, body: ValidationCreate, request: Request)
     return ValidationRun(**svc.start_validation(caller_of(request, svc), project_id, body.version))
 
 
+class GenieCheckRequest(BaseModel):
+    space_id: str = Field(examples=["01f1d68538081bcfb0dec6f1a97f0cd7"], description="개발용 Genie 스페이스 ID")
+
+
+@router.post(
+    "/no-code/checks", summary="노코드 자가 점검 (Genie 정의 규칙)",
+    **command("aops validate", DBX, note="노코드: Gate의 정의 규칙(준수율)을 지금 바로 돌린다. 참고용이며 기록하지 않는다. 서버가 서비스 주체로 정의를 읽으므로 스페이스를 aops 서비스 주체와 공유(편집)해야 한다. 벤치마크는 배포 요청 때."),
+)
+def genie_check(body: GenieCheckRequest, request: Request) -> dict:
+    svc = service_for("aops validate")
+    return svc.genie_check(caller_of(request, svc), body.space_id.strip())
+
+
 @router.get("/validations/{validation_run_id}", summary="검증 결과 (단계별)", **command(None, DBX, screen="검증 진행 화면"))
 def get_validation(validation_run_id: str, request: Request) -> ValidationRun:
     svc = service_for(None)

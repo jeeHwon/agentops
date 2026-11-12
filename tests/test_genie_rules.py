@@ -63,3 +63,26 @@ def test_policy_changes_levels_and_values():
 def test_the_hash_ignores_key_order():
     shuffled = {k: GOOD[k] for k in reversed(list(GOOD))}
     assert definition_hash(shuffled) == definition_hash(GOOD)
+
+
+def test_the_server_self_check_reads_the_space_and_applies_the_policy():
+    import json
+    from types import SimpleNamespace
+
+    import pytest
+
+    pytest.importorskip("databricks.sdk")
+    from aops.dbx.service import Caller, Service, ServiceError
+
+    svc = object.__new__(Service)
+    space = SimpleNamespace(title="sales", warehouse_id="w", serialized_space=json.dumps(GOOD))
+    svc.w = SimpleNamespace(genie=SimpleNamespace(get_space=lambda space_id, include_serialized_space: space))
+    svc.policy = lambda: (1, {"no_code": {"rules": {"examples.count": {"min": 10}}}})
+    report = svc.genie_check(Caller("dev@x.com"), "0" * 32)
+    assert report["status"] == "failed" and "examples.count" in report["detail"] and report["tables"] == ["main.shop.orders", "main.shop.customers"]
+    with pytest.raises(ServiceError):
+        svc.genie_check(Caller("dev@x.com"), "not-an-id")
+    space.serialized_space = ""
+    with pytest.raises(ServiceError) as empty:
+        svc.genie_check(Caller("dev@x.com"), "0" * 32)
+    assert empty.value.code == "no_definition"

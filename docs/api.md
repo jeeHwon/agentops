@@ -54,7 +54,7 @@
 | 명령 | API |
 | --- | --- |
 | `aops configure` | `POST /api/v1/projects/{project_id}/configure` |
-| `aops validate` | `POST /api/v1/projects/{project_id}/validations` |
+| `aops validate` | `POST /api/v1/projects/{project_id}/validations`<br>`POST /api/v1/no-code/checks` |
 | `aops register` | `POST /api/v1/projects/{project_id}/registrations` |
 | `aops deploy` | `POST /api/v1/projects/{project_id}/deploy-requests` |
 | `aops deploy --cancel` | `POST /api/v1/release-gates/{gate_id}/cancel` |

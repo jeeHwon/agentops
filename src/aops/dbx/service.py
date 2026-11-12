@@ -235,6 +235,35 @@ class Service:
             row["body"] = {**DEFAULT_POLICY, **(loads(row.get("body")) or {})}
         return rows
 
+    def genie_check(self, caller: Caller, space_id: str) -> dict[str, Any]:
+        """No-code self-check: the Gate's definition rules on a Genie space, right now (for reference only).
+
+        The server reads the definition with its own identity, like the Gate does, so the space has to be
+        shared with the aops service principal (edit) — the same thing a deploy request needs.
+        """
+        import json as json_
+
+        from . import genie_rules
+
+        if not re.fullmatch(r"[0-9a-f]{32}", space_id or ""):
+            raise ServiceError(400, "bad_space_id", "Genie 스페이스 ID는 32자리 16진수입니다 (주소의 /genie/rooms/<ID>)", "aops validate")
+        try:
+            space = self.w.genie.get_space(space_id, include_serialized_space=True)
+        except Exception as error:
+            raise ServiceError(404, "space_not_readable", f"Genie 스페이스를 읽지 못했습니다 ({type(error).__name__}). "
+                               "aops 서비스 주체에 편집 권한을 주거나 aops 에이전트 폴더 안에서 만드세요", "aops validate") from error
+        if not space.serialized_space:
+            raise ServiceError(409, "no_definition", "정의가 비어 있는 응답입니다. aops 서비스 주체에 편집(CAN EDIT) 권한이 필요합니다", "aops validate")
+        definition = json_.loads(space.serialized_space)
+        _, policy = self.policy()
+        no_code = policy.get("no_code") or {}
+        step = genie_rules.format_step(definition, lint_min=float(no_code.get("lint_min", 0.9)), rules=no_code.get("rules"))
+        tables = (definition.get("data_sources") or {}).get("tables") or []
+        return {"space_id": space_id, "title": space.title, "warehouse_id": space.warehouse_id,
+                "definition_sha256": genie_rules.definition_hash(definition), "tables": [t.get("identifier") for t in tables],
+                "status": step["status"], "score": step["score"], "detail": step["detail"], "rules": step["rules"],
+                "checked_by": caller.email}
+
     def me(self, caller: Caller) -> dict[str, Any]:
         _, policy = self.policy()
         group = policy.get("approver_group")

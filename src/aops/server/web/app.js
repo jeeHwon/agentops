@@ -150,6 +150,7 @@ const NAV = [
   ["gates", "✓", "배포 요청함"],
   ["register", "↑", "등록"],
   ["new", "+", "새 에이전트"],
+  ["genie", "◇", "노코드 점검"],
   ["sep"],
   ["policy", "⚙", "정책"],
   ["guide", "?", "CLI·Genie Code 안내"],
@@ -202,6 +203,7 @@ async function render() {
       case "gates": show("gates", [h("b", {}, "배포 요청함")], body); await gatesPage(body, params); break;
       case "register": show("register", [h("b", {}, "등록")], body); registerPage(body, params); break;
       case "new": show("new", [h("b", {}, "새 에이전트")], body); newPage(body); break;
+      case "genie": show("genie", [h("b", {}, "노코드 점검")], body); geniePage(body, params); break;
       case "policy": show("policy", [h("b", {}, "정책")], body); await policyPage(body); break;
       case "guide": show("guide", [h("b", {}, "CLI·Genie Code 안내")], body); await guidePage(body); break;
       default: location.hash = "#/agents";
@@ -742,6 +744,41 @@ function newPage(root) {
         h("div", { class: "note mt" }, "코드 기반: agentbricks dev로 시험하고 같은 방법으로 등록·배포합니다. 운영 앱(agent-bricks-<이름>)은 aops 서버가 서비스 주체로 배포합니다. 노코드(Genie Agent)는 준비 중입니다."))));
 }
 
+// ── 노코드 점검 (Genie 정의 규칙, 참고용) ─────────────────────────────────────
+
+function geniePage(root, params) {
+  const input = h("input", { type: "text", placeholder: "Genie 스페이스 주소나 ID (32자리)", style: "width:420px", value: params.get("space") || "" });
+  const result = h("div", {});
+  const run = async () => {
+    const id = (input.value.match(/[0-9a-f]{32}/) || [""])[0];
+    if (!id) return toast("Genie 스페이스 ID(32자리 16진수)를 넣으세요", "bad");
+    result.replaceChildren(h("div", { class: "loading" }, h("span", { class: "spinner" }), " 정의를 읽고 규칙을 돌리는 중…"));
+    try {
+      const r = await post("/no-code/checks", { space_id: id });
+      const failed = r.rules.filter((x) => !x.passed);
+      result.replaceChildren(h("div", { class: "card pad mt" },
+        h("div", { class: "row" }, h("h2", { style: "margin:0" }, r.title || id), badge("validation", r.status),
+          h("span", { class: "muted" }, `준수율 ${Math.round(r.score * 100)}%`)),
+        h("dl", { class: "kv mt" },
+          h("dt", {}, "데이터 소스"), h("dd", { class: "mono" }, r.tables.join(", ") || "–"),
+          h("dt", {}, "정의 해시"), h("dd", { class: "mono" }, short(r.definition_sha256))),
+        h("table", { class: "data mt" }, h("thead", {}, h("tr", {}, ["규칙", "수준", "결과", "고치는 곳"].map((t) => h("th", {}, t)))),
+          h("tbody", {}, [...failed, ...r.rules.filter((x) => x.passed)].map((x) => h("tr", {},
+            h("td", {}, h("div", { class: "cell-main mono" }, x.id), h("div", { class: "cell-sub" }, x.message)),
+            h("td", {}, h("span", { class: `badge ${x.level === "ERROR" ? "bad" : "warn"} plain` }, x.level)),
+            h("td", {}, x.passed ? h("span", { class: "badge ok" }, "통과") : h("span", { class: "badge bad" }, "미달")),
+            h("td", { class: "muted" }, x.passed ? "" : x.fix)))))));
+    } catch (e) { result.replaceChildren(); fail(e); }
+  };
+  root.replaceChildren(
+    pageHead("노코드 점검", "Genie 정의를 배포 요청 Gate와 같은 규칙으로 지금 점검합니다 (참고용, 기록하지 않음)"),
+    h("div", { class: "card pad" },
+      h("div", { class: "row" }, input, h("button", { class: "btn primary", onclick: run }, "점검")),
+      h("div", { class: "note mt" }, "aops 서버가 서비스 주체로 정의를 읽습니다. 스페이스를 aops 서비스 주체와 편집 권한으로 공유하거나 aops 에이전트 폴더 안에서 만드세요. 벤치마크 정확도·회귀는 배포 요청 때 봅니다.")),
+    result);
+  if (input.value) run();
+}
+
 // ── 정책 (aops admin setup --only policy) ───────────────────────────────────
 
 async function policyPage(root) {
@@ -793,7 +830,7 @@ async function policyPage(root) {
 // ── 안내: CLI ↔ 화면 ↔ Genie Code ───────────────────────────────────────────
 
 const SCREEN = {
-  "aops init": "새 에이전트", "aops list": "에이전트", "aops load": "에이전트 → 가져오기", "aops validate": "에이전트 → 검사",
+  "aops init": "새 에이전트", "aops list": "에이전트", "aops load": "에이전트 → 가져오기", "aops validate": "에이전트 → 검사 · 노코드 점검",
   "aops register": "등록", "aops deploy": "에이전트 → 배포", "aops deploy --cancel": "배포 요청함 → 취소", "aops gates": "배포 요청함",
   "aops approve": "배포 요청함 → 승인", "aops reject": "배포 요청함 → 반려", "aops promote": "에이전트 → 권한",
   "aops admin setup": "정책 (정책만, 나머지는 CLI)",
