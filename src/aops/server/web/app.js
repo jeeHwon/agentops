@@ -471,7 +471,7 @@ function followDeploy(id, version, reason) {
       else if (g.validation_policy_mode === "exempt") rows.push(item("ok", "검사 면제", "정책"));
       if (g.decision === "pending_approval") rows.push(item(personDecides ? "wait" : "run", personDecides ? "승인자 필요" : "정책 자동 승인 중", g.decision_reason || "승인자가 배포 요청함에서 승인합니다"));
       if (["approved"].includes(g.decision)) rows.push(item("ok", "승인됨", g.approved_by === "policy:auto" ? "정책 자동 승인" : `승인자 ${g.approved_by || ""}`));
-      if (g.deployment_status === "running") rows.push(item("run", "배포 Job 실행 중", "UC Skill 내용을 이 버전으로 바꿉니다 (보통 1~2분)"));
+      if (g.deployment_status === "running") rows.push(item("run", "운영 반영 중", "스킬 기반: 배포 Job이 UC Skill 내용을 바꿈 (1~2분) · 코드 기반: aops 서버가 운영 앱을 배포 (4~5분)"));
       if (g.deployment_status === "succeeded") rows.push(item("ok", "운영 반영 완료", `운영 버전 ${g.version}`));
       if (g.deployment_status === "failed") rows.push(item("bad", "배포 실패", "배포 탭의 기록을 확인하세요"));
       if (g.decision === "rejected") rows.push(item("bad", "반려", g.decision_reason || ""));
