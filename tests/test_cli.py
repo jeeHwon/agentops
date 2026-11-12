@@ -33,3 +33,35 @@ def test_deploy_stops_when_a_person_has_to_decide():
     assert person_decides({**pending, "approval_mode": "required"})
     assert person_decides({**pending, "approval_mode": "optional"})
     assert not person_decides({**pending, "decision": "approved", "approval_mode": "required"})
+
+
+def test_admin_setup_adds_user_scopes_with_an_app_update_and_checks_them(capsys):
+    from types import SimpleNamespace
+
+    from aops import admin
+
+    state = {"scopes": ["files"]}
+    calls = []
+
+    def create_update_and_wait(name, mask, app=None, timeout=None):
+        calls.append((name, mask, app.user_api_scopes))
+        if "bogus" in app.user_api_scopes:
+            raise RuntimeError("Invalid scope: bogus")
+        state["scopes"] = app.user_api_scopes
+
+    apps = SimpleNamespace(create_update_and_wait=create_update_and_wait,
+                           get=lambda name: SimpleNamespace(user_api_scopes=list(state["scopes"])))
+    app = SimpleNamespace(name="aops-server", user_api_scopes=["files"], effective_user_api_scopes=["files", "iam.current-user:read"])
+    admin._ensure_user_scopes(SimpleNamespace(apps=apps), app)
+    assert calls[0] == ("aops-server", "user_api_scopes", ["files", "genie", "workspace.workspace"])
+    assert state["scopes"] == ["files", "genie", "workspace.workspace"] and "더함: genie, workspace.workspace" in capsys.readouterr().out
+
+    state["scopes"] = ["files"]
+    original = admin.USER_SCOPES
+    admin.USER_SCOPES = ("files", "genie", "bogus")
+    try:
+        admin._ensure_user_scopes(SimpleNamespace(apps=apps), SimpleNamespace(name="a", user_api_scopes=["files"], effective_user_api_scopes=[]))
+    finally:
+        admin.USER_SCOPES = original
+    out = capsys.readouterr().out
+    assert state["scopes"] == ["files", "genie"] and "더하지 못했습니다: bogus (Invalid scope: bogus)" in out

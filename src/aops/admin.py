@@ -345,6 +345,8 @@ IDENTITY_SCOPES = ("iam.current-user:read",)
 
 
 def _ensure_user_scopes(w: Any, app: Any) -> None:
+    """Add the user scopes the server needs. Checked by reading the app again: the plain app update
+    does not change scopes (only an app update with update_mask user_api_scopes does)."""
     current = set(app.user_api_scopes or [])
     effective = current | set(app.effective_user_api_scopes or [])
     missing = [s for s in IDENTITY_SCOPES if s not in effective]
@@ -353,28 +355,35 @@ def _ensure_user_scopes(w: Any, app: Any) -> None:
     wanted = [s for s in USER_SCOPES if s not in current]
     if not wanted:
         return
+    errors: dict[str, str] = {}
     try:
-        app.user_api_scopes = sorted(current | set(wanted))
-        w.apps.update(app.name, app)
-        print(f"  사용자 권한 범위: {', '.join(app.user_api_scopes)}")
-        return
+        current = _set_user_scopes(w, app.name, current | set(wanted))
     except Exception as error:
         first = str(error).splitlines()[0][:120]
-    added, failed = [], []
-    for scope in wanted:  # one at a time: a scope this workspace does not know must not block the others
-        try:
-            app.user_api_scopes = sorted(current | {scope})
-            w.apps.update(app.name, app)
-            current.add(scope)
-            added.append(scope)
-        except Exception as error:
-            failed.append(f"{scope} ({str(error).splitlines()[0][:80]})")
+        for scope in wanted:  # one at a time: a scope this workspace does not allow must not block the others
+            try:
+                current = _set_user_scopes(w, app.name, current | {scope})
+            except Exception as failure:
+                errors[scope] = str(failure).splitlines()[0][:100] or first
     app.user_api_scopes = sorted(current)
+    added = [s for s in wanted if s in current]
+    failed = [f"{s} ({errors.get(s, '앱 설정에 반영되지 않음')})" for s in wanted if s not in current]
     if added:
-        print(f"  사용자 권한 범위: {', '.join(sorted(current))}")
+        print(f"  사용자 권한 범위: {', '.join(sorted(current))} (더함: {', '.join(added)})")
     if failed:
-        print(f"  aops: 앱 사용자 권한 범위를 더하지 못했습니다: {'; '.join(failed) or first}. "
-              "앱 설정 → User authorization에서 더하세요")
+        print(f"  aops: 앱 사용자 권한 범위를 더하지 못했습니다: {'; '.join(failed)}. 앱 설정 → User authorization에서 더하거나, "
+              "워크스페이스 설정 → Development → Apps의 허용 범위를 확인하세요")
+
+
+def _set_user_scopes(w: Any, name: str, scopes: set[str]) -> set[str]:
+    """An app update of user_api_scopes only, then the scopes the app really has."""
+    from datetime import timedelta
+
+    from databricks.sdk.service.apps import App
+
+    w.apps.create_update_and_wait(name, "user_api_scopes", app=App(name=name, user_api_scopes=sorted(scopes)),
+                                  timeout=timedelta(minutes=10))
+    return set(w.apps.get(name).user_api_scopes or [])
 
 
 def _report_code_folder(w: Any, path: str) -> None:
