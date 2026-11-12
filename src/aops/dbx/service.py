@@ -33,6 +33,8 @@ DEFAULT_POLICY = {
     "security_levels": ["general", "important", "secret"],
 }
 CRITICALITY = {"low", "medium", "high"}
+# Gates whose code deploy runs in this server process now (a restart forgets them: see _reconcile_code_deploy)
+CODE_DEPLOYS: set[str] = set()
 SENSITIVITY = {"public", "internal", "confidential", "personal"}
 # Agent Skills name rule: 1-64 lowercase letters, digits and hyphens; no hyphen at either end, no "--".
 SKILL_NAME = re.compile(r"^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
@@ -602,6 +604,8 @@ class Service:
     def advance(self, gate_id: str) -> dict[str, Any]:
         """Move a validating gate on once its validation has finished. Safe to call from anywhere, any time."""
         gate = self.gate(gate_id)
+        if gate["decision"] == "approved" and gate.get("deployment_status") == "running":
+            return self._reconcile_code_deploy(gate)
         if gate["decision"] != "validating" or not gate.get("validation_run_id"):
             return gate
         run = self.validation(gate["validation_run_id"])
@@ -728,11 +732,29 @@ class Service:
                    {"gate_id": gate["gate_id"], "approval_mode": gate["approval_mode"]})
         if (self.agent(gate["agent_id"]) or {}).get("build_type") == "code":
             # `agentbricks deploy` drives the databricks CLI, which only works here (inside the app), not in a Job
-            threading.Thread(target=self.run_code_deploy, args=(gate["gate_id"],), daemon=True).start()
+            CODE_DEPLOYS.add(gate["gate_id"])
+            threading.Thread(target=self._code_deploy_thread, args=(gate["gate_id"],), daemon=True).start()
             return
         job_run = self._run_job("deploy", gate["gate_id"])
         self.sql.run(f"UPDATE {self.sql.table('deployments')} SET job_run_id = :j WHERE deployment_id = :d",
                      {"j": job_run, "d": deployment_id})
+
+    def _code_deploy_thread(self, gate_id: str) -> None:
+        try:
+            self.run_code_deploy(gate_id)
+        finally:
+            CODE_DEPLOYS.discard(gate_id)
+
+    def _reconcile_code_deploy(self, gate: dict[str, Any]) -> dict[str, Any]:
+        """A code deploy runs in this server's process; after a restart a 'running' one is not running anymore."""
+        if gate["gate_id"] in CODE_DEPLOYS or (self.agent(gate["agent_id"]) or {}).get("build_type") != "code":
+            return gate
+        moved = self.sql.update(
+            f"UPDATE {self.sql.table('deployments')} SET status = 'failed', detail = parse_json(:d), ended_at = current_timestamp() "
+            "WHERE deployment_id = :id AND status = 'running' AND job_run_id IS NULL",
+            {"d": {"error": "aops 서버가 다시 시작되어 배포가 끊겼습니다. 운영은 그대로이고, aops deploy로 다시 요청하세요"},
+             "id": gate["deployment_id"]})
+        return self.gate(gate["gate_id"]) if moved else gate
 
     def run_code_deploy(self, gate_id: str) -> dict[str, Any]:
         """In this server, as its service principal: the approved Agent Bricks version to its production app."""

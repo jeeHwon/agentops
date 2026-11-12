@@ -54,3 +54,18 @@ def test_init_code_adds_aops_files_to_the_agent_bricks_template(tmp_path):
     spec = (project_.root / "SPEC.md").read_text()
     assert "build_type: code" in spec and "[project]" in (project_.root / "aops.toml").read_text()
     assert "aops deploy" in (project_.root / "README.md").read_text()
+
+
+def test_a_code_deploy_cut_by_a_restart_is_marked_failed():
+    from aops.dbx.service import CODE_DEPLOYS, Service
+
+    updates = []
+    svc = object.__new__(Service)
+    svc.agent = lambda agent_id: {"build_type": "code"}
+    svc.sql = type("Sql", (), {"table": staticmethod(lambda n: n), "update": staticmethod(lambda s, p: updates.append(p) or 1)})()
+    svc.gate = lambda gate_id: {"gate_id": gate_id, "deployment_status": "failed"}
+    gate = {"gate_id": "g1", "agent_id": "a", "deployment_id": "d1", "decision": "approved", "deployment_status": "running"}
+    CODE_DEPLOYS.add("g1")
+    assert svc._reconcile_code_deploy(gate) is gate and updates == []  # still running here
+    CODE_DEPLOYS.discard("g1")
+    assert svc._reconcile_code_deploy(gate)["deployment_status"] == "failed" and updates[0]["id"] == "d1"
