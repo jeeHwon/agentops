@@ -111,13 +111,13 @@ def test_cancel_only_while_the_request_is_open():
 
 def test_optional_validation_failure_waits_for_a_person():
     svc = gate_service({**GATE, "decision": "validating", "validation_policy_mode": "optional", "approval_mode": "auto"})
-    svc.validation = lambda run_id: {"validation_run_id": run_id, "status": "failed", "failure_reason": "skills: 템플릿"}
+    svc.evaluation = lambda run_id: {"validation_run_id": run_id, "status": "failed", "failure_reason": "skills: 템플릿"}
     moved = []
     svc._after_gate = lambda gate_id, run_id, failed=None: moved.append(failed)
     svc.advance("g1")
     assert moved and "optional" in moved[0]
     strict = gate_service({**GATE, "decision": "validating"})
-    strict.validation = svc.validation
+    strict.evaluation = svc.evaluation
     strict.advance("g1")
     assert strict.events == [("gate_rejected", "policy:gate")]
 

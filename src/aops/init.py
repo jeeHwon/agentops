@@ -56,6 +56,26 @@ description: {spec_description}
 이 에이전트가 하는 일, 쓰는 사람, 주의할 점을 적습니다.
 """
 
+SPEC_KEYS = ("agent_id", "name", "build_type", "owner", "owner_group", "service_criticality", "data_sensitivity",
+             "security_level", "consumer_group", "description")
+SPEC_HINTS = {"service_criticality": "low | medium | high", "data_sensitivity": "public | internal | confidential | personal",
+              "consumer_group": "공개 그룹 (노코드: 배포 때 운영 Genie에 CAN RUN)"}
+
+
+def render_spec(values: dict[str, str | None], body: str | None = None) -> str:
+    """SPEC.md from the fields a screen asks for (one line each; the front matter reader takes `key: value`)."""
+    lines = ["---"]
+    for key in SPEC_KEYS:
+        if key == "consumer_group" and values.get("build_type") != "no_code" and not values.get(key):
+            continue
+        value = " ".join(str(values.get(key) or "").split()).replace(" #", " ＃")  # " #" would start a comment
+        hint = SPEC_HINTS.get(key)
+        lines.append(f"{key}: {value}" + (f"    # {hint}" if hint else ""))
+    name = values.get("name") or values.get("agent_id") or ""
+    lines += ["---", "", f"# {name}", "", body or "이 에이전트가 하는 일, 쓰는 사람, 주의할 점을 적습니다.", ""]
+    return "\n".join(lines)
+
+
 INSTRUCTIONS_MD = """\
 당신은 {name} 에이전트입니다.
 
@@ -81,10 +101,12 @@ description: {skill_description}
 """
 
 QUESTIONS_YAML = """\
-# 이 에이전트가 잘 답해야 하는 질문 (평가·비교에 씁니다)
+# 평가셋: 배포 전 Gate(aops evaluate)가 이 질문으로 에이전트를 평가합니다.
+# 질문마다 expected(정답으로 볼 답)나 guideline(판정 기준) 중 하나는 적습니다. 한 줄에 하나씩 씁니다.
 questions:
   - id: q1
     text: 여기에 질문을 적습니다
+    expected: 이 질문의 정답으로 볼 답을 적습니다
 """
 
 README_MD = """\
@@ -105,7 +127,7 @@ aops로 만든 스킬 기반 에이전트입니다. **원본만 고치면** Clau
 │       └── my-skill/
 │           └── SKILL.md      [고침] 스킬 템플릿: 폴더 이름과 내용을 내 스킬로
 ├── evals/
-│   └── questions.yaml        [고침] 평가 질문
+│   └── questions.yaml        [고침] 평가셋 (배포 전 Gate가 씀)
 ├── CLAUDE.md, AGENTS.md      [aops] Claude Code·Codex용 지시
 ├── .claude/skills/           [aops] Claude Code용 스킬 사본
 ├── .agents/skills/           [aops] Codex용 스킬 사본
@@ -125,7 +147,7 @@ aops로 만든 스킬 기반 에이전트입니다. **원본만 고치면** Clau
 3. `agent/skills/my-skill/` — 폴더 이름을 스킬 이름으로 바꾸고(소문자·숫자·하이픈), `SKILL.md`의
    `name`(폴더 이름과 같게)·`description`(언제 쓰는지)·본문(규칙)을 채웁니다.
    스킬을 더 만들려면 `agent/skills/<이름>/SKILL.md`를 같은 형식으로 추가합니다 ([Agent Skills](https://agentskills.io) 형식)
-4. `evals/questions.yaml` — 이 에이전트가 잘 답해야 하는 질문
+4. `evals/questions.yaml` — 평가셋. 질문과 정답(`expected`)이나 판정 기준(`guideline`). 배포 전 Gate(`aops evaluate`)가 이것으로 평가합니다
 
 ## 쓰는 법
 
@@ -143,6 +165,49 @@ aops list                              # 등록된 에이전트 목록
 """
 
 GITIGNORE = "runs/\n.aops/\n"
+
+
+CODE_TOML = """config_version = 1
+
+[project]
+name = "{name}"
+edition = "dbx"
+type = "code"                  # 코드 기반 (Agent Bricks 프로젝트). aops run 대신 agentbricks dev로 시험
+"""
+
+CODE_README_NOTE = """
+## aops (코드 기반)
+
+이 폴더는 Agent Bricks 프로젝트에 aops 파일(`aops.toml`, `SPEC.md`)을 더한 것입니다.
+
+```bash
+agentbricks dev                        # 내 PC에서 시험 (http://localhost:8000)
+aops register                          # 버전 저장 (aops 서버)
+aops deploy                            # 검사 → 승인 → aops 서버가 운영 앱(agent-bricks-<이름>)에 반영
+```
+
+운영 배포는 aops 서버가 합니다. `agentbricks deploy`를 직접 실행하면 개인 시험 앱이 생깁니다.
+"""
+
+
+def create_code(parent: Path, name: str, *, framework: str = "openai", agentbricks: str = "agentbricks") -> Project:
+    """A code-based agent: `agentbricks init` (the Agent Bricks template) plus aops.toml and SPEC.md."""
+    import os
+    import subprocess
+
+    if not NAME.match(name):
+        raise ValueError("name must be lowercase letters, digits and hyphens (up to 63 characters)")
+    root = parent / name
+    env = {**os.environ, "AGENTBRICKS_DISABLE_TELEMETRY": "1", "AGENTBRICKS_DISABLE_AGENT_HINT": "1"}
+    done = subprocess.run([agentbricks, "init", str(root), "--framework", framework], capture_output=True, text=True, env=env)
+    if done.returncode != 0 or not (root / "agent.toml").exists():
+        raise RuntimeError(f"agentbricks init 실패: {(done.stderr or done.stdout)[-400:]}")
+    spec = SPEC_MD.format(name=name, spec_description=SPEC_DESCRIPTION).replace("build_type: skill", "build_type: code")
+    (root / CONFIG_FILE).write_text(CODE_TOML.format(name=name) + DBX_TOML, encoding="utf-8")
+    (root / "SPEC.md").write_text(spec, encoding="utf-8")
+    readme = root / "README.md"
+    readme.write_text((readme.read_text(encoding="utf-8") if readme.exists() else f"# {name}\n") + CODE_README_NOTE, encoding="utf-8")
+    return Project.load(root)
 
 
 def create(parent: Path, name: str, *, harness: str = "claude", edition: str = "local") -> Project:

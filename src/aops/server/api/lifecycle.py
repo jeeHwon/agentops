@@ -1,4 +1,4 @@
-"""Lifecycle commands: `aops validate`, `aops register`, `aops deploy`, `aops promote`, and approvals.
+"""Lifecycle commands: `aops validate` (self-check), `aops register`, `aops evaluate` (Gate), `aops deploy`, `aops promote`, approvals.
 
 Approval happens only through these routes. The server checks the approver group and blocks
 self-approval, so the console screen, Omnigent UI and any Custom Front follow the same rules. An external
@@ -13,20 +13,32 @@ from fastapi import APIRouter, File, Form, Header, Request, UploadFile
 from fastapi.sse import EventSourceResponse
 from pydantic import BaseModel, Field
 
-from ..common import DBX, Page, command, pending, todo
+from ..common import ALL, DBX, Page, command, pending, todo
+from ... import package
+from ...dbx.service import ServiceError
 from ...dbx.sql import loads
 from ..dbx import caller_of, service_for
 from ..events import ProgressEvent
-from .registry import AgentVersion, AgentVersionDetail, AgentVersionSkill, Deployment, ValidationRun
+from .registry import AgentVersionDetail, AgentVersionSkill, Deployment, EvalResult, EvaluationRun, ValidationStep
 
 router = APIRouter(tags=["검증·등록·배포"])
 
 GateDecision = Literal["validating", "pending_approval", "approved", "rejected", "canceled"]
 
 
-class ValidationCreate(BaseModel):
-    mode: Literal["job", "local"] = Field("job", description="`--local`: 내 PC에서 참고용으로")
-    version: str | None = Field(None, examples=["1.2.0"], description="`--version`: 비우면 마지막 등록 버전")
+class EvaluationCreate(BaseModel):
+    version: str | None = Field(None, examples=["1.2.0"], description="`--version`: 비우면 마지막 등록 버전. 노코드는 비우면 지금 개발용 정의를 스냅샷으로 뜬다")
+
+
+class SelfCheck(BaseModel):
+    """`aops validate`: the form checks on what is being made, right now. Not recorded; deploy does not need it."""
+
+    agent_id: str
+    build_type: str
+    source: str = Field(examples=["/Workspace/Users/me@example.com/aops/price-helper", "등록 버전 1.2.0", "개발용 Genie …"], description="점검한 것")
+    status: Literal["passed", "failed"]
+    steps: list[ValidationStep] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
 
 
 class RegisterRequest(BaseModel):
@@ -93,7 +105,7 @@ class ReleaseGate(BaseModel):
 
 
 class ReleaseGateDetail(ReleaseGate):
-    validation: ValidationRun | None = None
+    evaluation: EvaluationRun | None = Field(None, description="근거 평가(Gate) 실행과 문항별 결과")
     history: list[Approval] = Field(default_factory=list)
 
 
@@ -115,24 +127,107 @@ class ExternalDecision(BaseModel):
     decided_at: datetime
 
 
-@router.post("/projects/{project_id}/validations", status_code=202, summary="검증 시작 (관리자 정책)", **command("aops validate", DBX))
-def create_validation(project_id: str, body: ValidationCreate, request: Request) -> ValidationRun:
+@router.post(
+    "/projects/{project_id}/validations", summary="셀프 체크 (형식, 기록하지 않음)",
+    **command("aops validate", ALL, note=(
+        "강제가 없는 점검. Gate의 형식 검사(SPEC.md·스킬·Agent Bricks 프로젝트·노코드 정의 규칙·비밀값)를 지금 바로 돌린다. "
+        "기록하지 않고 배포 요청의 조건도 아니다. 대상: 올린 zip(`archive`)이나 폴더 파일(`files`), 워크스페이스 폴더(`workspace_path`, 요청자 토큰으로 읽음), "
+        "등록 버전(`version`, 비우면 마지막), 노코드는 지금 개발용 Genie와 폴더의 SPEC.md. PC의 `aops validate`는 서버 없이 같은 규칙을 폴더에 돌린다."
+    )),
+)
+def self_check(
+    project_id: str, request: Request,
+    archive: UploadFile | None = File(None, description="버전 zip"),
+    files: list[UploadFile] | None = File(None, description="폴더의 파일들 (filename = 폴더 안 상대 경로)"),
+    workspace_path: str | None = Form(None, description="워크스페이스 폴더 (/Workspace/...)"),
+    version: str | None = Form(None, description="등록 버전. 아무것도 없으면 마지막 등록 버전(노코드는 개발용 Genie)"),
+) -> SelfCheck:
     svc = service_for("aops validate")
-    return ValidationRun(**svc.start_validation(caller_of(request, svc), project_id, body.version))
+    data = None
+    if archive is not None:
+        data = archive.file.read(MAX_UPLOAD + 1)
+    elif files:
+        data = folder_zip([(f.filename or "", f.file.read(MAX_UPLOAD + 1)) for f in files])
+    if data is not None and len(data) > MAX_UPLOAD:
+        raise ServiceError(413, "too_large", f"{MAX_UPLOAD // 2**20}MB까지입니다", "aops validate")
+    return SelfCheck(**svc.self_check(caller_of(request, svc), project_id, data, workspace_path, version))
 
 
-@router.get("/validations/{validation_run_id}", summary="검증 결과 (단계별)", **command(None, DBX, screen="검증 진행 화면"))
-def get_validation(validation_run_id: str, request: Request) -> ValidationRun:
+@router.post(
+    "/projects/{project_id}/evaluations", status_code=202, summary="평가 시작 (Gate)",
+    **command("aops evaluate", DBX, note=(
+        "배포 전에 강제되는 평가. evaluate Job(서비스 주체)이 형식 검사를 다시 하고 품질을 평가한다: 스킬은 평가셋(evals/questions.yaml)을 모델로 답하고 "
+        "판정 모델로 채점, 노코드는 Genie 벤치마크 정확도와 운영 버전 대비 회귀, 코드는 다음 단계. 결과는 validation_runs·eval_results에 남고, "
+        "배포 요청은 같은 내용·같은 정책으로 통과한 평가를 다시 쓴다(없으면 배포 요청이 돌린다)."
+    )),
+)
+def create_evaluation(project_id: str, body: EvaluationCreate, request: Request) -> EvaluationRun:
+    svc = service_for("aops evaluate")
+    return EvaluationRun(**svc.start_evaluation(caller_of(request, svc), project_id, body.version))
+
+
+class GenieCheckRequest(BaseModel):
+    space_id: str = Field(examples=["01f1d68538081bcfb0dec6f1a97f0cd7"], description="개발용 Genie 스페이스 ID")
+
+
+@router.post(
+    "/no-code/checks", summary="노코드 자가 점검 (Genie 정의 규칙)",
+    **command("aops validate", DBX, note="노코드: Gate의 정의 규칙(준수율)을 지금 바로 돌린다. 참고용이며 기록하지 않는다. 서버가 서비스 주체로 정의를 읽으므로 스페이스를 aops 서비스 주체와 공유(편집)해야 한다. 벤치마크는 배포 요청 때."),
+)
+def genie_check(body: GenieCheckRequest, request: Request) -> dict:
+    svc = service_for("aops validate")
+    return svc.genie_check(caller_of(request, svc), body.space_id.strip())
+
+
+class NoCodeAgent(BaseModel):
+    agent_id: str
+    folder_path: str | None = Field(None, examples=["/Workspace/aops/no-code/sales-genie"], description="에이전트 폴더 (SPEC.md, 개발용 Genie)")
+    folder_url: str | None = None
+    dev_space_id: str | None = None
+    dev_url: str | None = Field(None, description="개발용 Genie (작성자가 고치는 곳)")
+    prod_space_id: str | None = None
+    prod_url: str | None = Field(None, description="운영용 Genie (서비스 주체 소유, 공개 그룹 CAN RUN)")
+    consumer_group: str | None = None
+    warehouse_id: str | None = None
+
+
+@router.get("/no-code/agents/{agent_id}", summary="노코드 에이전트의 폴더·개발용·운영용 Genie", **command(None, DBX, screen="console 에이전트"))
+def no_code_agent(agent_id: str, request: Request) -> NoCodeAgent:
     svc = service_for(None)
     caller_of(request, svc)
-    return ValidationRun(**svc.validation(validation_run_id))
+    return NoCodeAgent(**svc.no_code_links(agent_id))
+
+
+class AgentWorkspace(BaseModel):
+    workspace_path: str = Field(examples=["/Workspace/Users/me@example.com/aops/price-helper"], description="에이전트를 고치는 워크스페이스 폴더")
+    folder_url: str | None = None
+    open_url: str | None = Field(None, description="처음 열 파일의 편집기 주소 (Genie Code 패널과 함께 열림)")
+    open_file: str | None = Field(None, examples=["agent/agent.py"])
+
+
+@router.get("/agents/{agent_id}/workspace", summary="에이전트의 워크스페이스 폴더 (스킬·코드)", **command(None, DBX, screen="console 에이전트"))
+def agent_workspace(agent_id: str, request: Request) -> AgentWorkspace:
+    svc = service_for(None)
+    caller_of(request, svc)
+    row = svc.agent_workspace(agent_id)
+    if not row or not row.get("workspace_path"):
+        raise ServiceError(404, "no_workspace", "워크스페이스에서 만들거나 등록한 기록이 없습니다")
+    return AgentWorkspace(**row)
+
+
+@router.get("/evaluations/{validation_run_id}", summary="평가 결과 (단계별·문항별)", **command(None, DBX, screen="평가 진행 화면"))
+def get_evaluation(validation_run_id: str, request: Request) -> EvaluationRun:
+    svc = service_for(None)
+    caller_of(request, svc)
+    row = svc.evaluation(validation_run_id, results=True)
+    return EvaluationRun(**{**row, "results": [EvalResult(**r) for r in row.pop("results", [])]})
 
 
 @router.get(
-    "/validations/{validation_run_id}/events", response_class=EventSourceResponse, dependencies=[pending(None)], summary="검증 진행 (SSE)",
-    **command(None, DBX, screen="검증 진행 화면"),
+    "/evaluations/{validation_run_id}/events", response_class=EventSourceResponse, dependencies=[pending(None)], summary="평가 진행 (SSE)",
+    **command(None, DBX, screen="평가 진행 화면"),
 )
-async def stream_validation(validation_run_id: str) -> AsyncIterable[ProgressEvent]:
+async def stream_evaluation(validation_run_id: str) -> AsyncIterable[ProgressEvent]:
     raise todo(None)
     yield  # pragma: no cover
 
@@ -143,12 +238,30 @@ async def stream_validation(validation_run_id: str) -> AsyncIterable[ProgressEve
 )
 def register(
     project_id: str, request: Request,
-    archive: UploadFile = File(description="버전 zip (aops.toml, SPEC.md, agent/…)"),
+    archive: UploadFile | None = File(None, description="버전 zip (aops.toml, SPEC.md, agent/…)"),
+    files: list[UploadFile] | None = File(None, description="zip 대신 폴더의 파일들 (filename = 폴더 안 상대 경로). 서버가 `aops register`와 같은 규칙으로 묶는다"),
+    workspace_path: str | None = Form(None, description="zip·파일 대신 워크스페이스 폴더 (/Workspace/...). 서버가 요청자의 토큰으로 읽어 같은 규칙으로 묶는다 (앱의 workspace.workspace 사용자 권한 범위)"),
     version: str | None = Form(None, description="`--version`. 비우면 register가 매긴다 (최초 1.0.0)"),
     bump: Literal["fix", "minor", "major"] | None = Form(None, description="버전을 올리는 폭. 비우면 minor"),
 ) -> AgentVersionDetail:
     svc = service_for("aops register")
-    row = svc.register(caller_of(request, svc), project_id, archive.file.read(), version, bump)
+    if workspace_path and archive is None and not files:
+        caller = caller_of(request, svc)
+        found, skipped = svc.read_workspace_folder(caller, workspace_path)
+        data = package.build_entries([(rel, content, 0o644) for rel, content in found]).data
+        source = {**svc.workspace_links(caller, workspace_path, dict(found)), "skipped": skipped}
+        row = svc.register(caller, project_id, data, version, bump, source=source)
+        skills = [AgentVersionSkill(**s) for s in row.pop("skills", [])]
+        return AgentVersionDetail(**{**row, "created_at": row["registered_at"], "spec": loads(row.get("spec")) or {}}, skills=skills)
+    if archive is not None:
+        data = archive.file.read(MAX_UPLOAD + 1)
+    elif files:
+        data = folder_zip([(f.filename or "", f.file.read(MAX_UPLOAD + 1)) for f in files])
+    else:
+        raise ServiceError(400, "no_files", "버전 zip(archive), 폴더의 파일(files), 워크스페이스 폴더(workspace_path) 중 하나를 보내세요", "aops register")
+    if len(data) > MAX_UPLOAD:
+        raise ServiceError(413, "too_large", f"버전은 {MAX_UPLOAD // 2**20}MB까지입니다 (데이터는 UC 테이블·볼륨에 두세요)", "aops register")
+    row = svc.register(caller_of(request, svc), project_id, data, version, bump)
     skills = [AgentVersionSkill(**s) for s in row.pop("skills", [])]
     return AgentVersionDetail(**{**row, "created_at": row["registered_at"], "spec": loads(row.get("spec")) or {}}, skills=skills)
 
@@ -198,8 +311,9 @@ def get_gate(gate_id: str, request: Request) -> ReleaseGateDetail:
     svc = service_for(None)
     caller_of(request, svc)
     gate = svc.advance(gate_id)
-    validation = svc.validation(gate["validation_run_id"]) if gate.get("validation_run_id") else None
-    return ReleaseGateDetail(**_gate(gate).model_dump(), validation=ValidationRun(**validation) if validation else None)
+    run = svc.evaluation(gate["validation_run_id"], results=True) if gate.get("validation_run_id") else None
+    evaluation = EvaluationRun(**{**run, "results": [EvalResult(**r) for r in run.pop("results", [])]}) if run else None
+    return ReleaseGateDetail(**_gate(gate).model_dump(), evaluation=evaluation)
 
 
 @router.post(
@@ -235,6 +349,22 @@ def cancel_gate(gate_id: str, request: Request) -> ReleaseGate:
 )
 def external_decision(body: ExternalDecision, x_aops_signature: str = Header()) -> Approval:
     raise todo(None)
+
+
+MAX_UPLOAD = 100 * 2**20
+
+
+def folder_zip(files: list[tuple[str, bytes]]) -> bytes:
+    """A browser folder upload as the version zip: one top folder is dropped, `aops register` rules apply."""
+    paths = [name.replace("\\", "/").lstrip("/") for name, _ in files]
+    tops = {p.split("/", 1)[0] for p in paths if "/" in p}
+    strip = len(tops) == 1 and all("/" in p for p in paths)
+    entries = []
+    for path, (_, data) in zip(paths, files):
+        rel = path.split("/", 1)[1] if strip else path
+        if package.included(rel):
+            entries.append((rel, data, 0o644))
+    return package.build_entries(entries).data
 
 
 def _gate(row: dict) -> ReleaseGate:

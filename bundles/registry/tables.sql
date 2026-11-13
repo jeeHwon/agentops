@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__.validation_runs (
   ended_at TIMESTAMP COMMENT '끝난 시각 (UTC)',
   CONSTRAINT validation_runs_pk PRIMARY KEY (validation_run_id)
 )
-COMMENT 'validate Job의 검사 실행 (Gate Self Check). 배포 요청이 같은 버전·정책의 passed 행을 요구한다'
+COMMENT '배포 전 평가(Gate, aops evaluate) 실행: 형식 검사와 품질 평가. 배포 요청이 같은 내용·정책의 passed 행을 요구한다. 셀프 체크(aops validate)는 남기지 않는다'
 TBLPROPERTIES ('delta.feature.catalogManaged' = 'supported');
 
 CREATE TABLE IF NOT EXISTS __SCHEMA__.eval_results (
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__.eval_results (
   created_at TIMESTAMP NOT NULL COMMENT '기록 시각 (UTC)',
   CONSTRAINT eval_results_pk PRIMARY KEY (validation_run_id, question_id)
 )
-COMMENT '문항별 평가 결과. 운영 버전의 결과가 다음 검사의 회귀 비교 기준이 된다'
+COMMENT '평가(Gate)의 문항별 결과: 스킬은 평가셋 질문, 노코드는 Genie 벤치마크. 운영 버전의 결과가 다음 평가의 회귀 기준이 된다'
 TBLPROPERTIES ('delta.feature.catalogManaged' = 'supported');
 
 CREATE TABLE IF NOT EXISTS __SCHEMA__.release_gates (
@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS __SCHEMA__.agent_events (
   event_id STRING NOT NULL COMMENT '이벤트 ID',
   agent_id STRING NOT NULL COMMENT '에이전트 ID',
   version STRING COMMENT '관련 버전',
-  event_type STRING NOT NULL COMMENT 'register | validate | gate_requested | gate_approved | gate_rejected | gate_canceled | deploy | rollback | promote | load | git',
+  event_type STRING NOT NULL COMMENT 'create(만들기) | register | validate(0.1.0.dev15까지의 검사) | evaluate(배포 전 평가 Gate) | gate_requested | gate_approved | gate_rejected | gate_canceled | deploy | rollback | promote | load | git',
   actor STRING NOT NULL COMMENT '한 사람 (정책 자동 승인은 policy:auto)',
   at TIMESTAMP NOT NULL COMMENT '시각 (UTC)',
   detail VARIANT COMMENT '세부 (권한 대상, 배포 대상 등)',
@@ -261,7 +261,7 @@ ALTER TABLE __SCHEMA__.deployments ADD CONSTRAINT deployments_environment CHECK 
 ALTER TABLE __SCHEMA__.deployments DROP CONSTRAINT IF EXISTS deployments_status;
 ALTER TABLE __SCHEMA__.deployments ADD CONSTRAINT deployments_status CHECK (status IN ('running', 'succeeded', 'failed'));
 ALTER TABLE __SCHEMA__.agent_events DROP CONSTRAINT IF EXISTS agent_events_type;
-ALTER TABLE __SCHEMA__.agent_events ADD CONSTRAINT agent_events_type CHECK (event_type IN ('register', 'validate', 'gate_requested', 'gate_approved', 'gate_rejected', 'gate_canceled', 'deploy', 'rollback', 'promote', 'load', 'git'));
+ALTER TABLE __SCHEMA__.agent_events ADD CONSTRAINT agent_events_type CHECK (event_type IN ('create', 'register', 'validate', 'evaluate', 'gate_requested', 'gate_approved', 'gate_rejected', 'gate_canceled', 'deploy', 'rollback', 'promote', 'load', 'git'));
 ALTER TABLE __SCHEMA__.agent_version_git DROP CONSTRAINT IF EXISTS agent_version_git_status;
 ALTER TABLE __SCHEMA__.agent_version_git ADD CONSTRAINT agent_version_git_status CHECK (status IN ('synced', 'failed', 'skipped'));
 

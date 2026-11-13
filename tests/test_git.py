@@ -191,3 +191,30 @@ def test_policy_keeps_the_git_settings_unless_told():
     assert (new["connection"], new["owner"], new["mode"]) == ("c2", "o2", "commit")
     with pytest.raises(SystemExit):
         policy_body(policy_args(git_connection="c2"), None)
+
+
+# ── Genie Code: the same CLI inside a notebook ───────────────────────────────
+
+def test_genie_skill_installs_this_aops_and_runs_the_cli():
+    from aops.admin import genie_skill
+
+    text = genie_skill("/Workspace/aops/genie/src", "aops-server")
+    assert 'sys.path.insert(0, "/Workspace/aops/genie/src")' in text and "`/Workspace/aops/genie/src/aops`" in text
+    assert 'os.environ["AOPS_APP"] = "aops-server"' in text and "from aops.cli import main" in text
+    assert "__" not in text.replace("__init__", "")  # every placeholder filled
+
+
+def test_cli_inside_a_notebook_exchanges_the_notebook_login(monkeypatch):
+    import aops.client as client
+
+    monkeypatch.setenv("DATABRICKS_RUNTIME_VERSION", "client.4.0")
+    monkeypatch.setenv("AOPS_PROFILE", "my-pc-profile")
+    monkeypatch.delenv("AOPS_SERVER", raising=False)
+    app = SimpleNamespace(url="https://aops-server-1.aws.databricksapps.com/", oauth2_app_client_id="app-aud")
+    monkeypatch.setattr(client.Server, "_app", lambda self: app)
+    asked = []
+    monkeypatch.setattr(client, "notebook_app_token", lambda audience: asked.append(audience) or "tok")
+    server = client.Server()
+    assert server.url == "https://aops-server-1.aws.databricksapps.com" and server.profile is None
+    assert server._headers() == {"Authorization": "Bearer tok"} and server._headers() == {"Authorization": "Bearer tok"}
+    assert asked == ["app-aud"]  # exchanged once per command

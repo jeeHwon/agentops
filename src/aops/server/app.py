@@ -1,8 +1,11 @@
 """Build the aops API app (`aops serve`)."""
 
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
 from .. import __version__
@@ -11,6 +14,7 @@ from ..dbx.service import ServiceError
 from .common import NotImplementedYet, Problem, bearer
 
 PREFIX = "/api/v1"
+WEB = Path(__file__).resolve().parent / "web"
 
 DESCRIPTION = """\
 aops의 dbx 기능을 HTTP로 엽니다. Custom Front(custom), Omnigent UI, 로컬 개발 화면, console 화면이 모두 이 API를 씁니다.
@@ -74,8 +78,14 @@ def create_app(*, edition: str = "custom", cors_origins: list[str] | None = None
     async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
         return problem(exc.status_code, f"http_{exc.status_code}", str(exc.detail))
 
+    # The console: every CLI command of the dbx edition as a screen, on this same API.
+    app.mount("/web", StaticFiles(directory=WEB), name="web")
+
+    page = (WEB / "index.html").read_text(encoding="utf-8")
+    page = page.replace("/web/app.js", f"/web/app.js?v={__version__}").replace("/web/style.css", f"/web/style.css?v={__version__}")
+
     @app.get("/", include_in_schema=False)
-    def root() -> RedirectResponse:
-        return RedirectResponse(f"{PREFIX}/docs")
+    def root() -> HTMLResponse:
+        return HTMLResponse(page, headers={"Cache-Control": "no-cache"})  # assets carry the version, so a new server is never stale
 
     return app

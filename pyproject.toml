@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aops-cli"
-version = "0.1.0.dev10"
+version = "0.1.0.dev17"
 description = "Manage the AI agent lifecycle on top of existing harnesses and platforms"
 readme = "README.md"
 requires-python = ">=3.11"

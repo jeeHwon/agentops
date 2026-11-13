@@ -15,7 +15,7 @@
 - **오래 걸리는 일:** 검증·비교 실행·평가는 `202`와 상태를 돌려주고, `…/events`(SSE)로 진행을 흘립니다. Databricks Apps 앞단이 오래 열린 응답·스트림을 끊을 수 있으므로, SSE는 10초 이하 간격으로 신호를 보내고 끊기면 `Last-Event-ID`로 이어 받습니다.
 - **실행 스트림:** 턴 실행 스트림은 AG-UI 이벤트입니다(`threadId`=세션, `runId`=턴). aops만의 정보는 `CUSTOM` 이벤트(`aops.handoff`, `aops.skill`, `aops.guardrail`, `aops.usage`)로 옵니다.
 - **값:** 상태·종류 같은 열거형은 영문 코드입니다. 한글 표시는 화면이 붙입니다.
-- **지금 상태:** dbx 에디션의 스킬 기반 흐름은 aops 서버가 실제로 처리합니다(14개 경로): `register`, `validate`, `deploy`, `gates`·`approve`·`reject`·`deploy --cancel`, `promote`, `list`, `load`와 에이전트 이벤트(`POST …/registrations`, `POST …/validations`, `GET /validations/{id}`, `POST …/deploy-requests`, `GET /release-gates`, `GET /release-gates/{id}`, `POST …/approve`, `POST …/reject`, `POST …/cancel`, `POST …/promote`, `GET /agents`, `POST …/load`, `GET …/archive`, `GET …/events`). 나머지는 요청·응답 형식만 정해져 있고 `501`을 돌려줍니다. 서버에 `AOPS_REGISTRY`·`AOPS_WAREHOUSE_ID`가 없으면 모두 `501`입니다.
+- **지금 상태:** dbx 에디션의 스킬·코드·노코드 흐름은 aops 서버가 실제로 처리합니다: 만들기(`POST /projects`, `POST /projects/template`), 셀프 체크 `validate`(`POST …/validations`, 기록 안 함), 등록 `register`, 평가 Gate `evaluate`(`POST …/evaluations`, `GET /evaluations/{id}`), 배포 `deploy`(`POST …/deploy-requests`, `GET /release-gates/{id}`)와 승인·반려·취소, `promote`, `list`, `load`, 레지스트리 조회(에이전트·버전·평가·배포·운영 버전·이력), 노코드 점검·링크, 정책, 내 계정. 나머지(하네스 실행 경로, 세션, 모니터 등)는 요청·응답 형식만 정해져 있고 `501`을 돌려줍니다. 서버에 `AOPS_REGISTRY`·`AOPS_WAREHOUSE_ID`가 없으면 모두 `501`입니다.
 
 ## 명령 ↔ API
 
@@ -23,13 +23,12 @@
 
 | 명령 | API |
 | --- | --- |
-| `aops init` | `POST /api/v1/projects` |
+| `aops init` | `POST /api/v1/projects`<br>`POST /api/v1/projects/template` |
 | `aops init --type no-code` | `GET /api/v1/genie/spaces` |
 | `aops dev` | 없음: 내 PC에 개발 화면을 여는 명령이다. 그 화면이 이 API를 쓴다 |
 | `aops run "<질문>"` | `POST /api/v1/sessions/{session_id}/turns/stream` |
 | `aops run "<질문>" --json` | `POST /api/v1/sessions/{session_id}/turns` |
 | `aops run <질문 파일>` | `POST /api/v1/projects/{project_id}/batches` |
-| `aops evaluate` | `POST /api/v1/projects/{project_id}/evaluations` |
 | `aops session list` | `GET /api/v1/projects/{project_id}/sessions` |
 | `aops session new` | `POST /api/v1/projects/{project_id}/sessions` |
 | `aops session show` | `GET /api/v1/sessions/{session_id}` |
@@ -54,7 +53,8 @@
 | 명령 | API |
 | --- | --- |
 | `aops configure` | `POST /api/v1/projects/{project_id}/configure` |
-| `aops validate` | `POST /api/v1/projects/{project_id}/validations` |
+| `aops validate` | `POST /api/v1/projects/{project_id}/validations`<br>`POST /api/v1/no-code/checks` |
+| `aops evaluate` | `POST /api/v1/projects/{project_id}/evaluations` |
 | `aops register` | `POST /api/v1/projects/{project_id}/registrations` |
 | `aops deploy` | `POST /api/v1/projects/{project_id}/deploy-requests` |
 | `aops deploy --cancel` | `POST /api/v1/release-gates/{gate_id}/cancel` |
@@ -102,16 +102,16 @@
 | `GET /api/v1/batches/{batch_id}/events` | 비교 진행 (SSE) | 개발 화면 Batch 진행 표시 |
 | `POST /api/v1/batches/{batch_id}/cancel` | 비교 실행 멈추기 | 개발 화면 Batch [멈춤] |
 | `GET /api/v1/batches/{batch_id}/usage` | 질문별 스킬·도구 사용률 | 개발 화면 Batch 히트맵 |
-| `GET /api/v1/projects/{project_id}/evaluations` | 평가 목록 | 개발 화면 Evaluate |
-| `GET /api/v1/evaluations/{evaluation_id}` | 평가 결과 (점수표·실패 사례) | 개발 화면 Evaluate |
-| `GET /api/v1/validations/{validation_run_id}` | 검증 결과 (단계별) | 검증 진행 화면 |
-| `GET /api/v1/validations/{validation_run_id}/events` | 검증 진행 (SSE) | 검증 진행 화면 |
+| `GET /api/v1/no-code/agents/{agent_id}` | 노코드 에이전트의 폴더·개발용·운영용 Genie | console 에이전트 |
+| `GET /api/v1/agents/{agent_id}/workspace` | 에이전트의 워크스페이스 폴더 (스킬·코드) | console 에이전트 |
+| `GET /api/v1/evaluations/{validation_run_id}` | 평가 결과 (단계별·문항별) | 평가 진행 화면 |
+| `GET /api/v1/evaluations/{validation_run_id}/events` | 평가 진행 (SSE) | 평가 진행 화면 |
 | `GET /api/v1/release-gates/{gate_id}` | 배포 심사 보기 | console 배포 요청·승인 |
 | `POST /api/v1/approvals/external` | 외부 결재 결과 받기 (확장용) |  |
 | `GET /api/v1/agents/{agent_id}` | 에이전트 보기 | console 레지스트리 |
 | `GET /api/v1/agents/{agent_id}/versions` | 버전 목록 | console 레지스트리 |
 | `GET /api/v1/agents/{agent_id}/versions/{version}` | 버전 보기 (스킬 포함) | console 레지스트리 |
-| `GET /api/v1/agents/{agent_id}/validation-runs` | 검증 이력 | console 레지스트리 |
+| `GET /api/v1/agents/{agent_id}/evaluations` | 평가(Gate) 이력 | console 레지스트리 |
 | `GET /api/v1/agents/{agent_id}/deployments` | 배포 이력 | console 운영 지정 이력 |
 | `GET /api/v1/deployments/{deployment_id}` | 배포 보기 |  |
 | `GET /api/v1/agents/{agent_id}/production` | 운영 버전 | console 운영 지정 이력 |

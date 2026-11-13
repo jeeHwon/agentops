@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from ... import __version__
-from ..common import ALL, bearer, command, todo
+from ..common import ALL, bearer, command
 from ..mapping import command_map
 
 router = APIRouter(prefix="/meta", tags=["서버"])
@@ -46,8 +46,11 @@ def version(request: Request) -> Version:
 
 
 @router.get("/me", summary="내 계정·역할", dependencies=[Depends(bearer)], **command(None, ALL, screen="모든 화면 (권한별 버튼 표시)"))
-def me() -> Me:
-    raise todo(None)
+def me(request: Request) -> Me:
+    from ..dbx import caller_of, service_for
+
+    svc = service_for(None)
+    return Me(**svc.me(caller_of(request, svc)))
 
 
 @router.get("/commands", summary="명령 ↔ API 대응표")

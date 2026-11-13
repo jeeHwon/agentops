@@ -52,3 +52,11 @@ def test_format_detail_names_only_the_problems():
     spec = b"---\nagent_id: a\nname: a\nbuild_type: skill\nservice_criticality: huge\ndata_sensitivity: internal\n---\n"
     step = check_skill_agent({"SPEC.md": spec, "agent/skills/k/SKILL.md": skill("k", "쓸 때")})[0]
     assert step["status"] == "failed" and step["detail"] == "SPEC.md: 허용되지 않는 값 service_criticality='huge'"
+
+
+def test_env_templates_are_not_forbidden_but_their_content_is_scanned():
+    from aops.dbx.service import find_secrets
+
+    assert find_secrets({".env": b"A=1", "app/.env.local": b"A=1", "key.pem": b"x"}) == [".env (금지 파일)", "app/.env.local (금지 파일)", "key.pem (금지 파일)"]
+    assert find_secrets({".env.example": b"DATABRICKS_HOST=\n", ".env.sample": b"", ".env.template": b""}) == []
+    assert find_secrets({".env.example": b"TOKEN=dapi" + b"0" * 32}) == [".env.example (Databricks 토큰)"]
