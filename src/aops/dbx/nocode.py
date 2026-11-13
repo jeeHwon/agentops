@@ -216,7 +216,7 @@ class NoCodeMixin:
                 "data_sensitivity": sens, "security_level": (body.get("security_level") or "general").strip(),
                 "consumer_group": (body.get("consumer_group") or "").strip(), "description": description}
         notes = ("이 폴더의 Genie(개발용)를 고친 뒤 aops console에서 배포를 요청합니다. 배포 요청 때 이 파일과 개발용 정의를 "
-                 "함께 스냅샷으로 떠서 검사하고, 승인되면 같은 내용이 운영용 Genie로 나갑니다. 위 항목은 여기서 고칠 수 있습니다.")
+                 "함께 스냅샷으로 떠서 평가하고, 승인되면 같은 내용이 운영용 Genie로 나갑니다. 위 항목은 여기서 고칠 수 있습니다.")
         self.w.workspace.upload(f"{folder}/SPEC.md", io.BytesIO(render_spec(spec, notes).encode("utf-8")),
                                 format=ImportFormat.AUTO, overwrite=True)
 
@@ -339,7 +339,7 @@ class NoCodeMixin:
         change = upgrade(previous, definition)
         path = snapshot_path(self.config.registry, agent_id, sha)
         self.sql.run(f"CREATE VOLUME IF NOT EXISTS {self.config.registry}.`{agent_id}` "
-                     f"COMMENT 'aops 에이전트 {agent_id}의 버전 zip·검사 스냅샷. 쓰기는 aops 서비스 주체만'")
+                     f"COMMENT 'aops 에이전트 {agent_id}의 버전 zip·평가 스냅샷. 쓰기는 aops 서비스 주체만'")
         data = package.build_entries([(rel, content, 0o644) for rel, content in sorted(files.items())]).data
         try:
             self.w.files.upload(path, io.BytesIO(data), overwrite=False)
@@ -412,8 +412,8 @@ class NoCodeMixin:
             return {"name": "integrity", "status": "failed", "detail": f"개발용 정의를 다시 읽지 못했습니다: {error.message}"}
         same = now == genie_rules.definition_hash(definition_of(files))
         return {"name": "integrity", "status": "passed" if same else "failed",
-                "detail": "검사하는 동안 개발용 정의가 바뀌지 않았습니다" if same
-                else "검사하는 동안 개발용 정의가 바뀌었습니다 (stale). 다 고친 뒤 다시 배포를 요청하세요"}
+                "detail": "평가하는 동안 개발용 정의가 바뀌지 않았습니다" if same
+                else "평가하는 동안 개발용 정의가 바뀌었습니다 (stale). 다 고친 뒤 다시 요청하세요"}
 
     # ── deploy (in the deploy Job, as the service principal) ────────────────
 

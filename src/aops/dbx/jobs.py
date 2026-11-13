@@ -22,7 +22,7 @@ def print_validation(run_id: str, registry: str, report: dict[str, Any]) -> None
         say(f"  검사 대상   {report['artifact_path']}  (파일 {len(report['files'])}개, sha256 {(report['sha256'] or '')[:12]})")
     say(f"  실행 코드   aops_cli {__version__} · aops.dbx.service.Service.run_evaluation (형식: check_agent·nocode.check_steps, 평가: gate_eval)")
     for i, step in enumerate(report.get("steps") or [], 1):
-        mark = "✓" if step["status"] == "passed" else "✗"
+        mark = {"passed": "✓", "skipped": "–"}.get(step["status"], "✗")
         say(f"\n  [{i}] {step['name']:<8}{mark} {step.get('detail') or ''}")
         if step["name"] in CHECK_RULES:
             say(f"      규칙: {CHECK_RULES[step['name']]}")

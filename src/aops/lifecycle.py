@@ -124,7 +124,7 @@ def _wait_evaluation(server: Server, run_id: str) -> dict[str, Any]:
 
 def _print_steps(run: dict[str, Any]) -> None:
     for step in run.get("steps") or []:
-        mark = "✓" if step["status"] == "passed" else "✗"
+        mark = {"passed": "✓", "skipped": "–"}.get(step["status"], "✗")
         _say(f"  {mark} {step['name']}: {step.get('detail') or ''}")
 
 

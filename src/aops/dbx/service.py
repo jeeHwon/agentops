@@ -24,7 +24,7 @@ from typing import Any
 from .. import package
 from ..init import SKILL_DESCRIPTION, SPEC_DESCRIPTION, TEMPLATE_SKILL
 from ..hashing import skills_sha256
-from . import code, gate_eval, nocode
+from . import code, gate_eval, genie_rules, nocode
 from .base import AGENT_ID, CRITICALITY, SENSITIVITY, Caller, ServiceError, now_id
 from .git import GitHub, GitSettings, commit_message, proxy_transport
 from .nocode import NoCodeMixin
@@ -642,24 +642,30 @@ class Service(NoCodeMixin, UserSpaceMixin):
             report["files"] = sorted(files)
             spec = package.front_matter(files.get("SPEC.md", b"").decode("utf-8", "replace"))
             _, policy = self.policy()
-            stale = False
+            stale = benchmarked = False
             kind = agent.get("build_type")
             steps = nocode.check_steps(files, policy, spec_step(files, "no_code")) if kind == "no_code" else check_agent(files)
             if any(s["status"] == "failed" for s in steps):
                 steps.append({"name": "evaluate", "status": "skipped", "detail": "앞 검사가 실패해 평가를 돌리지 않았습니다"})
-            elif kind == "no_code" and not snapshot:
-                steps.append({"name": "evaluate", "status": "skipped",
-                              "detail": "등록된 이전 버전입니다 (벤치마크는 개발용 Genie의 지금 정의로 돌므로 이 버전에는 다시 돌리지 않습니다)"})
             elif kind == "no_code":
+                # Benchmarks run on the dev space, so they speak for this content only while the dev definition is it
                 genie = self.genie_agent(run["agent_id"]) or {}
-                step, results = gate_eval.evaluate_genie(self.w, genie["dev_space_id"], spec, policy, self._eval_baseline(run["agent_id"]))
-                steps.append(step)
+                live = genie_rules.definition_hash(self._dev_definition(genie))
+                if live == genie_rules.definition_hash(nocode.definition_of(files)):
+                    step, results = gate_eval.evaluate_genie(self.w, genie["dev_space_id"], spec, policy, self._eval_baseline(run["agent_id"]))
+                    steps.append(step)
+                    benchmarked = True
+                elif snapshot:
+                    steps.append({"name": "evaluate", "status": "skipped", "detail": "요청한 뒤 개발용 정의가 바뀌어 벤치마크를 돌리지 않았습니다"})
+                else:
+                    steps.append({"name": "evaluate", "status": "skipped",
+                                  "detail": "개발용 Genie가 지금 이 버전과 달라 벤치마크를 돌리지 않았습니다 (이 버전이 운영에 나갈 때의 평가를 따릅니다)"})
             elif kind == "code" or str(spec.get("build_type")) == "code":
                 steps.append(gate_eval.skipped_for_code())
             else:
                 step, results = gate_eval.evaluate_skill(self.w, files, spec, policy)
                 steps.append(step)
-            if kind == "no_code" and snapshot:  # after the benchmarks: the dev definition must not have moved meanwhile
+            if kind == "no_code" and (snapshot or benchmarked):  # after the benchmarks: the dev definition must not have moved
                 integrity = self.integrity_step(run["agent_id"], files)
                 steps.append(integrity)
                 stale = integrity["status"] == "failed"
@@ -777,10 +783,10 @@ class Service(NoCodeMixin, UserSpaceMixin):
         elif run["status"] == "failed" and gate["validation_policy_mode"] == "optional":
             # optional: the failed checks stay on record and an approver decides
             self._after_gate(gate_id, run["validation_run_id"],
-                             failed=f"검사 실패 (검사 방식 optional, 승인자 판단): {run.get('failure_reason') or ''}")
+                             failed=f"평가 실패 (평가 방식 optional, 승인자 판단): {run.get('failure_reason') or ''}")
         elif self.sql.update(f"UPDATE {self.sql.table('release_gates')} SET decision = 'rejected', decision_reason = :why, "
                              "updated_at = current_timestamp() WHERE gate_id = :g AND decision = 'validating'",
-                             {"g": gate_id, "why": f"검사 {run['status']}: {run.get('failure_reason') or ''}"}):
+                             {"g": gate_id, "why": f"평가 {run['status']}: {run.get('failure_reason') or ''}"}):
             self.event(gate["agent_id"], gate["version"], "gate_rejected", "policy:gate", {"gate_id": gate_id, "validation": run["status"]})
         return self.gate(gate_id)
 

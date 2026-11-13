@@ -197,8 +197,21 @@ def test_no_code_gate_runs_benchmarks_on_the_dev_space_then_integrity(monkeypatc
         asked.append(space) or {"name": "evaluate", "status": "passed", "detail": "ok"}, []))
     monkeypatch.setattr(nocode, "check_steps", lambda files_, policy, fmt: [fmt, {"name": "definition", "status": "passed", "detail": ""}])
     svc.integrity_step = lambda agent_id, files_: {"name": "integrity", "status": "passed", "detail": ""}
+    svc._dev_definition = lambda genie_: definition
     report = svc.run_evaluation("r1")
     assert asked == ["dev1"] and [s["name"] for s in report["steps"]] == ["format", "definition", "evaluate", "integrity", "record"]
+
+    # a registered version whose content is still the dev definition: the benchmarks speak for it
+    sha = package.files_sha256(list(files.items()))
+    svc.version = lambda a, v: {"version": "1.1.0", "source_sha256": sha, "artifact_path": "/Volumes/c/s/a/1.1.0.zip"}
+    asked.clear()
+    assert svc.run_evaluation("r1")["status"] == "passed" and asked == ["dev1"]
+    # an older version than the dev definition: not benchmarked, reported as skipped
+    svc._dev_definition = lambda genie_: nocode.initial_space(["main.s.other"], "질문")
+    asked.clear()
+    report = svc.run_evaluation("r1")
+    evaluate = next(s for s in report["steps"] if s["name"] == "evaluate")
+    assert asked == [] and evaluate["status"] == "skipped" and "integrity" not in [s["name"] for s in report["steps"]]
 
 
 def test_self_check_reads_an_upload_and_records_nothing():

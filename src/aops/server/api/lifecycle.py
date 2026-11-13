@@ -257,10 +257,10 @@ def register(
         data = archive.file.read(MAX_UPLOAD + 1)
     elif files:
         data = folder_zip([(f.filename or "", f.file.read(MAX_UPLOAD + 1)) for f in files])
-    if (archive is not None or files) and len(data) > MAX_UPLOAD:
-        raise ServiceError(413, "too_large", f"버전은 {MAX_UPLOAD // 2**20}MB까지입니다 (데이터는 UC 테이블·볼륨에 두세요)", "aops register")
     else:
-        raise ServiceError(400, "no_files", "버전 zip(archive)이나 폴더의 파일(files)을 보내세요", "aops register")
+        raise ServiceError(400, "no_files", "버전 zip(archive), 폴더의 파일(files), 워크스페이스 폴더(workspace_path) 중 하나를 보내세요", "aops register")
+    if len(data) > MAX_UPLOAD:
+        raise ServiceError(413, "too_large", f"버전은 {MAX_UPLOAD // 2**20}MB까지입니다 (데이터는 UC 테이블·볼륨에 두세요)", "aops register")
     row = svc.register(caller_of(request, svc), project_id, data, version, bump)
     skills = [AgentVersionSkill(**s) for s in row.pop("skills", [])]
     return AgentVersionDetail(**{**row, "created_at": row["registered_at"], "spec": loads(row.get("spec")) or {}}, skills=skills)
