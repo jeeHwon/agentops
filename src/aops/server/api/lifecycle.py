@@ -1,4 +1,4 @@
-"""Lifecycle commands: `aops validate`, `aops register`, `aops deploy`, `aops promote`, and approvals.
+"""Lifecycle commands: `aops validate` (self-check), `aops register`, `aops evaluate` (Gate), `aops deploy`, `aops promote`, approvals.
 
 Approval happens only through these routes. The server checks the approver group and blocks
 self-approval, so the console screen, Omnigent UI and any Custom Front follow the same rules. An external
@@ -13,22 +13,32 @@ from fastapi import APIRouter, File, Form, Header, Request, UploadFile
 from fastapi.sse import EventSourceResponse
 from pydantic import BaseModel, Field
 
-from ..common import DBX, Page, command, pending, todo
+from ..common import ALL, DBX, Page, command, pending, todo
 from ... import package
 from ...dbx.service import ServiceError
 from ...dbx.sql import loads
 from ..dbx import caller_of, service_for
 from ..events import ProgressEvent
-from .registry import AgentVersionDetail, AgentVersionSkill, Deployment, ValidationRun
+from .registry import AgentVersionDetail, AgentVersionSkill, Deployment, EvalResult, EvaluationRun, ValidationStep
 
 router = APIRouter(tags=["검증·등록·배포"])
 
 GateDecision = Literal["validating", "pending_approval", "approved", "rejected", "canceled"]
 
 
-class ValidationCreate(BaseModel):
-    mode: Literal["job", "local"] = Field("job", description="`--local`: 내 PC에서 참고용으로")
-    version: str | None = Field(None, examples=["1.2.0"], description="`--version`: 비우면 마지막 등록 버전")
+class EvaluationCreate(BaseModel):
+    version: str | None = Field(None, examples=["1.2.0"], description="`--version`: 비우면 마지막 등록 버전. 노코드는 비우면 지금 개발용 정의를 스냅샷으로 뜬다")
+
+
+class SelfCheck(BaseModel):
+    """`aops validate`: the form checks on what is being made, right now. Not recorded; deploy does not need it."""
+
+    agent_id: str
+    build_type: str
+    source: str = Field(examples=["/Workspace/Users/me@example.com/aops/price-helper", "등록 버전 1.2.0", "개발용 Genie …"], description="점검한 것")
+    status: Literal["passed", "failed"]
+    steps: list[ValidationStep] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
 
 
 class RegisterRequest(BaseModel):
@@ -95,7 +105,7 @@ class ReleaseGate(BaseModel):
 
 
 class ReleaseGateDetail(ReleaseGate):
-    validation: ValidationRun | None = None
+    evaluation: EvaluationRun | None = Field(None, description="근거 평가(Gate) 실행과 문항별 결과")
     history: list[Approval] = Field(default_factory=list)
 
 
@@ -117,10 +127,43 @@ class ExternalDecision(BaseModel):
     decided_at: datetime
 
 
-@router.post("/projects/{project_id}/validations", status_code=202, summary="검증 시작 (관리자 정책)", **command("aops validate", DBX))
-def create_validation(project_id: str, body: ValidationCreate, request: Request) -> ValidationRun:
+@router.post(
+    "/projects/{project_id}/validations", summary="셀프 체크 (형식, 기록하지 않음)",
+    **command("aops validate", ALL, note=(
+        "강제가 없는 점검. Gate의 형식 검사(SPEC.md·스킬·Agent Bricks 프로젝트·노코드 정의 규칙·비밀값)를 지금 바로 돌린다. "
+        "기록하지 않고 배포 요청의 조건도 아니다. 대상: 올린 zip(`archive`)이나 폴더 파일(`files`), 워크스페이스 폴더(`workspace_path`, 요청자 토큰으로 읽음), "
+        "등록 버전(`version`, 비우면 마지막), 노코드는 지금 개발용 Genie와 폴더의 SPEC.md. PC의 `aops validate`는 서버 없이 같은 규칙을 폴더에 돌린다."
+    )),
+)
+def self_check(
+    project_id: str, request: Request,
+    archive: UploadFile | None = File(None, description="버전 zip"),
+    files: list[UploadFile] | None = File(None, description="폴더의 파일들 (filename = 폴더 안 상대 경로)"),
+    workspace_path: str | None = Form(None, description="워크스페이스 폴더 (/Workspace/...)"),
+    version: str | None = Form(None, description="등록 버전. 아무것도 없으면 마지막 등록 버전(노코드는 개발용 Genie)"),
+) -> SelfCheck:
     svc = service_for("aops validate")
-    return ValidationRun(**svc.start_validation(caller_of(request, svc), project_id, body.version))
+    data = None
+    if archive is not None:
+        data = archive.file.read(MAX_UPLOAD + 1)
+    elif files:
+        data = folder_zip([(f.filename or "", f.file.read(MAX_UPLOAD + 1)) for f in files])
+    if data is not None and len(data) > MAX_UPLOAD:
+        raise ServiceError(413, "too_large", f"{MAX_UPLOAD // 2**20}MB까지입니다", "aops validate")
+    return SelfCheck(**svc.self_check(caller_of(request, svc), project_id, data, workspace_path, version))
+
+
+@router.post(
+    "/projects/{project_id}/evaluations", status_code=202, summary="평가 시작 (Gate)",
+    **command("aops evaluate", DBX, note=(
+        "배포 전에 강제되는 평가. evaluate Job(서비스 주체)이 형식 검사를 다시 하고 품질을 평가한다: 스킬은 평가셋(evals/questions.yaml)을 모델로 답하고 "
+        "판정 모델로 채점, 노코드는 Genie 벤치마크 정확도와 운영 버전 대비 회귀, 코드는 다음 단계. 결과는 validation_runs·eval_results에 남고, "
+        "배포 요청은 같은 내용·같은 정책으로 통과한 평가를 다시 쓴다(없으면 배포 요청이 돌린다)."
+    )),
+)
+def create_evaluation(project_id: str, body: EvaluationCreate, request: Request) -> EvaluationRun:
+    svc = service_for("aops evaluate")
+    return EvaluationRun(**svc.start_evaluation(caller_of(request, svc), project_id, body.version))
 
 
 class GenieCheckRequest(BaseModel):
@@ -172,18 +215,19 @@ def agent_workspace(agent_id: str, request: Request) -> AgentWorkspace:
     return AgentWorkspace(**row)
 
 
-@router.get("/validations/{validation_run_id}", summary="검증 결과 (단계별)", **command(None, DBX, screen="검증 진행 화면"))
-def get_validation(validation_run_id: str, request: Request) -> ValidationRun:
+@router.get("/evaluations/{validation_run_id}", summary="평가 결과 (단계별·문항별)", **command(None, DBX, screen="평가 진행 화면"))
+def get_evaluation(validation_run_id: str, request: Request) -> EvaluationRun:
     svc = service_for(None)
     caller_of(request, svc)
-    return ValidationRun(**svc.validation(validation_run_id))
+    row = svc.evaluation(validation_run_id, results=True)
+    return EvaluationRun(**{**row, "results": [EvalResult(**r) for r in row.pop("results", [])]})
 
 
 @router.get(
-    "/validations/{validation_run_id}/events", response_class=EventSourceResponse, dependencies=[pending(None)], summary="검증 진행 (SSE)",
-    **command(None, DBX, screen="검증 진행 화면"),
+    "/evaluations/{validation_run_id}/events", response_class=EventSourceResponse, dependencies=[pending(None)], summary="평가 진행 (SSE)",
+    **command(None, DBX, screen="평가 진행 화면"),
 )
-async def stream_validation(validation_run_id: str) -> AsyncIterable[ProgressEvent]:
+async def stream_evaluation(validation_run_id: str) -> AsyncIterable[ProgressEvent]:
     raise todo(None)
     yield  # pragma: no cover
 
@@ -267,8 +311,9 @@ def get_gate(gate_id: str, request: Request) -> ReleaseGateDetail:
     svc = service_for(None)
     caller_of(request, svc)
     gate = svc.advance(gate_id)
-    validation = svc.validation(gate["validation_run_id"]) if gate.get("validation_run_id") else None
-    return ReleaseGateDetail(**_gate(gate).model_dump(), validation=ValidationRun(**validation) if validation else None)
+    run = svc.evaluation(gate["validation_run_id"], results=True) if gate.get("validation_run_id") else None
+    evaluation = EvaluationRun(**{**run, "results": [EvalResult(**r) for r in run.pop("results", [])]}) if run else None
+    return ReleaseGateDetail(**_gate(gate).model_dump(), evaluation=evaluation)
 
 
 @router.post(

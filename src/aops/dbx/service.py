@@ -1,8 +1,12 @@
-"""The dbx lifecycle for skill agents: register, validate, deploy, promote, list and load.
+"""The dbx lifecycle for skill, code and no-code agents: register, validate, evaluate, deploy, promote, list, load.
 
 The aops server calls these with the requester it identified; the functions act with the server's
-own identity (the aops service principal in a Databricks App). validate and deploy do their work in
-Lakeflow Jobs that run `aops-job`, as the same service principal.
+own identity (the aops service principal in a Databricks App).
+
+- validate: a self-check of the form, any time, on the spot. Not recorded and not a deploy condition.
+- evaluate: the Gate. The form checks again plus the quality evaluation, in the evaluate Job; recorded, and a
+  deploy request needs a passed one for the same content and policy.
+- deploy: the deploy Job (skill, no-code) or this server (code) puts the approved version into production.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from typing import Any
 from .. import package
 from ..init import SKILL_DESCRIPTION, SPEC_DESCRIPTION, TEMPLATE_SKILL
 from ..hashing import skills_sha256
-from . import code, nocode
+from . import code, gate_eval, nocode
 from .base import AGENT_ID, CRITICALITY, SENSITIVITY, Caller, ServiceError, now_id
 from .git import GitHub, GitSettings, commit_message, proxy_transport
 from .nocode import NoCodeMixin
@@ -49,7 +53,8 @@ SECRET_PATTERNS = {
 }
 # .env files hold real values; .env.example and the like are templates (their content is still scanned)
 FORBIDDEN_FILES = re.compile(r"(^|/)(\.env(?!\.(example|sample|template|dist)$)(\..*)?|.*\.pem|id_rsa)$")
-# What each validate step checks, shown in the Job description and in every validate run's output.
+# What each Gate (evaluate) step checks, shown in the Job description and in every run's output. The self-check
+# (validate) runs the same form steps without evaluate, integrity and record.
 CHECK_RULES = {
     "format": "SPEC.md에 agent_id·name·build_type이 있고, service_criticality ∈ {low, medium, high}, "
               "data_sensitivity ∈ {public, internal, confidential, personal}, description이 init 템플릿 문구가 아니다",
@@ -60,7 +65,10 @@ CHECK_RULES = {
     "project": "(코드 기반) agent.toml·app.yaml·pyproject.toml이 있고 server = agentbricks, framework = langgraph·openai. uv.lock을 권함",
     "definition": "(노코드) Genie 정의 규칙(데이터 소스·개인정보 컬럼 숨김·예제 SQL·벤치마크 등 15개)의 ERROR 위반이 없고 "
                   "준수율이 정책 기준(기본 90%) 이상",
-    "integrity": "(노코드) 검사가 끝날 때 개발용 Genie 정의가 배포 요청 때 뜬 스냅샷과 같다. 다르면 stale(다시 요청)",
+    "evaluate": "품질 평가 (앞 검사가 모두 통과했을 때). 스킬: evals/questions.yaml의 질문을 에이전트 지시·스킬을 준 모델이 답하고 "
+                "판정 모델이 정답(expected)·판정 기준(guideline)과 비교, 정확도 ≥ 중요도별 기준(high 90%·medium 85%·low 80%). "
+                "노코드: Genie 벤치마크 정확도 ≥ 같은 기준, 운영 버전에서 GOOD이던 문항이 BAD면 회귀(0개 허용). 코드: 다음 단계(건너뜀)",
+    "integrity": "(노코드) 평가가 끝날 때 개발용 Genie 정의가 요청 때 뜬 스냅샷과 같다. 다르면 stale(다시 요청)",
 }
 
 
@@ -213,7 +221,7 @@ class Service(NoCodeMixin, UserSpaceMixin):
             pass
         return {**row, "spec": loads(row.get("spec")) or {}, "skills": self.version_skills(agent_id, version), "git": record}
 
-    def validation_runs(self, agent_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    def evaluation_runs(self, agent_id: str, limit: int = 50) -> list[dict[str, Any]]:
         rows = self.sql.run(f"SELECT * FROM {self.sql.table('validation_runs')} WHERE agent_id = :a "
                             f"ORDER BY started_at DESC LIMIT {int(limit)}", {"a": agent_id})
         for row in rows:
@@ -533,17 +541,59 @@ class Service(NoCodeMixin, UserSpaceMixin):
                 out.append(rel)
         return out
 
-    # ── validate ────────────────────────────────────────────────────────────
+    # ── validate: self-check (any time, not recorded, not a deploy condition) ─
 
-    def start_validation(self, caller: Caller, agent_id: str, version: str | None = None) -> dict[str, Any]:
+    def self_check(self, caller: Caller, agent_id: str, data: bytes | None = None, workspace_path: str | None = None,
+                   version: str | None = None) -> dict[str, Any]:
+        """The Gate's form checks on what is being made, right now: an upload, a workspace folder, a registered
+        version, or (no-code) the dev Genie as it is. Nothing is recorded; a deploy request does not look at it."""
+        agent = self.agent(agent_id)
+        if agent and agent.get("build_type") == "no_code":
+            if not self._is_owner(caller, agent):
+                raise ServiceError(403, "not_owner", "담당자·담당 팀만 개발용 Genie를 점검할 수 있습니다", "aops validate")
+            genie = self.genie_agent(agent_id) or {}
+            files = nocode.bundle(agent_id, self._folder_spec(genie, agent), self._dev_definition(genie))
+            steps = nocode.check_steps(files, self.policy()[1], spec_step(files, "no_code"))
+            source = f"개발용 Genie {genie.get('dev_space_id')} (지금 정의와 폴더의 SPEC.md)"
+        else:
+            if data is not None:
+                try:
+                    files = package.read(data)
+                except (ValueError, zipfile.BadZipFile) as error:
+                    raise ServiceError(400, "bad_zip", f"zip을 읽을 수 없습니다: {error}", "aops validate") from error
+                source = "올린 폴더·zip"
+            elif workspace_path:
+                found, _ = self.read_workspace_folder(caller, workspace_path)
+                files, source = dict(found), workspace_path.rstrip("/")
+            else:
+                if not agent:
+                    raise ServiceError(404, "not_found", f"등록된 에이전트가 아닙니다: {agent_id}. 폴더·zip을 보내 점검하세요", "aops validate")
+                if not self._is_owner(caller, agent):
+                    raise ServiceError(403, "not_owner", "등록된 버전은 담당자·담당 팀만 점검할 수 있습니다", "aops validate")
+                target = self._version_or_latest(agent_id, version)
+                files = package.read(self.w.files.download(target["artifact_path"]).contents.read())
+                source = f"등록 버전 {target['version']}"
+            steps = check_agent(files)
+        spec = package.front_matter(files.get("SPEC.md", b"").decode("utf-8", "replace"))
+        return {"agent_id": agent_id, "build_type": (agent or {}).get("build_type") or str(spec.get("build_type") or "skill").replace("-", "_"),
+                "source": source, "status": "passed" if all(s["status"] != "failed" for s in steps) else "failed",
+                "steps": steps, "files": sorted(files)}
+
+    # ── evaluate: the Gate (recorded; a deploy request needs a passed one) ───
+
+    def start_evaluation(self, caller: Caller, agent_id: str, version: str | None = None) -> dict[str, Any]:
         agent = self._agent_or_404(agent_id)
         if not self._is_owner(caller, agent):
-            raise ServiceError(403, "not_owner", "담당자·담당 팀만 검사를 요청할 수 있습니다", "aops validate")
+            raise ServiceError(403, "not_owner", "담당자·담당 팀만 평가를 요청할 수 있습니다", "aops evaluate")
+        if agent.get("build_type") == "no_code" and not version:  # the dev definition, snapshotted now
+            snap = self.no_code_snapshot(agent)
+            label = snap["same"]["version"] if snap["same"] else snap["proposed"]
+            return self._start_run(caller, agent_id, label, snap["sha"])
         target = self._version_or_latest(agent_id, version)
         return self._start_run(caller, agent_id, target["version"], target["source_sha256"])
 
     def _start_run(self, caller: Caller, agent_id: str, version: str, sha: str) -> dict[str, Any]:
-        """A validate Job run on the content with this hash (a registered version, or a no-code snapshot)."""
+        """An evaluate Job run on the content with this hash (a registered version, or a no-code snapshot)."""
         policy_version, _ = self.policy()
         run_id = now_id()
         self.sql.run(
@@ -551,60 +601,105 @@ class Service(NoCodeMixin, UserSpaceMixin):
             ":by, current_timestamp(), NULL)",
             {"r": run_id, "a": agent_id, "v": version, "sha": sha, "p": policy_version, "by": caller.email},
         )
-        job_run = self._run_job("validate", run_id)
+        job_run = self._run_job("evaluate", run_id)
         self.sql.run(f"UPDATE {self.sql.table('validation_runs')} SET job_run_id = :j WHERE validation_run_id = :r",
                      {"j": job_run, "r": run_id})
-        return self.validation(run_id)
+        return self.evaluation(run_id)
 
-    def validation(self, run_id: str) -> dict[str, Any]:
+    def evaluation(self, run_id: str, results: bool = False) -> dict[str, Any]:
         row = self.sql.one(f"SELECT * FROM {self.sql.table('validation_runs')} WHERE validation_run_id = :r", {"r": run_id})
         if not row:
-            raise ServiceError(404, "not_found", "검사 실행이 없습니다")
+            raise ServiceError(404, "not_found", "평가 실행이 없습니다")
         row["steps"] = loads(row.get("steps")) or []
         row["checks"] = loads(row.get("checks")) or {}
         row["policy_version"] = int(row["policy_version"])
+        if results:
+            row["results"] = self.eval_results(run_id)
         return row
 
-    def run_validation(self, run_id: str) -> dict[str, Any]:
-        """Inside the validate Job: check the registered zip against the policy, record the result, return a report."""
-        run = self.validation(run_id)
+    def eval_results(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.sql.run(f"SELECT * FROM {self.sql.table('eval_results')} WHERE validation_run_id = :r ORDER BY question_id", {"r": run_id})
+        for row in rows:
+            row["reasons"] = loads(row.get("reasons")) or []
+        return rows
+
+    def run_evaluation(self, run_id: str) -> dict[str, Any]:
+        """Inside the evaluate Job: the form checks again, then the quality evaluation, recorded with its results."""
+        run = self.evaluation(run_id)
         self.sql.run(f"UPDATE {self.sql.table('validation_runs')} SET status = 'running' WHERE validation_run_id = :r", {"r": run_id})
         steps: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         report: dict[str, Any] = {"agent_id": run["agent_id"], "version": run["version"], "artifact_path": None,
                                   "sha256": None, "files": []}
         try:
             agent = self.agent(run["agent_id"]) or {}
             version = self.version(run["agent_id"], run["version"])
-            snapshot = not version or version["source_sha256"] != run["source_sha256"]  # a no-code deploy request
+            snapshot = not version or version["source_sha256"] != run["source_sha256"]  # a no-code snapshot
             path = nocode.snapshot_path(self.config.registry, run["agent_id"], run["source_sha256"]) if snapshot else version["artifact_path"]
             report.update(artifact_path=path, sha256=run["source_sha256"])
             data = self.w.files.download(path).contents.read()
             files = package.read(data)
             report["files"] = sorted(files)
+            spec = package.front_matter(files.get("SPEC.md", b"").decode("utf-8", "replace"))
+            _, policy = self.policy()
             stale = False
-            if agent.get("build_type") == "no_code":
-                steps = nocode.check_steps(files, self.policy()[1], spec_step(files, "no_code"))
-                if snapshot:
-                    integrity = self.integrity_step(run["agent_id"], files)
-                    steps.append(integrity)
-                    stale = integrity["status"] == "failed"
+            kind = agent.get("build_type")
+            steps = nocode.check_steps(files, policy, spec_step(files, "no_code")) if kind == "no_code" else check_agent(files)
+            if any(s["status"] == "failed" for s in steps):
+                steps.append({"name": "evaluate", "status": "skipped", "detail": "앞 검사가 실패해 평가를 돌리지 않았습니다"})
+            elif kind == "no_code" and not snapshot:
+                steps.append({"name": "evaluate", "status": "skipped",
+                              "detail": "등록된 이전 버전입니다 (벤치마크는 개발용 Genie의 지금 정의로 돌므로 이 버전에는 다시 돌리지 않습니다)"})
+            elif kind == "no_code":
+                genie = self.genie_agent(run["agent_id"]) or {}
+                step, results = gate_eval.evaluate_genie(self.w, genie["dev_space_id"], spec, policy, self._eval_baseline(run["agent_id"]))
+                steps.append(step)
+            elif kind == "code" or str(spec.get("build_type")) == "code":
+                steps.append(gate_eval.skipped_for_code())
             else:
-                steps = check_agent(files)
+                step, results = gate_eval.evaluate_skill(self.w, files, spec, policy)
+                steps.append(step)
+            if kind == "no_code" and snapshot:  # after the benchmarks: the dev definition must not have moved meanwhile
+                integrity = self.integrity_step(run["agent_id"], files)
+                steps.append(integrity)
+                stale = integrity["status"] == "failed"
             same = package.files_sha256(list(files.items())) == run["source_sha256"]
-            what = "스냅샷이 배포 요청 때" if snapshot else "버전 zip이 등록 때"
+            what = "스냅샷이 요청 때" if snapshot else "버전 zip이 등록 때"
             steps.append({"name": "record", "status": "passed" if same else "failed",
                           "detail": f"{what} 해시와 같습니다" if same else f"{what} 해시와 다릅니다"})
             status = "stale" if stale else "passed" if all(s["status"] != "failed" for s in steps) else "failed"
             reason = None if status == "passed" else "; ".join(s["detail"] for s in steps if s["status"] == "failed")
+        except gate_eval.EvaluationError as error:
+            status, reason = "error", str(error)
         except Exception as error:
             status, reason = "error", f"{type(error).__name__}: {error}"
-        self.sql.run(
+        statements = [(
             f"UPDATE {self.sql.table('validation_runs')} SET status = :s, steps = parse_json(:steps), failure_reason = :why, "
             "ended_at = current_timestamp() WHERE validation_run_id = :r",
-            {"s": status, "steps": steps, "why": reason, "r": run_id},
-        )
-        self.event(run["agent_id"], run["version"], "validate", run["started_by"], {"status": status, "validation_run_id": run_id})
-        return {**report, "status": status, "reason": reason, "steps": steps}
+            {"s": status, "steps": steps, "why": reason, "r": run_id})]
+        statements += [(f"INSERT INTO {self.sql.table('eval_results')} VALUES (:r, :a, :q, :text, :as, parse_json(:why), :exp, :gen, current_timestamp())",
+                        {"r": run_id, "a": run["agent_id"], "q": r["question_id"], "text": r.get("question"), "as": r["assessment"],
+                         "why": r.get("reasons") or [], "exp": r.get("expected"), "gen": (r.get("generated") or "")[:20000]})
+                       for r in results]
+        statements.append(self._event_statement(run["agent_id"], run["version"], "evaluate", run["started_by"],
+                                                {"status": status, "validation_run_id": run_id, "questions": len(results)}))
+        self.sql.atomic(statements)
+        return {**report, "status": status, "reason": reason, "steps": steps, "results": results}
+
+    run_validation = run_evaluation  # the Job of servers before 0.1.0.dev16 calls it by this name
+
+    def _eval_baseline(self, agent_id: str) -> dict[str, str] | None:
+        """The production version's evaluation results (question → assessment). None when nothing is in production."""
+        production = self.production(agent_id)
+        if not production:
+            return None
+        target = self.version(agent_id, production["current_version"]) or {}
+        rows = self.sql.run(
+            f"SELECT r.question_id, r.assessment FROM {self.sql.table('eval_results')} r WHERE r.validation_run_id = ("
+            f"SELECT max_by(v.validation_run_id, v.started_at) FROM {self.sql.table('validation_runs')} v "
+            "WHERE v.agent_id = :a AND v.source_sha256 = :sha AND v.status = 'passed')",
+            {"a": agent_id, "sha": target.get("source_sha256")})
+        return {row["question_id"]: row["assessment"] for row in rows}
 
     # ── deploy ──────────────────────────────────────────────────────────────
 
@@ -633,11 +728,11 @@ class Service(NoCodeMixin, UserSpaceMixin):
         )
         self.event(agent_id, target["version"], "gate_requested", caller.email, {"gate_id": gate_id, "upgrade_type": upgrade})
 
-        passed = self._passed_validation(agent_id, target["version"], policy_version)
+        passed = self._passed_evaluation(agent_id, target["version"], policy_version)
         if policy["validation_mode"] == "exempt" or passed:
             self._after_gate(gate_id, passed["validation_run_id"] if passed else None)
         else:
-            run = self.start_validation(caller, agent_id, target["version"])
+            run = self.start_evaluation(caller, agent_id, target["version"])
             self._set_gate(gate_id, validation_run_id=run["validation_run_id"])
             threading.Thread(target=self._follow, args=(gate_id,), daemon=True).start()
         return self.gate(gate_id)
@@ -649,7 +744,7 @@ class Service(NoCodeMixin, UserSpaceMixin):
             "ON d.deployment_id = g.deployment_id WHERE g.agent_id = :a AND (g.decision IN ('validating', 'pending_approval') "
             "OR (g.decision = 'approved' AND (d.status IS NULL OR d.status = 'running')))", {"a": agent_id})
 
-    def _passed_validation(self, agent_id: str, version: str, policy_version: int) -> dict[str, Any] | None:
+    def _passed_evaluation(self, agent_id: str, version: str, policy_version: int) -> dict[str, Any] | None:
         target = self.version(agent_id, version)
         if not target:
             return None
@@ -674,7 +769,7 @@ class Service(NoCodeMixin, UserSpaceMixin):
             return self._reconcile_code_deploy(gate)
         if gate["decision"] != "validating" or not gate.get("validation_run_id"):
             return gate
-        run = self.validation(gate["validation_run_id"])
+        run = self.evaluation(gate["validation_run_id"])
         if run["status"] not in ("passed", "failed", "stale", "error"):
             return gate
         if run["status"] == "passed":
@@ -1105,22 +1200,23 @@ class Service(NoCodeMixin, UserSpaceMixin):
         from databricks.sdk.service import compute, jobs
 
         registry, wheel = self.config.registry, self.config.dist_wheel
-        code = f"실행 코드: {wheel} 의 aops-job → aops.dbx.service.Service.run_{'validation' if kind == 'validate' else 'deploy'}"
-        if kind == "validate":
-            description = ("aops 배포 전 검사(Gate). aops 서버가 배포 요청마다 실행합니다.\n"
+        code = f"실행 코드: {wheel} 의 aops-job → aops.dbx.service.Service.run_{'evaluation' if kind == 'evaluate' else 'deploy'}"
+        if kind == "evaluate":
+            description = ("aops 배포 전 평가(Gate). 배포 요청과 aops evaluate마다 aops 서버가 실행합니다.\n"
                            + "\n".join(f"- {name}: {rule}" for name, rule in CHECK_RULES.items())
-                           + f"\n{code} (check_agent · 노코드 nocode.check_steps)\n결과: {registry}.validation_runs.steps, 실행 출력에 검사별 결과")
+                           + f"\n{code} (형식 check_agent · 노코드 nocode.check_steps, 평가 gate_eval)\n"
+                           f"결과: {registry}.validation_runs.steps, 문항별 {registry}.eval_results, 실행 출력에 단계별 결과")
         else:
             description = ("aops 운영 반영. 승인된 배포 요청마다 aops 서버가 실행합니다.\n"
                            "승인 상태와 zip 해시를 다시 확인한 뒤, 스킬마다 UC Skill 내용을 이 버전으로 바꿉니다 "
                            "(바뀐 파일 올리기, SKILL.md는 마지막, 남은 파일 지우기).\n"
-                           "노코드는 검사한 스냅샷을 운영용 Genie(서비스 주체 소유)에 넣고 버전을 매긴 뒤 공개 그룹에 CAN RUN을 줍니다.\n"
+                           "노코드는 평가한 스냅샷을 운영용 Genie(서비스 주체 소유)에 넣고 버전을 매긴 뒤 공개 그룹에 CAN RUN을 줍니다.\n"
                            f"{code}\n결과: {registry}.agent_production · deployments · agent_events, 실행 출력에 스킬별 결과")
         params = ["--kind", kind, "--id", "{{job.parameters.id}}", "--registry", registry, "--warehouse", self.config.warehouse_id]
         return {
             "name": f"aops-{kind}",
             "description": description,
-            "max_concurrent_runs": 10 if kind == "validate" else 1,
+            "max_concurrent_runs": 10 if kind == "evaluate" else 1,
             "performance_target": jobs.PerformanceTarget.PERFORMANCE_OPTIMIZED,
             "parameters": [jobs.JobParameterDefinition(name="id", default="")],
             "environments": [jobs.JobEnvironment(environment_key="aops", spec=compute.Environment(
@@ -1132,7 +1228,7 @@ class Service(NoCodeMixin, UserSpaceMixin):
         }
 
     def _job(self, kind: str) -> int:
-        """The validate or deploy Job, created by this identity so it runs as itself, kept on this server's package."""
+        """The evaluate or deploy Job, created by this identity so it runs as itself, kept on this server's package."""
         if kind in self._jobs:
             return self._jobs[kind]
         from databricks.sdk.service import jobs

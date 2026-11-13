@@ -318,10 +318,9 @@ class NoCodeMixin:
         except Exception:
             return render_spec(loads(agent.get("spec")) or {"agent_id": agent["agent_id"], "build_type": "no_code"})
 
-    def request_no_code_deploy(self, caller: Caller, agent: dict[str, Any], reason: str | None) -> dict[str, Any]:
-        """Snapshot SPEC.md and the dev definition, then the usual Gate: check → approval → deploy Job."""
-        import threading
-
+    def no_code_snapshot(self, agent: dict[str, Any]) -> dict[str, Any]:
+        """SPEC.md and the dev definition now, written once to the agent volume (checks/<sha>.zip), and what it
+        would become: the same as a registered version, or a proposed number (major when data sources change)."""
         from .service import next_version
 
         agent_id = agent["agent_id"]
@@ -333,7 +332,32 @@ class NoCodeMixin:
         sha = package.files_sha256(list(files.items()))
         versions = self.versions(agent_id)
         production = self.production(agent_id)
-        same = next((v for v in versions if v["source_sha256"] == sha), None)
+        previous = None
+        row = self.version(agent_id, production["current_version"]) if production else None
+        if row:  # the production definition, to tell major from minor and to show what changed
+            previous = definition_of(package.read(self.w.files.download(row["artifact_path"]).contents.read()))
+        change = upgrade(previous, definition)
+        path = snapshot_path(self.config.registry, agent_id, sha)
+        self.sql.run(f"CREATE VOLUME IF NOT EXISTS {self.config.registry}.`{agent_id}` "
+                     f"COMMENT 'aops 에이전트 {agent_id}의 버전 zip·검사 스냅샷. 쓰기는 aops 서비스 주체만'")
+        data = package.build_entries([(rel, content, 0o644) for rel, content in sorted(files.items())]).data
+        try:
+            self.w.files.upload(path, io.BytesIO(data), overwrite=False)
+        except Exception as error:
+            if "exist" not in str(error).lower():
+                raise  # the same snapshot was taken before: same name, same content
+        return {"genie": genie, "definition": definition, "files": files, "sha": sha, "path": path, "versions": versions,
+                "production": production, "previous": previous, "change": change,
+                "same": next((v for v in versions if v["source_sha256"] == sha), None),
+                "proposed": next_version([v["version"] for v in versions], "major" if change == "major" else None)}
+
+    def request_no_code_deploy(self, caller: Caller, agent: dict[str, Any], reason: str | None) -> dict[str, Any]:
+        """Snapshot SPEC.md and the dev definition, then the usual Gate: evaluate → approval → deploy Job."""
+        import threading
+
+        agent_id = agent["agent_id"]
+        snap = self.no_code_snapshot(agent)
+        sha, same, production = snap["sha"], snap["same"], snap["production"]
         if same:
             if production and production["current_version"] == same["version"]:
                 raise ServiceError(409, "unchanged", f"운영 버전({same['version']})과 정의·SPEC.md가 같습니다. 개발용 Genie를 고친 뒤 요청하세요", "aops deploy")
@@ -344,27 +368,12 @@ class NoCodeMixin:
                 return self.advance(open_gate["gate_id"])  # the same request again: keep following it
             raise ServiceError(409, "gate_open", f"진행 중인 배포 요청이 있습니다 ({open_gate['version']}, {open_gate['gate_id']})", "aops deploy")
 
-        previous = None
-        if production:
-            row = self.version(agent_id, production["current_version"])
-            previous = definition_of(package.read(self.w.files.download(row["artifact_path"]).contents.read()))
-        change = upgrade(previous, definition)
-        proposed = next_version([v["version"] for v in versions], "major" if change == "major" else None)
-        path = snapshot_path(self.config.registry, agent_id, sha)
-        self.sql.run(f"CREATE VOLUME IF NOT EXISTS {self.config.registry}.`{agent_id}` "
-                     f"COMMENT 'aops 에이전트 {agent_id}의 버전 zip·검사 스냅샷. 쓰기는 aops 서비스 주체만'")
-        data = package.build_entries([(rel, content, 0o644) for rel, content in sorted(files.items())]).data
-        try:
-            self.w.files.upload(path, io.BytesIO(data), overwrite=False)
-        except Exception as error:
-            if "exist" not in str(error).lower():
-                raise  # the same snapshot was taken before: same name, same content
-
+        proposed, change = snap["proposed"], snap["change"]
         policy_version, policy = self.policy()
         gate_id = now_id()
-        detail = {"gate_id": gate_id, "upgrade_type": change, "snapshot_sha256": sha, "snapshot_path": path,
-                  "definition_sha256": genie_rules.definition_hash(definition), "dev_space_id": genie["dev_space_id"],
-                  "diff": diff(previous, definition)}
+        detail = {"gate_id": gate_id, "upgrade_type": change, "snapshot_sha256": sha, "snapshot_path": snap["path"],
+                  "definition_sha256": genie_rules.definition_hash(snap["definition"]), "dev_space_id": snap["genie"]["dev_space_id"],
+                  "diff": diff(snap["previous"], snap["definition"])}
         self.sql.atomic([
             (f"INSERT INTO {self.sql.table('release_gates')} VALUES (:g, :a, :v, :by, :why, current_timestamp(), :up, :p, :vm, NULL, "
              ":am, :ch, :n, NULL, NULL, 'validating', NULL, NULL, current_timestamp())",
@@ -373,6 +382,7 @@ class NoCodeMixin:
               "ch": policy["approval_channel"], "n": int(policy["required_approvals"])}),
             self._event_statement(agent_id, proposed, "gate_requested", caller.email, detail),
         ])
+        # a passed evaluation of this very content (aops evaluate before the request) counts
         passed = self.sql.one(f"SELECT validation_run_id FROM {self.sql.table('validation_runs')} WHERE agent_id = :a AND source_sha256 = :sha "
                               "AND policy_version = :p AND status = 'passed' AND mode = 'job' ORDER BY started_at DESC LIMIT 1",
                               {"a": agent_id, "sha": sha, "p": policy_version})
@@ -394,7 +404,7 @@ class NoCodeMixin:
         return detail if detail and detail.get("snapshot_sha256") else None
 
     def integrity_step(self, agent_id: str, files: dict[str, bytes]) -> dict[str, Any]:
-        """At the end of the Gate: the dev definition still equals the snapshot (otherwise the run is stale)."""
+        """At the end of the Gate (after the benchmarks): the dev definition still equals the snapshot, or the run is stale."""
         genie = self.genie_agent(agent_id) or {}
         try:
             now = genie_rules.definition_hash(self._dev_definition(genie))

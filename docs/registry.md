@@ -6,28 +6,28 @@
 
 ## 관리자 정책
 
-"조직에 배포하려면 지켜야 할 형식"입니다. Delta `policies`에 버전이 붙어 저장되고, validate Job·aops 서버·배포 Job이 같은 정책 버전을 읽습니다. 정책은 코드로만 검사합니다. 사람의 판단이 들어가는 곳은 승인 하나입니다.
+"조직에 배포하려면 지켜야 할 형식"입니다. Delta `policies`에 버전이 붙어 저장되고, evaluate Job·aops 서버·배포 Job이 같은 정책 버전을 읽습니다. 정책은 코드로만 검사합니다. 사람의 판단이 들어가는 곳은 승인 하나입니다.
 
-| 항목 | 예 | 검사 시점 |
+| 항목 | 예 | 보는 단계 |
 | --- | --- | --- |
-| 필수 정보 | 소유 팀·담당자·데이터 등급·설명, 이름 규칙 | validate |
-| 소스 | 등록된 버전, 금지 파일·비밀값 없음 | validate |
-| 실행 구성 | 에이전트 서버 종류, 허용 하네스·SDK 버전 범위, 허용 Model service·MCP, 도구 권한 방식 | validate |
-| 가드레일 | 데이터 등급별 필수 층·규칙·Gateway 정책, 레드팀 최소 통과율 | validate, 배포 Job |
-| 평가 | 필수 평가 데이터셋, 최소 점수 | validate |
-| 노코드 | Genie 정의 작성 규칙과 수준(오류·경고), 서비스 중요도별 벤치마크 정확도 기준 | validate |
+| 필수 정보 | 소유 팀·담당자·데이터 등급·설명, 이름 규칙 | evaluate (validate는 같은 검사를 참고용으로) |
+| 소스 | 등록된 버전, 금지 파일·비밀값 없음 | evaluate |
+| 실행 구성 | 에이전트 서버 종류, 허용 하네스·SDK 버전 범위, 허용 Model service·MCP, 도구 권한 방식 | evaluate |
+| 가드레일 | 데이터 등급별 필수 층·규칙·Gateway 정책, 레드팀 최소 통과율 | evaluate, 배포 Job |
+| 평가 | 평가셋, 중요도별 최소 정확도(`evaluate.accuracy_min`), 답변·판정 모델, 회귀 허용 수 | evaluate |
+| 노코드 | Genie 정의 작성 규칙과 수준(오류·경고), 서비스 중요도별 벤치마크 정확도 기준 | evaluate |
 | 운영 기록 | 배포 에이전트의 MLflow tracing·Apps telemetry | 배포 Job |
-| 검증 방식 | `mandatory`(기본, 통과한 검사 필요)·`optional`(검사는 돌리고, 실패해도 결과를 남긴 채 승인자가 판단)·`exempt`(검사 없음) | deploy |
+| 평가 방식 (`validation_mode`) | `mandatory`(기본, 통과한 평가 필요)·`optional`(평가는 돌리고, 실패해도 결과를 남긴 채 승인자가 판단)·`exempt`(평가 없음) | deploy |
 | 승인 | 승인 그룹, 필요한 승인 수, 자기 승인 금지, 승인 방식(`required` 기본·`optional`(SPEC 중요도 `low`이고 민감도 `public`·`internal`이면 자동, 아니면 승인자)·`auto`), 결재 채널(console 기본·외부 결재 확장) | deploy, console 화면 |
-| 보안 등급 | 등급 목록, 등급별 공개 범위 | validate, promote |
-| 재검증 | 정책이 바뀌면 이전 정책의 검사로 배포할 수 있는지 | deploy |
+| 보안 등급 | 등급 목록, 등급별 공개 범위 | evaluate, promote |
+| 재검증 | 정책이 바뀌면 이전 정책의 평가로 배포할 수 있는지 | deploy |
 
 - 개발 단계의 기록·가드레일·평가 여부는 정책 항목이 될 수 없습니다. 정책은 등록·배포되는 결과물만 봅니다.
 - 정책을 올리는 명령은 `aops admin policy set`입니다(설계).
 - **지금:**
-  - 정책은 `aops admin setup --validation-mode mandatory|optional|exempt --approval-mode required|optional|auto --approver-group <그룹>`으로 정합니다. 승인 수는 1명, 보안 등급은 `general`·`important`·`secret`입니다. 정책이 없으면 `mandatory`·`required`를 씁니다. 세 가지 검사 방식과 세 가지 승인 방식이 모두 위 표의 뜻대로 동작합니다.
-  - 검사는 스킬 기반의 네 가지입니다: `format`(SPEC.md 필수 항목과 허용 값), `skills`(Agent Skills 형식, 이름 = 폴더 이름, description 1~1024자), `secrets`(토큰·키 패턴, `.env`·`*.pem`·`id_rsa`), `record`(볼륨의 zip이 등록 때 해시와 같은지). `init` 템플릿을 고치지 않은 채면(`my-skill`, 템플릿 description) 반려합니다.
-  - 평가·가드레일·호환 검사, 보안 등급별 공개 범위, 재검증 규칙은 설계입니다.
+  - 정책은 `aops admin setup --validation-mode mandatory|optional|exempt --approval-mode required|optional|auto --approver-group <그룹>`으로 정합니다. 승인 수는 1명, 보안 등급은 `general`·`important`·`secret`입니다. 정책이 없으면 `mandatory`·`required`를 씁니다. 세 가지 평가 방식과 세 가지 승인 방식이 모두 위 표의 뜻대로 동작합니다.
+  - 평가(Gate) 단계: 형식(`format`, 스킬 `skills`·코드 `project`·노코드 `definition`, `secrets`) → 품질 `evaluate`(스킬 평가셋 채점·노코드 벤치마크와 회귀, 코드는 다음 단계) → 노코드 `integrity` → `record`. `init` 템플릿을 고치지 않은 채면 반려합니다. 셀프 체크(`aops validate`)는 형식 단계만 바로 돌리고 기록하지 않습니다. 단계 설명은 [명령어](commands.md#aops-evaluate)
+  - 가드레일·호환 검사, 보안 등급별 공개 범위, 재검증 규칙은 설계입니다.
 
 ## aops 서버
 
@@ -73,14 +73,14 @@
 | `agent_versions` | 저장된 버전, 버전 zip 경로·해시·크기, 상태(`registered`·`production`·`retired`) | `register`, 배포 Job |
 | `agent_version_skills` | 버전마다 들어 있는 스킬과 UC Skill 이름(첫 배포 때 만들어짐)·해시 | `register` |
 | `genie_agents` | 노코드: 개발용·운영용 Genie Agent와 에이전트 폴더, 공개 그룹, warehouse | console 노코드 만들기, 배포 Job(운영용 space ID) |
-| `validation_runs` | 검사 결과 (정책 버전, 검사별 결과, 실패 이유) | validate Job |
-| `eval_results` | 평가 점수 | 평가 (설계) |
+| `validation_runs` | 평가(Gate) 실행 (정책 버전, 단계별 결과, 실패 이유) | evaluate Job |
+| `eval_results` | 평가 문항별 결과 (판정·이유·정답·답). 노코드 운영 버전의 결과가 회귀 기준 | evaluate Job |
 | `release_gates` | 배포 요청과 판정 (`validating` → `pending_approval` → `approved`·`rejected`·`canceled`). 승인 대기 이유는 `decision_reason` | `deploy`, aops 서버 |
 | `approvals` | 승인·반려 이력 (추가만). 자동 승인은 `policy:auto` | aops 서버 |
 | `deployments` | 배포 결과 (`running`·`succeeded`·`failed`) | aops 서버, 배포 Job |
 | `agent_production` | 에이전트별 운영 버전과 이전 버전 | 배포 Job |
 | `agent_version_git` | Git 사본(선택): 버전마다 저장소·커밋·태그·상태(`synced`·`failed`·`skipped`)와 이유 | `register`, 배포 Job (정책에 `git`이 있을 때) |
-| `agent_events` | 감사 이력: `create`(노코드 만들기)·`register`·`gate_requested`(노코드는 스냅샷 해시·경로·변경 내용)·`validate`·`gate_approved`·`gate_rejected`·`gate_canceled`·`deploy`·`rollback`·`promote`·`load`·`git` | 각 단계 |
+| `agent_events` | 감사 이력: `create`(노코드 만들기)·`register`·`gate_requested`(노코드는 스냅샷 해시·경로·변경 내용)·`evaluate`(0.1.0.dev15까지는 `validate`)·`gate_approved`·`gate_rejected`·`gate_canceled`·`deploy`·`rollback`·`promote`·`load`·`git` | 각 단계 |
 | `rate_cards` | 모델별 단가 (비용 계산용) | 관리자 (설계) |
 | `agent_status` (뷰) | 에이전트별 최신 버전, 운영 버전, 상태, 담당 (`aops list`가 읽음) | – |
 

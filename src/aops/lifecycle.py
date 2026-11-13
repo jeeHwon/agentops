@@ -47,13 +47,54 @@ def cmd_register(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_validate(args: argparse.Namespace) -> int:
+def _target(args: argparse.Namespace) -> tuple[Server, str]:
+    """The agent a command is about: `--agent` (a no-code agent has no folder), or the aops project folder here."""
+    if getattr(args, "agent", None):
+        here = Project.find()
+        return Server(here if here.is_project else None), args.agent
     project = _project()
-    server = Server(project)
-    run = server.request("POST", f"/projects/{project.name}/validations", body={"version": args.version})
-    _say(f"검사 시작: {project.name} {run['version']} (validate Job)")
-    run = _wait_validation(server, run["validation_run_id"])
+    return Server(project), project.name
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    """Self-check: the Gate's form checks, now. Nothing is recorded and deploy does not ask for it.
+
+    In an agent folder it runs here, without the server, on what `aops register` would send. With `--agent`
+    the server checks that agent: a no-code agent's dev Genie, or a registered version (`--version`).
+    """
+    if not args.agent:
+        from .dbx.service import check_agent
+
+        project = _project()
+        archive = package.build(project)
+        files = package.read(archive.data)
+        _say(f"셀프 체크: {project.name} (이 폴더, 파일 {len(archive.files)}개 · 기록하지 않음, 배포 조건 아님)")
+        steps = check_agent(files)
+    else:
+        server, name = _target(args)
+        result = server.upload(f"/projects/{name}/validations", {"version": args.version})
+        _say(f"셀프 체크: {name} ({result['source']} · 기록하지 않음, 배포 조건 아님)")
+        steps = result["steps"]
+    _print_steps({"steps": steps})
+    ok = all(step["status"] != "failed" for step in steps)
+    _say("  통과: 배포 전 평가는 aops evaluate (배포 요청 때도 자동으로 돈다)" if ok else "  고칠 곳이 있습니다")
+    return 0 if ok else 1
+
+
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    """The Gate: the evaluate Job checks the form again and evaluates quality; recorded, and deploy reuses a pass."""
+    server, name = _target(args)
+    run = server.request("POST", f"/projects/{name}/evaluations", body={"version": args.version})
+    _say(f"평가 시작: {name} {run['version']} (evaluate Job, Gate)")
+    run = _wait_evaluation(server, run["validation_run_id"])
     _print_steps(run)
+    for result in run.get("results") or []:
+        if result["assessment"] != "GOOD":
+            _say(f"    {result['assessment']} {result['question_id']} {(result.get('question') or '')[:50]} · "
+                 f"{'; '.join(str(x) for x in result.get('reasons') or [])[:120]}")
+    if run.get("failure_reason") and run["status"] != "failed":
+        _say(f"  {run['failure_reason']}")
+    _say(f"  평가 {run['status']}" + (": 같은 내용으로 배포를 요청하면 이 결과를 씁니다" if run["status"] == "passed" else ""))
     return 0 if run["status"] == "passed" else 1
 
 
@@ -69,12 +110,12 @@ def _poll(server: Server, path: str, tries: int = 5) -> dict[str, Any]:
     raise AssertionError("unreachable")
 
 
-def _wait_validation(server: Server, run_id: str) -> dict[str, Any]:
+def _wait_evaluation(server: Server, run_id: str) -> dict[str, Any]:
     last = None
     while True:
-        run = _poll(server, f"/validations/{run_id}")
+        run = _poll(server, f"/evaluations/{run_id}")
         if run["status"] != last:
-            _say(f"  검사 {run['status']}")
+            _say(f"  평가 {run['status']}")
             last = run["status"]
         if run["status"] in DONE:
             return run
@@ -88,12 +129,11 @@ def _print_steps(run: dict[str, Any]) -> None:
 
 
 def cmd_deploy(args: argparse.Namespace) -> int:
-    project = _project()
-    server = Server(project)
+    server, name = _target(args)
     if args.cancel:
-        return _cancel(server, project.name)
-    gate = server.request("POST", f"/projects/{project.name}/deploy-requests", body={"version": args.version, "reason": args.reason})
-    _say(f"배포 요청: {project.name} {gate['version']} (변경 폭 {gate['upgrade_type']}, 검사 {gate['validation_policy_mode']}, "
+        return _cancel(server, name)
+    gate = server.request("POST", f"/projects/{name}/deploy-requests", body={"version": args.version, "reason": args.reason})
+    _say(f"배포 요청: {name} {gate['version']} (변경 폭 {gate['upgrade_type']}, 평가 {gate['validation_policy_mode']}, "
          f"승인 {gate['approval_mode']})")
     seen: set[str] = set()
     pending_since: float | None = None
@@ -174,16 +214,16 @@ def cmd_reject(args: argparse.Namespace) -> int:
 def _report_gate(gate: dict[str, Any]) -> None:
     decision, deployment = gate["decision"], gate.get("deployment_status")
     if decision == "validating":
-        _say("  Gate: validate Job으로 검사 중…")
+        _say("  Gate: evaluate Job으로 평가 중…")
     elif decision == "pending_approval" and gate.get("decision_reason"):
-        if gate.get("validation"):
-            _print_steps(gate["validation"])
+        if gate.get("evaluation"):
+            _print_steps(gate["evaluation"])
         _say(f"  {gate['decision_reason']}")
     elif decision == "pending_approval":
         _say("  Gate 통과 → " + ("정책 자동 승인 중…" if gate["approval_mode"] == "auto" else "승인 대기"))
     elif decision == "approved" and deployment == "running":
-        if gate.get("validation"):
-            _print_steps(gate["validation"])
+        if gate.get("evaluation"):
+            _print_steps(gate["evaluation"])
         who = gate.get("approved_by")
         _say(f"  승인됨 ({'정책 자동 승인' if who == 'policy:auto' else f'승인자 {who}' if who else '승인'}) → 배포 Job 실행 중…")
     elif deployment == "succeeded":
@@ -246,9 +286,14 @@ def add_commands(sub: argparse._SubParsersAction) -> dict[str, Any]:
     p = sub.add_parser("register", help="버전 저장 (dbx)")
     p.add_argument("--version")
     p.add_argument("--bump", choices=["fix", "minor", "major"])
-    p = sub.add_parser("validate", help="관리자 정책 검사 (validate Job)")
-    p.add_argument("--version")
-    p = sub.add_parser("deploy", help="배포 요청 → 검사·승인 → 운영 반영")
+    p = sub.add_parser("validate", help="셀프 체크: 형식 검사 (언제든, 기록 안 함, 배포 조건 아님)")
+    p.add_argument("--agent", help="서버가 이 에이전트를 점검 (노코드: 개발용 Genie, 그 밖: 등록 버전). 없으면 이 폴더를 바로 점검")
+    p.add_argument("--version", help="--agent와 함께: 점검할 등록 버전 (비우면 마지막)")
+    p = sub.add_parser("evaluate", help="배포 전 평가 Gate: 형식 + 품질 평가 (evaluate Job, 기록, 배포 조건)")
+    p.add_argument("--agent", help="이 폴더 대신 이 에이전트 (노코드는 지금 개발용 정의를 평가)")
+    p.add_argument("--version", help="평가할 등록 버전 (비우면 마지막)")
+    p = sub.add_parser("deploy", help="배포 요청 → 평가(Gate)·승인 → 운영 반영")
+    p.add_argument("--agent", help="이 폴더 대신 이 에이전트 (노코드는 버전 없이: 개발용 정의를 스냅샷으로)")
     p.add_argument("--version")
     p.add_argument("--reason")
     p.add_argument("--cancel", action="store_true", help="진행 중인 배포 요청 취소 (요청자·담당 팀)")
@@ -271,7 +316,7 @@ def add_commands(sub: argparse._SubParsersAction) -> dict[str, Any]:
     p.add_argument("agent_id")
     p.add_argument("--version")
     p.add_argument("--dir")
-    return {"register": cmd_register, "validate": cmd_validate, "deploy": cmd_deploy, "gates": cmd_gates,
+    return {"register": cmd_register, "validate": cmd_validate, "evaluate": cmd_evaluate, "deploy": cmd_deploy, "gates": cmd_gates,
             "approve": cmd_approve, "reject": cmd_reject, "promote": cmd_promote,
             "list": cmd_list, "load": cmd_load}
 

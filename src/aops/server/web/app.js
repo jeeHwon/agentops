@@ -71,15 +71,15 @@ function size(n) {
 const LABEL = {
   lifecycle: { registered: ["등록됨", ""], production: ["운영 중", "ok"], archived: ["보관", ""] },
   version: { registered: ["등록됨", ""], production: ["운영", "ok"], retired: ["이전 운영", "plain"] },
-  validation: { queued: ["대기", "info run"], running: ["검사 중", "info run"], passed: ["통과", "ok"], failed: ["실패", "bad"], stale: ["무효", "warn"], error: ["오류", "bad"] },
-  decision: { validating: ["검사 중", "info run"], pending_approval: ["승인 대기", "warn"], approved: ["승인됨", "ok"], rejected: ["반려", "bad"], canceled: ["취소", "plain"] },
+  validation: { queued: ["대기", "info run"], running: ["평가 중", "info run"], passed: ["통과", "ok"], failed: ["실패", "bad"], stale: ["무효", "warn"], error: ["오류", "bad"] },
+  decision: { validating: ["평가 중", "info run"], pending_approval: ["승인 대기", "warn"], approved: ["승인됨", "ok"], rejected: ["반려", "bad"], canceled: ["취소", "plain"] },
   deployment: { running: ["배포 중", "info run"], succeeded: ["완료", "ok"], failed: ["실패", "bad"] },
   git: { synced: ["Git", "ok"], failed: ["Git 실패", "bad"], skipped: ["Git 건너뜀", "warn"] },
 };
 const BUILD = { skill: "스킬", code: "코드", no_code: "노코드" };
 const UPGRADE = { initial: "첫 배포", major: "major", minor: "minor", patch: "patch", rollback: "되돌리기" };
 const EVENT = {
-  create: "만들기", register: "등록", validate: "검사", gate_requested: "배포 요청", gate_approved: "승인", gate_rejected: "반려",
+  create: "만들기", register: "등록", validate: "검사(옛)", evaluate: "평가", gate_requested: "배포 요청", gate_approved: "승인", gate_rejected: "반려",
   gate_canceled: "취소", deploy: "운영 반영", rollback: "되돌리기", promote: "권한", load: "가져오기", git: "Git",
 };
 const MODE = { mandatory: "필수", optional: "선택", exempt: "면제", required: "사람 승인", auto: "자동 승인" };
@@ -240,7 +240,7 @@ async function agentsPage(root) {
     const rows = items.filter((a) => (!type || a.build_type === type) && (!life || a.lifecycle === life) &&
       (!q || `${a.agent_id} ${a.name} ${a.description || ""} ${a.owner}`.toLowerCase().includes(q)));
     table.replaceChildren(rows.length ? h("table", { class: "data" },
-      h("thead", {}, h("tr", {}, ["에이전트", "종류", "최신", "운영", "마지막 검사", "대기", "담당", "바뀐 시각"].map((t) => h("th", {}, t)))),
+      h("thead", {}, h("tr", {}, ["에이전트", "종류", "최신", "운영", "마지막 평가", "대기", "담당", "바뀐 시각"].map((t) => h("th", {}, t)))),
       h("tbody", {}, rows.map((a) => h("tr", { class: "click", onclick: () => { location.hash = `#/agents/${enc(a.agent_id)}`; } },
         h("td", {}, h("div", { class: "cell-main" }, a.name || a.agent_id),
           h("div", { class: "cell-sub" }, [a.name && a.name !== a.agent_id ? a.agent_id : null, a.description].filter(Boolean).join(" · "))),
@@ -269,7 +269,7 @@ async function agentsPage(root) {
       h("a", { class: "btn", href: "#/new" }, "+ 새 에이전트"), h("a", { class: "btn primary", href: "#/register" }, "↑ 등록")]),
     h("div", { class: "grid four" },
       stat("에이전트", items.length, "등록된 전체"), stat("운영 중", prod, "운영 버전이 있는 에이전트"),
-      stat("진행 중인 배포 요청", pending, "검사 중·승인 대기"), stat("마지막 검사 실패", failed, "다시 고쳐 등록할 것")),
+      stat("진행 중인 배포 요청", pending, "평가 중·승인 대기"), stat("마지막 평가 실패", failed, "고쳐서 다시 평가할 것")),
     h("div", { class: "card mt" },
       h("div", { class: "toolbar", style: "padding:12px 14px 0" },
         h("input", { type: "search", placeholder: "이름·ID·설명·담당으로 찾기", oninput: (e) => { q = e.target.value.toLowerCase(); draw(); } }),
@@ -298,7 +298,7 @@ async function agentPage(root, id, params) {
   const nc = noCode ? await get(`/no-code/agents/${enc(id)}`).catch(() => null) : null;
   const ws = noCode ? null : await get(`/agents/${enc(id)}/workspace`).catch(() => null);
   const link = (url, text) => url ? h("a", { href: url, target: "_blank" }, `${text} ↗`) : "–";
-  const tabs = [["versions", "버전", versions.items.length], ["checks", "검사"], ["gates", "배포 요청"], ["deploys", "배포"], ["events", "감사 이력"]];
+  const tabs = [["versions", "버전", versions.items.length], ["checks", "평가(Gate)"], ["gates", "배포 요청"], ["deploys", "배포"], ["events", "감사 이력"]];
   let tab = params.get("tab") || "versions";
   const pane = h("div", {});
   const tabBar = h("div", { class: "tabs" });
@@ -308,7 +308,7 @@ async function agentPage(root, id, params) {
     pane.replaceChildren(h("div", { class: "loading" }, h("span", { class: "spinner" })));
     try {
       if (tab === "versions") pane.replaceChildren(versionsTab(agent, versions.items));
-      if (tab === "checks") pane.replaceChildren(checksTab(await get(`/agents/${enc(id)}/validation-runs`)));
+      if (tab === "checks") pane.replaceChildren(checksTab(await get(`/agents/${enc(id)}/evaluations`), id));
       if (tab === "gates") pane.replaceChildren(gatesTable(await get(`/release-gates?agent_id=${enc(id)}`), { agent: false, reload: loadTab }));
       if (tab === "deploys") pane.replaceChildren(deploysTab(await get(`/agents/${enc(id)}/deployments`)));
       if (tab === "events") pane.replaceChildren(eventsTab(await get(`/agents/${enc(id)}/events`)));
@@ -317,13 +317,15 @@ async function agentPage(root, id, params) {
   root.replaceChildren(
     pageHead(agent.name || agent.agent_id, [agent.name && agent.name !== agent.agent_id ? agent.agent_id : null, agent.description].filter(Boolean).join(" · "), noCode ? [
       nc && nc.dev_url ? h("a", { class: "btn", href: nc.dev_url, target: "_blank" }, "Genie에서 열기 (개발용) ↗") : null,
-      h("button", { class: "btn", disabled: !nc || !nc.dev_space_id, onclick: () => openGenieCheck(nc.dev_space_id) }, "점검"),
+      h("button", { class: "btn", disabled: !nc || !nc.dev_space_id || !isOwner, title: "개발용 Genie를 지금 바로 점검 (기록 안 함)", onclick: () => openSelfCheck(id, {}) }, "셀프 체크"),
+      h("button", { class: "btn", disabled: !nc || !nc.dev_space_id || !isOwner, title: "배포 전 평가 Gate: 형식 + 벤치마크 (기록)", onclick: () => openEvaluate(id, null) }, "평가"),
       h("button", { class: "btn", disabled: !agent.production_version, onclick: () => openLoad(agent) }, "가져오기"),
       h("button", { class: "btn", disabled: !agent.production_version || !isOwner, title: isOwner ? "" : "담당자·담당 팀만", onclick: () => openPromote(agent) }, "권한"),
       h("button", { class: "btn primary", disabled: !isOwner, title: isOwner ? "" : "담당자·담당 팀만", onclick: () => openDeploy(id, versions.items, agent.production_version, null, "no_code") }, "배포 요청")] : [
       ws && ws.open_url ? h("a", { class: "btn", href: ws.open_url, target: "_blank" }, "Genie Code에서 열기 ↗") : null,
       h("a", { class: "btn", href: `#/register?agent=${enc(id)}${ws ? `&path=${enc(ws.workspace_path)}` : ""}` }, ws ? "↑ 이 폴더에서 등록" : "↑ 새 버전 등록"),
-      h("button", { class: "btn", disabled: !latest, onclick: () => openValidate(id, latest.version) }, "검사"),
+      h("button", { class: "btn", disabled: !ws && !latest, title: "형식 검사를 지금 바로 (기록 안 함)", onclick: () => openSelfCheck(id, ws ? { workspace_path: ws.workspace_path } : { version: latest.version }) }, "셀프 체크"),
+      h("button", { class: "btn", disabled: !latest || !isOwner, title: "배포 전 평가 Gate (기록)", onclick: () => openEvaluate(id, latest.version) }, "평가"),
       h("button", { class: "btn", disabled: !latest, onclick: () => openLoad(agent) }, "가져오기"),
       h("button", { class: "btn", disabled: !agent.production_version || !isOwner, title: isOwner ? "" : "담당자·담당 팀만", onclick: () => openPromote(agent) }, "권한"),
       h("button", { class: "btn primary", disabled: !latest, onclick: () => openDeploy(id, versions.items, agent.production_version, null, agent.build_type) }, "배포")]),
@@ -339,7 +341,7 @@ async function agentPage(root, id, params) {
             h("dt", {}, "에이전트 폴더"), h("dd", {}, nc && nc.folder_url ? link(nc.folder_url, nc.folder_path) : (nc && nc.folder_path) || "–"),
             h("dt", {}, "공개 그룹"), h("dd", {}, (nc && nc.consumer_group) || h("span", { class: "muted" }, "없음 (SPEC.md consumer_group)"))] : null,
           h("dt", {}, "최신 버전"), h("dd", { class: "mono" }, agent.latest_version || "–"),
-          h("dt", {}, "마지막 검사"), h("dd", {}, badge("validation", agent.last_validation)),
+          h("dt", {}, "마지막 평가"), h("dd", {}, badge("validation", agent.last_validation)),
           h("dt", {}, "진행 중 요청"), h("dd", {}, agent.pending_gates ? `${agent.pending_gates}건` : "없음"))),
       h("div", { class: "card pad" }, h("h2", {}, "SPEC"),
         h("dl", { class: "kv" },
@@ -369,7 +371,7 @@ function versionsTab(agent, versions) {
       h("td", {}, v.git_url ? h("a", { href: v.git_url, target: "_blank" }, `v${v.version} ↗`) : badge("git", v.git_status)),
       h("td", { class: "num" }, h("div", { class: "row", style: "justify-content:flex-end" },
         h("button", { class: "btn ghost small", onclick: () => openVersion(agent.agent_id, v.version) }, "자세히"),
-        noCode ? null : h("button", { class: "btn ghost small", onclick: () => openValidate(agent.agent_id, v.version) }, "검사"),
+        noCode ? null : h("button", { class: "btn ghost small", onclick: () => openEvaluate(agent.agent_id, v.version) }, "평가"),
         v.status !== "production" ? h("button", { class: "btn small", onclick: () => openDeploy(agent.agent_id, versions, agent.production_version, v.version, agent.build_type) },
           prodIndex >= 0 && i > prodIndex ? "되돌리기" : "배포") : null))))));
 }
@@ -397,11 +399,12 @@ async function openVersion(id, version) {
   } catch (e) { m.close(); fail(e); }
 }
 
-function checksTab(page) {
-  if (!page.items.length) return h("div", { class: "empty" }, h("b", {}, "검사 기록이 없습니다"), "배포를 요청하면 검사가 먼저 돌거나, 검사만 따로 돌릴 수 있습니다.");
+function checksTab(page, id) {
+  if (!page.items.length) return h("div", { class: "empty" }, h("b", {}, "평가 기록이 없습니다"), "배포를 요청하면 평가(Gate)가 먼저 돕니다. [평가]로 따로 돌릴 수도 있습니다. 셀프 체크는 기록하지 않습니다.");
   return h("div", {}, page.items.map((r) => h("div", { class: "card pad", style: "box-shadow:none" },
     h("div", { class: "row" }, h("b", { class: "mono" }, r.version), badge("validation", r.status), h("span", { class: "muted" }, `정책 v${r.policy_version}`),
-      h("span", { class: "muted right" }, when(r.started_at))),
+      h("span", { class: "muted right" }, when(r.started_at)),
+      h("button", { class: "btn ghost small", onclick: () => openRun(id, r.validation_run_id) }, "문항별 결과")),
     r.steps.length ? h("ul", { class: "steps mt" }, r.steps.map(stepItem)) : null,
     r.failure_reason ? h("div", { class: "note bad mt" }, r.failure_reason) : null)));
 }
@@ -440,22 +443,59 @@ function eventsTab(page) {
     h("span", {}, h("span", {}, e.actor), h("span", { class: "muted" }, describe(e) ? ` · ${describe(e)}` : "")))));
 }
 
-// ── 검사 (aops validate) ────────────────────────────────────────────────────
+// ── 셀프 체크 (aops validate) · 평가 (aops evaluate) ─────────────────────────
 
-function openValidate(id, version) {
-  const list = h("ul", { class: "steps" }, h("li", {}, h("span", { class: "mark run" }), h("div", {}, h("div", { class: "name" }, "검사 요청 중…"))));
-  const status = h("div", { class: "row" }, h("b", { class: "mono" }, `${id} ${version}`));
-  const m = modal("검사 (validate Job)", h("div", {}, status, h("p", { class: "muted mt" }, "배포 전 Gate와 같은 검사를 따로 돌립니다. 결과는 레지스트리에 남습니다."), list),
-    [{ label: "닫기", run: (close) => close() }]);
-  post(`/projects/${enc(id)}/validations`, { version }).then((run) => {
-    const timer = every(3000, async () => {
-      const r = await get(`/validations/${enc(run.validation_run_id)}`);
-      status.replaceChildren(h("b", { class: "mono" }, `${id} ${r.version}`), badge("validation", r.status), h("span", { class: "muted" }, `정책 v${r.policy_version}`));
-      list.replaceChildren(...(r.steps.length ? r.steps.map(stepItem) : [h("li", {}, h("span", { class: "mark run" }), h("div", {}, h("div", { class: "name" }, "validate Job 실행 중…"), h("div", { class: "detail" }, "보통 1분 안팎")))]));
+function resultsTable(results) {
+  if (!results || !results.length) return null;
+  return h("table", { class: "data mt" }, h("thead", {}, h("tr", {}, ["판정", "문항", "이유", "정답 · 답"].map((t) => h("th", {}, t)))),
+    h("tbody", {}, results.map((r) => h("tr", {},
+      h("td", {}, h("span", { class: `badge ${r.assessment === "GOOD" ? "ok" : r.assessment === "BAD" ? "bad" : "warn"}` }, r.assessment || "–")),
+      h("td", { style: "max-width:260px" }, h("div", { class: "cell-main" }, r.question || r.question_id), h("div", { class: "cell-sub mono" }, r.question_id)),
+      h("td", { class: "muted", style: "max-width:260px" }, (r.reasons || []).join(", ") || "–"),
+      h("td", { style: "max-width:380px" }, h("div", { class: "cell-sub" }, `정답: ${(r.expected || "–").slice(0, 160)}`),
+        h("div", { class: "cell-sub mono" }, `답: ${(r.generated || "–").slice(0, 220)}`))))));
+}
+
+async function openSelfCheck(id, fields) {
+  const m = modal(`셀프 체크: ${id}`, h("div", { class: "loading" }, h("span", { class: "spinner" }), " 점검 중…"), [], { wide: true });
+  const form = new FormData();
+  Object.entries(fields || {}).forEach(([k, v]) => v && form.append(k, v));
+  try {
+    const r = await api("POST", `/projects/${enc(id)}/validations`, { form });
+    m.body.replaceChildren(
+      h("div", { class: "row" }, h("b", {}, r.source), badge("validation", r.status)),
+      h("ul", { class: "steps mt" }, r.steps.map(stepItem)),
+      h("div", { class: "note mt" }, "셀프 체크는 형식만 지금 바로 봅니다. 기록하지 않고 배포 조건도 아닙니다. 배포 전에는 평가(Gate)가 형식을 다시 검사하고 품질을 평가합니다."));
+  } catch (e) { m.close(); fail(e); }
+}
+
+function openEvaluate(id, version) {
+  const list = h("ul", { class: "steps" }, h("li", {}, h("span", { class: "mark run" }), h("div", {}, h("div", { class: "name" }, "평가 요청 중…"))));
+  const status = h("div", { class: "row" }, h("b", { class: "mono" }, `${id} ${version || "(지금 개발용 정의)"}`));
+  const results = h("div", {});
+  const m = modal("평가 (Gate · evaluate Job)", h("div", {}, status, h("p", { class: "muted mt" },
+    "배포 전에 강제되는 평가입니다: 형식 검사 → 품질 평가(스킬: 평가셋을 모델이 답하고 판정 모델이 채점, 노코드: Genie 벤치마크·회귀). 결과는 레지스트리에 남고, 같은 내용으로 배포를 요청하면 이 결과를 씁니다."),
+    list, results), [{ label: "닫기", run: (close) => close() }], { wide: true });
+  post(`/projects/${enc(id)}/evaluations`, { version }).then((run) => {
+    const timer = every(4000, async () => {
+      const r = await get(`/evaluations/${enc(run.validation_run_id)}`);
+      fill(status, h("b", { class: "mono" }, `${id} ${r.version}`), badge("validation", r.status), h("span", { class: "muted" }, `정책 v${r.policy_version}`));
+      list.replaceChildren(...(r.steps.length ? r.steps.map(stepItem) : [h("li", {}, h("span", { class: "mark run" }), h("div", {}, h("div", { class: "name" }, "evaluate Job 실행 중…"),
+        h("div", { class: "detail" }, "스킬 1~2분, 노코드 벤치마크는 문항당 약 13초")))]));
+      fill(results, r.failure_reason && r.status === "error" ? h("div", { class: "note bad mt" }, r.failure_reason) : null, resultsTable(r.results));
       return !["passed", "failed", "stale", "error"].includes(r.status);
     });
     m.onClose(() => timer.stop());
   }).catch((e) => { m.close(); fail(e); });
+}
+
+async function openRun(id, runId) {
+  try {
+    const r = await get(`/evaluations/${enc(runId)}`);
+    modal(`평가 ${id} ${r.version}`, h("div", {}, h("div", { class: "row" }, badge("validation", r.status), h("span", { class: "muted" }, `정책 v${r.policy_version} · ${when(r.started_at)}`)),
+      h("ul", { class: "steps mt" }, r.steps.map(stepItem)), r.failure_reason ? h("div", { class: "note bad mt" }, r.failure_reason) : null,
+      resultsTable(r.results) || h("p", { class: "muted mt" }, "문항별 결과가 없습니다")), [], { wide: true });
+  } catch (e) { fail(e); }
 }
 
 // ── 배포 (aops deploy) ──────────────────────────────────────────────────────
@@ -468,7 +508,7 @@ function openDeploy(id, versions, production, preset, kind) {
   const body = h("div", {},
     h("label", { class: "field" }, h("span", {}, "배포할 버전"), select, h("small", {}, production ? `지금 운영 버전 ${production}. 더 낮은 버전을 고르면 되돌리기입니다.` : "운영 버전이 없습니다 (첫 배포)")),
     h("label", { class: "field" }, h("span", {}, "사유"), reason),
-    h("div", { class: "note" }, "검사(Gate) → 승인(정책) → 배포 Job 순서로 진행됩니다. 사람 승인이 필요하면 요청만 남고, 승인자가 배포 요청함에서 처리합니다."));
+    h("div", { class: "note" }, "평가(Gate) → 승인(정책) → 배포 Job 순서로 진행됩니다. 사람 승인이 필요하면 요청만 남고, 승인자가 배포 요청함에서 처리합니다."));
   modal("배포 요청", body, [
     { label: "취소", run: (close) => close() },
     { label: "배포 요청", cls: "primary", run: (close) => { close(); followDeploy(id, select.value, reason.value || null, kind); } }]);
@@ -477,9 +517,9 @@ function openDeploy(id, versions, production, preset, kind) {
 function openNoCodeDeploy(id, production) {
   const reason = h("input", { type: "text", placeholder: "선택: 요청 사유 (예: 벤치마크 문항 보강)" });
   modal("배포 요청 (노코드)", h("div", {},
-    h("p", {}, "지금 개발용 Genie 정의와 에이전트 폴더의 ", h("code", {}, "SPEC.md"), "를 스냅샷으로 떠서 검사합니다. 승인되면 같은 스냅샷이 운영용 Genie로 나가고, 그때 버전이 매겨집니다."),
+    h("p", {}, "지금 개발용 Genie 정의와 에이전트 폴더의 ", h("code", {}, "SPEC.md"), "를 스냅샷으로 떠서 평가합니다(형식·벤치마크). 승인되면 같은 스냅샷이 운영용 Genie로 나가고, 그때 버전이 매겨집니다."),
     h("label", { class: "field" }, h("span", {}, "사유"), reason),
-    h("div", { class: "note warn" }, "검사가 끝날 때까지 개발용 Genie를 고치지 마세요. 고치면 무효(stale)가 되어 다시 요청해야 합니다."),
+    h("div", { class: "note warn" }, "평가가 끝날 때까지 개발용 Genie를 고치지 마세요. 고치면 무효(stale)가 되어 다시 요청해야 합니다."),
     h("div", { class: "note mt" }, production ? `지금 운영 버전 ${production}. 데이터 소스가 바뀌면 major, 그 밖은 minor로 올라갑니다. 이전 버전으로 되돌리려면 버전 탭의 [되돌리기].`
       : "첫 배포입니다: 운영용 Genie를 새로 만들고 1.0.0이 됩니다.")), [
     { label: "취소", run: (close) => close() },
@@ -501,18 +541,18 @@ function followDeploy(id, version, reason, kind) {
     gateId = gate.gate_id;
     const timer = every(3000, async () => {
       const g = await get(`/release-gates/${enc(gateId)}`);
-      const steps = g.validation ? g.validation.steps : [];
+      const steps = g.evaluation ? g.evaluation.steps : [];
       const open = ["validating", "pending_approval"].includes(g.decision);
       const personDecides = g.decision === "pending_approval" && (g.approval_mode !== "auto" || !!g.decision_reason);
       cancelBtn.disabled = !open;
       fill(head, h("b", { class: "mono" }, `${id} ${g.version}`), badge("decision", g.decision), g.deployment_status ? badge("deployment", g.deployment_status) : null,
-        h("span", { class: "muted" }, `${UPGRADE[g.upgrade_type] || g.upgrade_type} · 검사 ${MODE[g.validation_policy_mode]} · 승인 ${MODE[g.approval_mode] || g.approval_mode}`),
+        h("span", { class: "muted" }, `${UPGRADE[g.upgrade_type] || g.upgrade_type} · 평가 ${MODE[g.validation_policy_mode]} · 승인 ${MODE[g.approval_mode] || g.approval_mode}`),
         (open && !personDecides) || g.deployment_status === "running" ? h("span", { class: "spinner" }) : null);
       const rows = [item("ok", "배포 요청", `gate ${g.gate_id} · 요청 ${g.requester}${kind === "no_code" && !version ? ` · 제안 버전 ${g.version} (배포가 성공하면 매김)` : ""}`)];
-      if (g.decision === "validating") rows.push(item("run", "검사 중", "validate Job (보통 1분 안팎)"));
-      else if (g.validation) rows.push(item(g.validation.status === "passed" ? "ok" : "bad", `검사 ${LABEL.validation[g.validation.status]?.[0] || g.validation.status}`,
-        steps.map((s) => `${s.status === "passed" ? "✓" : "✗"} ${s.name}`).join("  ")));
-      else if (g.validation_policy_mode === "exempt") rows.push(item("ok", "검사 면제", "정책"));
+      if (g.decision === "validating") rows.push(item("run", "평가 중 (Gate)", "evaluate Job: 형식 검사와 품질 평가 (스킬 1~2분, 노코드 벤치마크는 문항당 약 13초)"));
+      else if (g.evaluation) rows.push(item(g.evaluation.status === "passed" ? "ok" : "bad", `평가 ${LABEL.validation[g.evaluation.status]?.[0] || g.evaluation.status}`,
+        steps.map((s) => `${s.status === "passed" ? "✓" : s.status === "skipped" ? "–" : "✗"} ${s.name}`).join("  ")));
+      else if (g.validation_policy_mode === "exempt") rows.push(item("ok", "평가 면제", "정책"));
       if (g.decision === "pending_approval") rows.push(item(personDecides ? "wait" : "run", personDecides ? "승인자 필요" : "정책 자동 승인 중", g.decision_reason || "승인자가 배포 요청함에서 승인합니다"));
       if (["approved"].includes(g.decision)) rows.push(item("ok", "승인됨", g.approved_by === "policy:auto" ? "정책 자동 승인" : `승인자 ${g.approved_by || ""}`));
       if (g.deployment_status === "running") rows.push(item("run", "운영 반영 중", { no_code: "배포 Job이 운영용 Genie를 만들거나 고치고 공개 그룹에 CAN RUN (1~2분)",
@@ -522,7 +562,7 @@ function followDeploy(id, version, reason, kind) {
       if (g.decision === "rejected") rows.push(item("bad", "반려", g.decision_reason || ""));
       if (g.decision === "canceled") rows.push(item("bad", "취소됨", g.decision_reason || ""));
       list.replaceChildren(...rows);
-      if (steps.some((s) => s.status === "failed")) outcome.replaceChildren(h("h3", { class: "mt" }, "검사 결과"), h("ul", { class: "steps" }, steps.map(stepItem)));
+      if (steps.some((s) => s.status === "failed")) outcome.replaceChildren(h("h3", { class: "mt" }, "평가 결과"), h("ul", { class: "steps" }, steps.map(stepItem)), resultsTable(g.evaluation.results));
       const done = ["rejected", "canceled"].includes(g.decision) || ["succeeded", "failed"].includes(g.deployment_status);
       if (done) {
         refreshCounts();
@@ -615,7 +655,7 @@ function gatesTable(page, { agent, reload, approve }) {
       const open = ["validating", "pending_approval"].includes(g.decision);
       return h("tr", {},
         h("td", {}, agent ? [h("a", { class: "cell-main", href: `#/agents/${enc(g.agent_id)}` }, g.agent_id), h("div", { class: "cell-sub mono" }, g.version)] : h("span", { class: "mono cell-main" }, g.version)),
-        h("td", {}, h("div", {}, UPGRADE[g.upgrade_type] || g.upgrade_type), h("div", { class: "cell-sub" }, `검사 ${MODE[g.validation_policy_mode]} · ${MODE[g.approval_mode] || g.approval_mode}`)),
+        h("td", {}, h("div", {}, UPGRADE[g.upgrade_type] || g.upgrade_type), h("div", { class: "cell-sub" }, `평가 ${MODE[g.validation_policy_mode]} · ${MODE[g.approval_mode] || g.approval_mode}`)),
         h("td", {}, badge("decision", g.decision), g.deployment_status ? h("div", { style: "margin-top:4px" }, badge("deployment", g.deployment_status)) : null),
         h("td", { style: "max-width:300px" }, g.decision_reason || (g.approved_by ? `승인 ${g.approved_by === "policy:auto" ? "정책 자동" : g.approved_by}` : h("span", { class: "muted" }, "–"))),
         h("td", {}, h("div", {}, g.requester), h("div", { class: "cell-sub" }, when(g.requested_at))),
@@ -653,12 +693,12 @@ async function openGate(gateId) {
       h("dl", { class: "kv" },
         h("dt", {}, "상태"), h("dd", {}, badge("decision", g.decision), " ", g.deployment_status ? badge("deployment", g.deployment_status) : null),
         h("dt", {}, "변경 폭"), h("dd", {}, UPGRADE[g.upgrade_type] || g.upgrade_type),
-        h("dt", {}, "검사·승인 방식"), h("dd", {}, `${MODE[g.validation_policy_mode]} · ${MODE[g.approval_mode] || g.approval_mode} (필요 승인 ${g.required_approvals}, 받은 승인 ${g.approvals})`),
+        h("dt", {}, "평가·승인 방식"), h("dd", {}, `${MODE[g.validation_policy_mode]} · ${MODE[g.approval_mode] || g.approval_mode} (필요 승인 ${g.required_approvals}, 받은 승인 ${g.approvals})`),
         h("dt", {}, "요청"), h("dd", {}, `${g.requester} · ${when(g.requested_at)}`),
         h("dt", {}, "승인"), h("dd", {}, g.approved_by || "–"),
         h("dt", {}, "사유"), h("dd", {}, g.decision_reason || "–"),
         h("dt", {}, "gate"), h("dd", { class: "mono" }, g.gate_id)),
-      g.validation ? [h("h2", { class: "mt" }, "검사"), h("ul", { class: "steps" }, g.validation.steps.map(stepItem))] : null), [], { wide: true });
+      g.evaluation ? [h("h2", { class: "mt" }, "평가 (Gate)"), h("ul", { class: "steps" }, g.evaluation.steps.map(stepItem)), resultsTable(g.evaluation.results)] : null), [], { wide: true });
   } catch (e) { fail(e); }
 }
 
@@ -681,6 +721,7 @@ function registerPage(root, params) {
   const result = h("div", {});
   const version = h("input", { type: "text", placeholder: "비우면 자동 (처음 1.0.0)", style: "width:200px" });
   const submit = h("button", { class: "btn primary", disabled: true, onclick: () => send() }, "등록");
+  const checkBtn = h("button", { class: "btn", disabled: true, title: "형식만 지금 바로 점검 (기록 안 함)", onclick: () => selfCheck() }, "셀프 체크");
   const folderInput = h("input", { type: "file", webkitdirectory: true, multiple: true, style: "display:none", onchange: (e) => pickFolder([...e.target.files]) });
   const zipInput = h("input", { type: "file", accept: ".zip", style: "display:none", onchange: (e) => e.target.files[0] && pickZip(e.target.files[0]) });
   const drop = h("div", { class: "drop" },
@@ -736,13 +777,29 @@ function registerPage(root, params) {
       picked.kind === "folder" ? h("div", { class: "files" }, picked.files.map((f) => h("div", {}, f.rel))) : null,
       mismatch ? h("div", { class: "note warn mt" }, `이 폴더는 ${picked.name}입니다 (${expected}의 새 버전이 아닙니다)`) : null));
     submit.disabled = !picked.name;
+    checkBtn.disabled = !picked.name;
   }
 
-  async function send() {
+  function pickedForm() {
     const form = new FormData();
     if (picked.kind === "zip") form.append("archive", picked.zip, picked.zip.name);
     else if (picked.kind === "workspace") form.append("workspace_path", picked.path);
     else picked.files.forEach((f) => form.append("files", f.file, `${picked.name}/${f.rel}`));
+    return form;
+  }
+
+  async function selfCheck() {
+    checkBtn.disabled = true;
+    try {
+      const r = await api("POST", `/projects/${enc(picked.name)}/validations`, { form: pickedForm() });
+      result.replaceChildren(h("div", { class: "card pad mt" }, h("div", { class: "row" }, h("h2", { style: "margin:0" }, `셀프 체크: ${picked.name}`), badge("validation", r.status)),
+        h("ul", { class: "steps mt" }, r.steps.map(stepItem)), h("div", { class: "note mt" }, "기록하지 않습니다. 배포 전에는 평가(Gate)가 형식을 다시 검사하고 품질을 평가합니다.")));
+    } catch (e) { fail(e); }
+    checkBtn.disabled = false;
+  }
+
+  async function send() {
+    const form = pickedForm();
     if (version.value.trim()) form.append("version", version.value.trim()); else form.append("bump", bump);
     submit.disabled = true;
     submit.replaceChildren(h("span", { class: "spinner" }), " 등록 중…");
@@ -756,7 +813,7 @@ function registerPage(root, params) {
           h("dt", {}, "스킬"), h("dd", {}, row.skills.map((s) => h("div", {}, h("b", {}, s.skill_alias), h("span", { class: "muted" }, ` → 배포하면 UC Skill ${s.uc_name || ""}`)))),
           h("dt", {}, "Git"), h("dd", {}, row.git ? (row.git.status === "synced" ? h("a", { href: row.git.url, target: "_blank" }, row.git.url) : `${row.git.status}: ${row.git.error || ""}`) : "–")),
         h("div", { class: "row mt" },
-          h("button", { class: "btn", onclick: () => openValidate(picked.name, row.version) }, "검사"),
+          h("button", { class: "btn", onclick: () => openEvaluate(picked.name, row.version) }, "평가"),
           h("button", { class: "btn primary", onclick: async (e) => {
             e.target.disabled = true;
             try { const [a, v] = await Promise.all([get(`/agents/${enc(picked.name)}`), get(`/agents/${enc(picked.name)}/versions`)]); openDeploy(picked.name, v.items, a.production_version, row.version, a.build_type); }
@@ -779,7 +836,8 @@ function registerPage(root, params) {
       h("div", { class: "grid two mt" },
         h("div", { class: "field" }, h("span", {}, "버전 올리는 폭"), bumpSeg, h("small", {}, "처음 등록은 1.0.0")),
         h("label", { class: "field" }, h("span", {}, "또는 버전 직접"), version)),
-      h("div", { class: "row" }, h("span", { class: "muted" }, "등록은 검사를 요구하지 않습니다. 검사와 승인은 배포 요청 때 합니다."), h("span", { class: "right" }, submit))),
+      h("div", { class: "row" }, h("span", { class: "muted" }, "등록은 평가를 요구하지 않습니다. 평가(Gate)와 승인은 배포 요청 때 합니다."),
+        h("span", { class: "right row" }, checkBtn, submit))),
     result);
 }
 
@@ -831,8 +889,8 @@ function newPage(root, params) {
       h("ol", { class: "steps-plain" },
         h("li", {}, "aops가 에이전트 폴더(", h("code", {}, "/Workspace/aops/no-code/<이름>"), ")를 만들고 내게 CAN MANAGE를 줍니다. ", h("code", {}, "SPEC.md"), "가 그 안에 생깁니다"),
         h("li", {}, "개발용 Genie가 그 폴더에 생깁니다. [Genie에서 열기]로 예제 SQL·벤치마크·지침을 채웁니다"),
-        h("li", {}, "에이전트 화면의 [점검]으로 배포 규칙(준수율)을 미리 봅니다"),
-        h("li", {}, "[배포 요청] → 스냅샷 검사 → 승인 → 운영용 Genie(서비스 주체 소유) 생성·갱신, 이때 버전이 매겨집니다"),
+        h("li", {}, "에이전트 화면의 [셀프 체크]로 정의 규칙(준수율)을 미리 봅니다"),
+        h("li", {}, "[배포 요청] → 스냅샷 평가(형식·벤치마크) → 승인 → 운영용 Genie(서비스 주체 소유) 생성·갱신, 이때 버전이 매겨집니다"),
         h("li", {}, "공개 그룹에 CAN RUN. [가져오기]는 운영용 Genie 링크입니다")),
       h("div", { class: "note mt" }, "운영용 Genie는 aops 서비스 주체가 만듭니다. 쓰는 테이블에 서비스 주체의 SELECT가 있어야 합니다 (데이터 주인이 줌).")] : [
       h("ol", { class: "steps-plain" },
@@ -840,7 +898,7 @@ function newPage(root, params) {
         h("li", {}, "[편집기에서 열기 (Genie Code)]: ", kind === "skill" ? [h("code", {}, "agent/skills/my-skill/SKILL.md"), "가 열립니다. 폴더 이름과 SKILL.md를 내 스킬로"] : [h("code", {}, "agent/agent.py"), "가 열립니다"],
           ". 오른쪽 Genie Code에 고칠 내용을 말합니다"),
         h("li", {}, "등록: 만든 뒤의 [이 폴더에서 등록], 에이전트 화면, 또는 Genie Code에 \"이 폴더 등록해줘\""),
-        h("li", {}, "배포 요청 → 검사 → 승인 → 운영. 템플릿 그대로면 검사에서 반려됩니다")),
+        h("li", {}, "[셀프 체크]로 형식을 보고, 배포 요청 → 평가(형식 + 평가셋) → 승인 → 운영. 평가셋 ", h("code", {}, "evals/questions.yaml"), "에 질문과 정답을 적습니다")),
       h("div", { class: "note mt" }, "PC에서 고치려면 [폴더 받기 (zip)]: 같은 템플릿을 받아 ", kind === "skill" ? h("code", {}, 'aops run "질문"') : h("code", {}, "agentbricks dev"), "로 시험하고 ", h("code", {}, "aops register"), "로 등록합니다."),
       kind === "code" ? h("div", { class: "note mt" }, "운영 앱(agent-bricks-<이름>)은 aops 서버가 서비스 주체로 배포합니다. 처음 한 번은 서버가 Agent Bricks CLI를 설치해 30초쯤 걸립니다.") : null]);
   };
@@ -956,14 +1014,6 @@ function genieResult(r) {
         h("td", { class: "muted" }, x.passed ? "" : x.fix))))));
 }
 
-async function openGenieCheck(spaceId) {
-  const m = modal("점검 (개발용 Genie)", h("div", { class: "loading" }, h("span", { class: "spinner" }), " 정의를 읽고 규칙을 돌리는 중…"), [], { wide: true });
-  try {
-    const r = await post("/no-code/checks", { space_id: spaceId });
-    m.body.replaceChildren(genieResult(r), h("div", { class: "note mt" }, "배포 요청 때 같은 규칙을 스냅샷에 돌립니다. 이 점검은 기록하지 않습니다."));
-  } catch (e) { m.close(); fail(e); }
-}
-
 function geniePage(root, params) {
   const input = h("input", { type: "text", placeholder: "Genie 스페이스 주소나 ID (32자리)", style: "width:420px", value: params.get("space") || "" });
   const result = h("div", {});
@@ -1010,9 +1060,9 @@ async function policyPage(root) {
   root.replaceChildren(
     pageHead("정책", current ? `지금 정책 버전 ${current.policy_version} · ${current.created_by} · ${when(current.created_at)}` : "적용된 정책이 없습니다"),
     h("div", { class: "grid two" },
-      h("div", { class: "card pad" }, h("h2", {}, "검사·승인"),
-        h("div", { class: "field" }, h("span", {}, "검사 방식"), segFor("validation_mode", [["mandatory", "필수"], ["optional", "선택"], ["exempt", "면제"]]),
-          h("small", {}, "필수: 실패하면 반려 · 선택: 실패해도 승인자에게 · 면제: 검사 없이")),
+      h("div", { class: "card pad" }, h("h2", {}, "평가(Gate)·승인"),
+        h("div", { class: "field" }, h("span", {}, "평가 방식"), segFor("validation_mode", [["mandatory", "필수"], ["optional", "선택"], ["exempt", "면제"]]),
+          h("small", {}, "필수: 실패하면 반려 · 선택: 실패해도 승인자에게 · 면제: 평가 없이. 셀프 체크는 정책과 상관없이 언제든")),
         h("div", { class: "field" }, h("span", {}, "승인 방식"), segFor("approval_mode", [["required", "사람 승인"], ["optional", "선택"], ["auto", "자동 승인"]]),
           h("small", {}, "선택: SPEC 중요도 low이고 민감도 public·internal이면 자동, 아니면 승인자")),
         h("label", { class: "field" }, h("span", {}, "승인 그룹"), group),
@@ -1025,7 +1075,7 @@ async function policyPage(root) {
           h("dt", {}, "Git 사본"), h("dd", {}, git ? `${git.provider} · ${git.owner} · 연결 ${git.connection} · ${git.mode} (저장소 ${git.repo_prefix}<agent_id>)` : "꺼짐")),
         h("div", { class: "note mt" }, "레지스트리·서버·Job·권한·Genie Code 스킬 설치는 관리자가 CLI로 합니다: aops admin setup"))),
     h("div", { class: "card mt" }, h("table", { class: "data" },
-      h("thead", {}, h("tr", {}, ["버전", "상태", "검사", "승인", "승인 그룹", "올린 사람", "시각"].map((t) => h("th", {}, t)))),
+      h("thead", {}, h("tr", {}, ["버전", "상태", "평가", "승인", "승인 그룹", "올린 사람", "시각"].map((t) => h("th", {}, t)))),
       h("tbody", {}, page.items.map((p) => h("tr", {},
         h("td", { class: "mono cell-main" }, `v${p.policy_version}`), h("td", {}, p.status === "active" ? h("span", { class: "badge ok" }, "적용 중") : h("span", { class: "badge plain" }, "이전")),
         h("td", {}, MODE[p.policy.validation_mode] || p.policy.validation_mode), h("td", {}, MODE[p.policy.approval_mode] || p.policy.approval_mode),
@@ -1035,7 +1085,7 @@ async function policyPage(root) {
 // ── 안내: CLI ↔ 화면 ↔ Genie Code ───────────────────────────────────────────
 
 const SCREEN = {
-  "aops init": "새 에이전트", "aops list": "에이전트", "aops load": "에이전트 → 가져오기", "aops validate": "에이전트 → 검사 · 노코드 점검",
+  "aops init": "새 에이전트", "aops list": "에이전트", "aops load": "에이전트 → 가져오기", "aops validate": "에이전트·등록 → 셀프 체크 · 노코드 점검", "aops evaluate": "에이전트 → 평가",
   "aops register": "등록", "aops deploy": "에이전트 → 배포", "aops deploy --cancel": "배포 요청함 → 취소", "aops gates": "배포 요청함",
   "aops approve": "배포 요청함 → 승인", "aops reject": "배포 요청함 → 반려", "aops promote": "에이전트 → 권한",
   "aops admin setup": "정책 (정책만, 나머지는 CLI)",
@@ -1054,7 +1104,7 @@ async function guidePage(root) {
   root.replaceChildren(
     pageHead("CLI·Genie Code 안내", "세 가지 방법이 같은 aops 서버 API를 부릅니다. 결과는 어디서 하든 같은 레지스트리에 남습니다."),
     h("div", { class: "grid three" },
-      h("div", { class: "card pad" }, h("h2", {}, "이 화면"), h("p", { class: "muted" }, "브라우저에서 등록·검사·배포·승인·권한·정책. Databricks 로그인 그대로 씁니다.")),
+      h("div", { class: "card pad" }, h("h2", {}, "이 화면"), h("p", { class: "muted" }, "브라우저에서 만들기·셀프 체크·등록·평가·배포·승인·권한·정책. Databricks 로그인 그대로 씁니다.")),
       h("div", { class: "card pad" }, h("h2", {}, "PC CLI"), h("p", { class: "muted" }, "aops run으로 Claude·Codex 하네스를 바꿔 가며 개발하고 같은 명령으로 등록·배포합니다."),
         h("div", { class: "cmd" }, "aops register --bump fix\naops deploy")),
       h("div", { class: "card pad" }, h("h2", {}, "Genie Code"), h("p", { class: "muted" }, "워크스페이스 스킬 aops: \"이 에이전트 등록해줘\", \"배포해줘\". 노트북에서 같은 CLI 코드가 내 신원으로 돕니다."),

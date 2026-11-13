@@ -96,26 +96,38 @@ class AgentVersionDetail(AgentVersion):
 
 
 class ValidationStep(BaseModel):
-    name: str = Field(examples=["format", "skills", "secrets", "definition", "integrity", "evaluate", "compat", "record"])
+    name: str = Field(examples=["format", "skills", "project", "definition", "secrets", "evaluate", "integrity", "record"])
     status: Literal["pending", "running", "passed", "failed", "skipped"]
     detail: str | None = Field(None, examples=["correctness 0.86 ≥ 0.80"])
     metrics: dict[str, float] = Field(default_factory=dict)
     rules: list[dict[str, Any]] = Field(default_factory=list, description="노코드 definition 단계: 규칙별 결과 {id, level, passed, message, fix}")
 
 
-class ValidationRun(BaseModel):
+class EvalResult(BaseModel):
+    question_id: str = Field(examples=["q1"], description="스킬: 평가셋 id, 노코드: 벤치마크 문항 ID")
+    question: str | None = None
+    assessment: str | None = Field(None, examples=["GOOD", "BAD", "NEEDS_REVIEW"])
+    reasons: list[Any] = Field(default_factory=list, description="판정 이유 (스킬: 판정 모델의 한 문장, 노코드: Genie 판정 사유 코드)")
+    expected: str | None = Field(None, description="정답 (스킬: expected·guideline, 노코드: 정답 SQL)")
+    generated: str | None = Field(None, description="에이전트의 답 (노코드: 생성 SQL)")
+
+
+class EvaluationRun(BaseModel):
+    """One Gate run (`aops evaluate`, or the one a deploy request starts). Stored in `validation_runs`."""
+
     validation_run_id: str = Field(examples=["v-8f2c"])
     agent_id: str
     version: str
     source_sha256: str | None = None
     policy_version: int = Field(examples=[4])
-    mode: Literal["job", "local"] = Field("job", description="local은 참고용이고 등록 근거가 되지 않는다")
+    mode: Literal["job", "local"] = Field("job", description="job: 평가 Job (배포 근거)")
     status: RunStatus = Field(description="`stale`: 점검 중에 개발용 정의가 바뀜 (노코드)")
     steps: list[ValidationStep] = Field(default_factory=list)
     scores: dict[str, float] = Field(default_factory=dict, examples=[{"correctness": 0.86, "relevance": 0.91, "safety": 1.0, "latency_p90_s": 7.2}])
     redteam_pass_rate: float | None = Field(None, examples=[0.97])
     failure_reason: str | None = None
     links: list[Link] = Field(default_factory=list, description="Job 실행, MLflow 실행")
+    results: list[EvalResult] = Field(default_factory=list, description="문항별 평가 결과 (한 실행을 볼 때)")
     started_at: datetime
     ended_at: datetime | None = None
 
@@ -152,7 +164,7 @@ class AgentEvent(BaseModel):
     event_id: str
     agent_id: str
     version: str | None = None
-    event_type: Literal["create", "register", "validate", "gate_requested", "gate_approved", "gate_rejected", "gate_canceled", "deploy",
+    event_type: Literal["create", "register", "validate", "evaluate", "gate_requested", "gate_approved", "gate_rejected", "gate_canceled", "deploy",
                         "promote", "rollback", "load", "git"]
     actor: str
     at: datetime
@@ -244,11 +256,11 @@ def get_version(agent_id: str, version: str, request: Request) -> AgentVersionDe
     return AgentVersionDetail(**_version(row), skills=skills)
 
 
-@router.get("/agents/{agent_id}/validation-runs", summary="검증 이력", **command(None, DBX, screen="console 레지스트리"))
-def list_validation_runs(agent_id: str, request: Request, cursor: str | None = None) -> Page[ValidationRun]:
+@router.get("/agents/{agent_id}/evaluations", summary="평가(Gate) 이력", **command(None, DBX, screen="console 레지스트리"))
+def list_evaluations(agent_id: str, request: Request, cursor: str | None = None) -> Page[EvaluationRun]:
     svc = service_for(None)
     caller_of(request, svc)
-    return Page(items=[ValidationRun(**r) for r in svc.validation_runs(agent_id)])
+    return Page(items=[EvaluationRun(**r) for r in svc.evaluation_runs(agent_id)])
 
 
 @router.get("/agents/{agent_id}/deployments", summary="배포 이력", **command(None, DBX, screen="console 운영 지정 이력"))

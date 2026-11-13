@@ -101,10 +101,12 @@ description: {skill_description}
 """
 
 QUESTIONS_YAML = """\
-# 이 에이전트가 잘 답해야 하는 질문 (평가·비교에 씁니다)
+# 평가셋: 배포 전 Gate(aops evaluate)가 이 질문으로 에이전트를 평가합니다.
+# 질문마다 expected(정답으로 볼 답)나 guideline(판정 기준) 중 하나는 적습니다. 한 줄에 하나씩 씁니다.
 questions:
   - id: q1
     text: 여기에 질문을 적습니다
+    expected: 이 질문의 정답으로 볼 답을 적습니다
 """
 
 README_MD = """\
@@ -125,7 +127,7 @@ aops로 만든 스킬 기반 에이전트입니다. **원본만 고치면** Clau
 │       └── my-skill/
 │           └── SKILL.md      [고침] 스킬 템플릿: 폴더 이름과 내용을 내 스킬로
 ├── evals/
-│   └── questions.yaml        [고침] 평가 질문
+│   └── questions.yaml        [고침] 평가셋 (배포 전 Gate가 씀)
 ├── CLAUDE.md, AGENTS.md      [aops] Claude Code·Codex용 지시
 ├── .claude/skills/           [aops] Claude Code용 스킬 사본
 ├── .agents/skills/           [aops] Codex용 스킬 사본
@@ -145,7 +147,7 @@ aops로 만든 스킬 기반 에이전트입니다. **원본만 고치면** Clau
 3. `agent/skills/my-skill/` — 폴더 이름을 스킬 이름으로 바꾸고(소문자·숫자·하이픈), `SKILL.md`의
    `name`(폴더 이름과 같게)·`description`(언제 쓰는지)·본문(규칙)을 채웁니다.
    스킬을 더 만들려면 `agent/skills/<이름>/SKILL.md`를 같은 형식으로 추가합니다 ([Agent Skills](https://agentskills.io) 형식)
-4. `evals/questions.yaml` — 이 에이전트가 잘 답해야 하는 질문
+4. `evals/questions.yaml` — 평가셋. 질문과 정답(`expected`)이나 판정 기준(`guideline`). 배포 전 Gate(`aops evaluate`)가 이것으로 평가합니다
 
 ## 쓰는 법
 

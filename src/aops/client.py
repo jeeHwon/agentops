@@ -79,14 +79,17 @@ class Server:
                 problem = {"title": text.decode(errors="replace")[:300]}
             raise ServerError(error.code, problem) from None
 
-    def upload(self, path: str, fields: dict[str, str | None], file_field: str, filename: str, content: bytes) -> Any:
+    def upload(self, path: str, fields: dict[str, str | None], file_field: str | None = None, filename: str = "",
+               content: bytes = b"") -> Any:
+        """A multipart form: the fields, and a file when `file_field` is given."""
         boundary = uuid.uuid4().hex
         parts = []
         for key, value in fields.items():
             if value is not None:
                 parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode())
-        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
-                     "Content-Type: application/zip\r\n\r\n".encode() + content + b"\r\n")
+        if file_field:
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+                         "Content-Type: application/zip\r\n\r\n".encode() + content + b"\r\n")
         parts.append(f"--{boundary}--\r\n".encode())
         return self.request("POST", path, data=b"".join(parts), content_type=f"multipart/form-data; boundary={boundary}")
 

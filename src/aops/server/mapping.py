@@ -25,7 +25,6 @@ COMMANDS: list[Command] = [
     Command("개발", 'aops run "<질문>"'),
     Command("개발", 'aops run "<질문>" --json'),
     Command("개발", "aops run <질문 파일>"),
-    Command("개발", "aops evaluate"),
     Command("개발", "aops session list"),
     Command("개발", "aops session new"),
     Command("개발", "aops session show"),
@@ -41,6 +40,7 @@ COMMANDS: list[Command] = [
     Command("찾기·가져오기", "aops load"),
     Command("등록·배포", "aops configure"),
     Command("등록·배포", "aops validate"),
+    Command("등록·배포", "aops evaluate"),
     Command("등록·배포", "aops register"),
     Command("등록·배포", "aops deploy"),
     Command("등록·배포", "aops deploy --cancel"),
@@ -117,11 +117,10 @@ def markdown(app: FastAPI) -> str:
         "Databricks Apps 앞단이 오래 열린 응답·스트림을 끊을 수 있으므로, SSE는 10초 이하 간격으로 신호를 보내고 끊기면 `Last-Event-ID`로 이어 받습니다.",
         "- **실행 스트림:** 턴 실행 스트림은 AG-UI 이벤트입니다(`threadId`=세션, `runId`=턴). aops만의 정보는 `CUSTOM` 이벤트(`aops.handoff`, `aops.skill`, `aops.guardrail`, `aops.usage`)로 옵니다.",
         "- **값:** 상태·종류 같은 열거형은 영문 코드입니다. 한글 표시는 화면이 붙입니다.",
-        "- **지금 상태:** dbx 에디션의 스킬 기반 흐름은 aops 서버가 실제로 처리합니다(14개 경로): `register`, `validate`, `deploy`, "
-        "`gates`·`approve`·`reject`·`deploy --cancel`, `promote`, `list`, `load`와 에이전트 이벤트(`POST …/registrations`, "
-        "`POST …/validations`, `GET /validations/{id}`, `POST …/deploy-requests`, `GET /release-gates`, `GET /release-gates/{id}`, "
-        "`POST …/approve`, `POST …/reject`, `POST …/cancel`, `POST …/promote`, `GET /agents`, `POST …/load`, `GET …/archive`, "
-        "`GET …/events`). 나머지는 요청·응답 형식만 정해져 있고 `501`을 돌려줍니다. "
+        "- **지금 상태:** dbx 에디션의 스킬·코드·노코드 흐름은 aops 서버가 실제로 처리합니다: 만들기(`POST /projects`, `POST /projects/template`), "
+        "셀프 체크 `validate`(`POST …/validations`, 기록 안 함), 등록 `register`, 평가 Gate `evaluate`(`POST …/evaluations`, `GET /evaluations/{id}`), "
+        "배포 `deploy`(`POST …/deploy-requests`, `GET /release-gates/{id}`)와 승인·반려·취소, `promote`, `list`, `load`, 레지스트리 조회(에이전트·버전·평가·배포·운영 버전·이력), "
+        "노코드 점검·링크, 정책, 내 계정. 나머지(하네스 실행 경로, 세션, 모니터 등)는 요청·응답 형식만 정해져 있고 `501`을 돌려줍니다. "
         "서버에 `AOPS_REGISTRY`·`AOPS_WAREHOUSE_ID`가 없으면 모두 `501`입니다.",
         "",
         "## 명령 ↔ API",

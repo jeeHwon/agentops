@@ -25,9 +25,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"created {project.root} (Agent Bricks 프로젝트 + aops.toml·SPEC.md)")
         print(f"next: cd {args.name} → SPEC.md의 description, agent/agent.py를 고친 뒤 agentbricks dev로 시험, aops register")
         return 0
-    if args.type != "skill":
-        print("aops: 노코드 에이전트는 aops console의 [새 에이전트] → 노코드에서 만듭니다 (에이전트 폴더·SPEC.md·개발용 Genie).", file=sys.stderr)
-        return 2
+    if args.type == "no-code":
+        return init_no_code(args)
     harness.get(args.harness)  # fail early on an unknown harness
     project = init.create(Path.cwd(), args.name, harness=args.harness, edition=args.edition)
     print(f"created {project.root}")
@@ -35,6 +34,33 @@ def cmd_init(args: argparse.Namespace) -> int:
         note = "  (템플릿: 폴더 이름과 SKILL.md를 내 스킬로 바꿔 쓰세요)" if folder.name == init.TEMPLATE_SKILL else ""
         print(f"  skill {folder.name}{note}")
     print(f"next: cd {args.name} → SPEC.md, agent/instructions.md, agent/skills/를 채운 뒤 aops run \"<질문>\"")
+    return 0
+
+
+def init_no_code(args: argparse.Namespace) -> int:
+    """A no-code agent lives in the workspace: the aops server makes its folder and SPEC.md, and the dev Genie
+    with my own login (the same as console → 새 에이전트 → 노코드)."""
+    from .client import Server, ServerError
+
+    if not args.description or not (args.tables or args.genie):
+        print("aops: 노코드는 --description과 --tables(새로 만들기) 또는 --genie(기존 스페이스)가 필요합니다", file=sys.stderr)
+        return 2
+    body = {"name": args.name, "type": "no_code", "display_name": args.display_name, "description": args.description,
+            "tables": [t.strip() for t in (args.tables or "").split(",") if t.strip()], "genie_space_id": args.genie,
+            "genie_mode": args.genie_mode if args.genie else "new", "warehouse_id": args.warehouse,
+            "owner_group": args.owner_group, "consumer_group": args.consumer_group,
+            "service_criticality": args.criticality, "data_sensitivity": args.sensitivity}
+    try:
+        row = Server().request("POST", "/projects", body=body)
+    except ServerError as error:
+        print(f"aops: {error} (HTTP {error.status})", file=sys.stderr)
+        return 2
+    print(f"created {row['agent_id']} (노코드) · 폴더 {row['location']} · 개발용 Genie {row['dev_space_id']}")
+    for link in row.get("links") or []:
+        print(f"  {link['label']}: {link['url']}")
+    for warning in row.get("warnings") or []:
+        print(f"  주의: {warning}")
+    print(f"next: Genie에서 고친 뒤 aops validate --agent {row['agent_id']} (셀프 체크) → aops deploy --agent {row['agent_id']}")
     return 0
 
 
@@ -117,11 +143,22 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--version", action="version", version=f"aops {__version__}")
     sub = root.add_subparsers(dest="command")
 
-    init_ = sub.add_parser("init", help="새 에이전트 폴더 만들기 (스킬 기반 템플릿)")
+    init_ = sub.add_parser("init", help="새 에이전트 만들기 (스킬·코드: 이 PC에 폴더, 노코드: 워크스페이스에 폴더와 개발용 Genie)")
     init_.add_argument("name")
     init_.add_argument("--type", choices=["skill", "code", "no-code"], default="skill")
     init_.add_argument("--harness", default="claude", help="기본 하네스 (claude, codex)")
     init_.add_argument("--edition", choices=["local", "dbx", "omni", "custom"], default="local")
+    nc = init_.add_argument_group("노코드 (--type no-code, aops 서버가 만든다)")
+    nc.add_argument("--description", help="이 Genie가 답하는 질문 (SPEC description)")
+    nc.add_argument("--tables", help="새로 만들 때 데이터 소스 <catalog>.<schema>.<table>, 쉼표로")
+    nc.add_argument("--genie", help="기존 Genie 스페이스 ID (--genie-mode copy|move)")
+    nc.add_argument("--genie-mode", choices=["copy", "move"], default="copy")
+    nc.add_argument("--display-name")
+    nc.add_argument("--warehouse")
+    nc.add_argument("--owner-group")
+    nc.add_argument("--consumer-group", help="공개 그룹 (배포 때 운영용 Genie에 CAN RUN)")
+    nc.add_argument("--criticality", choices=["low", "medium", "high"], default="medium")
+    nc.add_argument("--sensitivity", choices=["public", "internal", "confidential", "personal"], default="internal")
 
     run = sub.add_parser("run", help="질문 하나를 현재 세션에서 실행")
     run.add_argument("prompt")
