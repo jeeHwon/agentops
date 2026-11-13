@@ -74,10 +74,13 @@ aops 서버 주소(`https://<app>.databricksapps.com`)를 사용자에게 알려
 export AOPS_PROFILE=<프로필> AOPS_SERVER=https://<aops 서버 주소>
 aops init my-agent --edition dbx && cd my-agent
 # SPEC.md의 description, agent/instructions.md, agent/skills/my-skill/ (폴더 이름·SKILL.md)을 내 것으로 고친다
+# evals/questions.yaml에 질문과 정답(expected)을 적는다 (배포 전 평가가 이것으로 채점)
+aops validate                        # 셀프 체크 (서버 없이, 기록 안 함)
 aops run "<질문>"
 aops session switch --harness codex && aops run "<이어지는 질문>"
 aops session show                    # 구간별 하네스, 인계, 쓴 스킬, MLflow trace
 aops register                        # 1.0.0. 다음부터 --bump fix|minor|major
+aops evaluate                        # (선택) 배포 전 평가만 먼저. 통과하면 deploy가 이 결과를 씀
 aops deploy                          # 평가(Gate) → 승인 → 운영 반영 (약 2~3분). 승인자가 필요하면 gate ID를 보여 주고 끝남
 aops list
 aops promote my-agent --to group:<계정 그룹>

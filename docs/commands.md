@@ -2,7 +2,7 @@
 
 [README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md)
 
-> **지금** 열: ● 동작 (스킬 기반) · ◐ 일부 동작 · – 설계. 명령마다 **지금:** 줄에 현재 구현을 적었습니다. 코드 기반·노코드는 dbx 에디션의 aops 서버·console 화면에서 동작합니다(각 명령의 **지금:** 줄).
+> **지금** 열: ● 동작 · ◐ 일부 동작 · – 설계. 명령마다 **지금:** 줄에 현재 구현을 적었습니다. 스킬·코드 기반·노코드 세 종류가 같은 명령으로 동작하고, 종류마다 다른 점은 각 명령의 **지금:** 줄에 있습니다.
 
 명령은 22개입니다(console 화면의 배포 요청함과 같은 일을 하는 승인 명령 `gates`·`approve`·`reject` 포함). 등록·배포 명령은 [console 화면](console.md)에서도 모두 됩니다. 개발자가 매일 쓰는 것은 개발 명령 7개입니다. 찾기·가져오기와 등록·배포는 dbx 이상에서만 쓰고, `admin`은 관리자만 씁니다. custom 에디션은 모든 명령이 dbx와 같고, 같은 기능을 `aops serve` API로도 씁니다.
 
@@ -62,7 +62,7 @@ aops init <name> --type no-code --description "…" --tables <c.s.t>,… [--geni
 - 하네스 프로젝트 설정을 만듭니다. 이 폴더에서 `claude`·`codex`를 직접 실행해도 aops 설정과 기록이 적용됩니다. 하네스에서 이 폴더와 hook을 신뢰로 승인해야 하고, 회사 관리 설정이 프로젝트 hook을 막지 않아야 합니다.
 - 예시 질문 3개와 기본 가드레일 규칙을 넣고, 끝나면 `aops dev`를 엽니다. `--no-ui`면 열지 않습니다.
 - omni: 같은 정의로 Omnigent 에이전트 YAML을 만듭니다.
-- **지금:** `--type skill`만 폴더를 만듭니다: `README.md`·`SPEC.md`·`aops.toml`·`agent/instructions.md`·스킬 템플릿 `agent/skills/my-skill/`·`evals/questions.yaml`과 하네스 설정([프로젝트 폴더](project.md)). `uv sync`, 가드레일 규칙, `aops dev` 열기, `--no-ui`는 아직 없습니다. `--type code`는 `agentbricks init` 템플릿에 `aops.toml`·`SPEC.md`(`build_type: code`)를 더합니다(PATH에 `agentbricks` 필요). 노코드는 console [새 에이전트] → 노코드(`POST /api/v1/projects`)에서 만듭니다: SPEC 항목을 받아 aops 서비스 주체가 에이전트 폴더(`/Workspace/aops/no-code/<이름>`)를 만들고 요청자·담당 팀에 `CAN MANAGE`를 준 뒤 `SPEC.md`를 쓰고, 개발용 Genie를 요청자의 토큰으로 그 폴더에 만듭니다(테이블로 새로·기존 스페이스 복사·옮기기). 서비스 주체로 대신 만들지 않습니다(작성자가 못 읽는 테이블의 값이 정의에 들어갈 수 있어서). 레지스트리에는 `agents`·`genie_agents`와 `create` 기록이 남고, 버전은 첫 배포 때 생깁니다. console에서 스킬·코드 기반을 고르면 같은 SPEC 항목이 든 템플릿을 내 토큰으로 내 워크스페이스 폴더(`/Workspace/Users/<나>/aops/<이름>`)에 만들거나(`POST /api/v1/projects`, 앱의 `workspace.workspace` 사용자 권한 범위) zip으로 받습니다(`POST /api/v1/projects/template`). CLI도 같습니다: `aops init <이름> --type no-code --description "…" --tables <c.s.t>,…`(또는 `--genie <ID> --genie-mode copy|move`)는 같은 서버 API를 내 로그인으로 부릅니다. 노코드는 폴더가 없으므로 그다음 명령에 `--agent <이름>`을 붙입니다(`validate`·`evaluate`·`deploy`). 폴더에서 `claude`·`codex`를 직접 실행하면 지시·스킬은 같지만 aops 세션 기록과 trace는 남지 않습니다(hook 없음).
+- **지금:** `--type skill`은 이 PC에 폴더를 만듭니다: `README.md`·`SPEC.md`·`aops.toml`·`agent/instructions.md`·스킬 템플릿 `agent/skills/my-skill/`·`evals/questions.yaml`과 하네스 설정([프로젝트 폴더](project.md)). `uv sync`, 가드레일 규칙, `aops dev` 열기, `--no-ui`는 아직 없습니다. `--type code`는 `agentbricks init` 템플릿에 `aops.toml`·`SPEC.md`(`build_type: code`)를 더합니다(PATH에 `agentbricks` 필요). 노코드는 console [새 에이전트] → 노코드(`POST /api/v1/projects`)에서 만듭니다: SPEC 항목을 받아 aops 서비스 주체가 에이전트 폴더(`/Workspace/aops/no-code/<이름>`)를 만들고 요청자·담당 팀에 `CAN MANAGE`를 준 뒤 `SPEC.md`를 쓰고, 개발용 Genie를 요청자의 토큰으로 그 폴더에 만듭니다(테이블로 새로·기존 스페이스 복사·옮기기). 서비스 주체로 대신 만들지 않습니다(작성자가 못 읽는 테이블의 값이 정의에 들어갈 수 있어서). 레지스트리에는 `agents`·`genie_agents`와 `create` 기록이 남고, 버전은 첫 배포 때 생깁니다. console에서 스킬·코드 기반을 고르면 같은 SPEC 항목이 든 템플릿을 내 토큰으로 내 워크스페이스 폴더(`/Workspace/Users/<나>/aops/<이름>`)에 만들거나(`POST /api/v1/projects`, 앱의 `workspace.workspace` 사용자 권한 범위) zip으로 받습니다(`POST /api/v1/projects/template`). CLI도 같습니다: `aops init <이름> --type no-code --description "…" --tables <c.s.t>,…`(또는 `--genie <ID> --genie-mode copy|move`)는 같은 서버 API를 내 로그인으로 부릅니다. 노코드는 폴더가 없으므로 그다음 명령에 `--agent <이름>`을 붙입니다(`validate`·`evaluate`·`deploy`). 폴더에서 `claude`·`codex`를 직접 실행하면 지시·스킬은 같지만 aops 세션 기록과 trace는 남지 않습니다(hook 없음).
 
 ### `aops dev`
 
@@ -170,11 +170,12 @@ aops load <agent_id> [--version x.y.z] [--dir <폴더>]
 
 조직 배포는 항상 아래 순서로만 합니다. 내 PC에서 바로 조직 배포를 하지 않습니다. 등록·검증·배포 요청은 모두 aops 서버를 거칩니다.
 
+0. `aops validate`: 셀프 체크 (언제든, 기록 안 함, 배포 조건 아님)
 1. `aops register`: 버전 저장 → `agents`·`agent_versions`·`agent_version_skills` (노코드는 5에서 자동)
-2. `aops evaluate`: 등록된 버전을 evaluate Job이 형식과 품질로 평가 → `validation_runs`·`eval_results` (배포 요청 때 통과 기록이 없으면 자동으로 돌림). 그 전에는 언제든 `aops validate`(셀프 체크, 기록 안 함)
+2. `aops evaluate`: 등록된 버전(노코드는 스냅샷)을 evaluate Job이 형식과 품질로 평가 → `validation_runs`·`eval_results` (배포 요청 때 통과 기록이 없으면 자동으로 돌림)
 3. `aops deploy`: 배포 요청 → 평가 결과 확인 → `release_gates`
 4. console 화면: 승인 그룹이 [승인]·[반려] → `approvals` (정책에 따라 자동 승인). CLI는 `aops approve`·`aops reject`(같은 API)
-5. 배포 Job: 승인 기록 재확인 → 운영 반영 → `deployments`, `agent_production`
+5. 배포 Job(코드 기반은 aops 서버): 승인 기록 재확인 → 운영 반영 → `deployments`, `agent_production`
 6. `aops promote --to <대상>`: 대상자 권한 부여
 
 모든 단계가 `agent_events`에 감사 이력을 남깁니다.
@@ -265,7 +266,7 @@ aops deploy --dev
 
 - **요청:** Delta `deploy_requests`에 남깁니다. 정책의 평가 방식(기본: 이 내용·이 정책으로 통과한 평가 필요)을 확인하고, 통과하지 못하면 승인자에게 가기 전에 반려합니다. 같은 에이전트에 진행 중인 요청이 있으면 받지 않습니다.
 - **승인:** console 화면에서 승인 그룹(`[dbx] approvers`)이 합니다. 요청자 본인은 승인할 수 없습니다. 정책으로 자동 승인이나 외부 결재 확장을 고를 수 있습니다.
-- **운영 반영:** 배포 Job(서비스 주체 실행)이 승인 기록을 다시 확인하고 내보냅니다.
+- **운영 반영:** 배포 Job(코드 기반은 aops 서버, 둘 다 서비스 주체)이 승인 기록을 다시 확인하고 내보냅니다.
   - 코드: 해시를 확인한 스냅샷 사본으로 `agentbricks deploy`를 실행해 운영 앱(`agent-bricks-<name>`)을 바꿉니다. `uv.lock`의 정확한 버전으로 설치하고, 배포 뒤 설치된 버전과 앱 응답을 직접 확인합니다.
   - 노코드: 평가한 스냅샷으로 같은 워크스페이스에 운영용 Genie Agent를 만들거나 고칩니다. 작성자는 개발용만 고칩니다. 성공하면 버전을 등록하고 공개 그룹에 실행 권한(`CAN RUN`)을 줍니다.
   - 스킬: 서버로 띄우지 않습니다. UC Skill 내용을 이 버전으로 바꿉니다. 권한을 받은 사람은 다음 실행부터 새 내용을 받습니다.
@@ -275,7 +276,7 @@ aops deploy --dev
 - **운영 기록:** 배포된 에이전트에 MLflow tracing과 Apps telemetry를 켭니다. 정책에 따라 켜지는 조직 서비스의 기록이라, 에이전트를 쓰는 최종 사용자 쪽에서는 끌 수 없습니다.
 - **`--dev`:** 승인 없이 본인 앱(`agent-bricks-d<사용자 해시>-<name>`)으로 배포합니다. 세션·메모리처럼 배포해야만 시험할 수 있는 기능을 위한 개인 시험 배포입니다. 운영 버전이 되지 않고, `promote` 대상이 아니며, console 화면의 운영 목록에 나오지 않습니다.
 - omni: Omnigent 관리형 에이전트로 게시하고 정책을 함께 넣습니다.
-- **지금:** 스킬 기반이 동작합니다.
+- **지금:** 세 종류가 동작합니다(코드 기반의 운영 앱 배포는 [`aops register`](#aops-register)의 **지금:** 줄, 노코드는 아래).
   - 같은 버전을 다시 요청하면 진행 중인 요청을 이어서 보여 주고, 다른 버전의 요청이 진행 중이면 막습니다.
   - 이 내용·이 정책으로 통과한 평가가 없으면 evaluate Job을 먼저 돌립니다(`exempt`면 건너뜀). 실패하면 `mandatory`는 승인자에게 가기 전에 반려하고, `optional`은 실패 결과를 남긴 채 승인자에게 넘깁니다(승인 방식이 `auto`여도 사람이 판단).
   - 승인: `auto`면 `policy:auto`로 자동 승인합니다. `optional`이면 SPEC의 중요도가 `low`이고 민감도가 `public`·`internal`일 때만 자동 승인하고, 아니면 승인자가 필요합니다(이유가 `decision_reason`에 남음). `required`면 늘 승인자가 console 화면의 배포 요청함이나 [`aops approve`](#aops-gates--approve--reject)로 합니다.
