@@ -338,7 +338,7 @@ async function agentPage(root, id, params) {
             h("dt", {}, "개발용 Genie"), h("dd", {}, link(nc && nc.dev_url, "열기 (고치는 곳)")),
             h("dt", {}, "에이전트 폴더"), h("dd", {}, nc && nc.folder_url ? link(nc.folder_url, nc.folder_path) : (nc && nc.folder_path) || "–"),
             h("dt", {}, "공개 그룹"), h("dd", {}, (nc && nc.consumer_group) || h("span", { class: "muted" }, "없음 (SPEC.md consumer_group)"))] : null,
-          h("dt", {}, noCode ? "마지막 배포 버전" : "최신 버전"), h("dd", { class: "mono" }, agent.latest_version || "–"),
+          h("dt", {}, "최신 버전"), h("dd", { class: "mono" }, agent.latest_version || "–"),
           h("dt", {}, "마지막 검사"), h("dd", {}, badge("validation", agent.last_validation)),
           h("dt", {}, "진행 중 요청"), h("dd", {}, agent.pending_gates ? `${agent.pending_gates}건` : "없음"))),
       h("div", { class: "card pad" }, h("h2", {}, "SPEC"),
@@ -570,17 +570,21 @@ function openPromote(agent) {
 // ── 가져오기 (aops load) ────────────────────────────────────────────────────
 
 async function openLoad(agent) {
+  // a link (app, Genie) opens in a window made during the click: one opened after the request is often blocked
+  const win = agent.build_type === "skill" ? null : window.open("", "_blank");
   try {
     const info = await post(`/agents/${enc(agent.agent_id)}/load`, {});
     if (info.link) {
-      window.open(info.link, "_blank");
-      return agent.build_type === "no_code" ? toast(`운영용 Genie를 엽니다: ${agent.agent_id} ${info.version}`, "ok", "CAN RUN 권한이 있어야 열립니다")
-        : toast(`운영 앱을 엽니다: ${agent.agent_id} ${info.version}`, "ok", "앱 사용 권한(CAN_USE)이 있어야 열립니다");
+      const what = agent.build_type === "no_code" ? ["운영용 Genie", "CAN RUN 권한이 있어야 열립니다"] : ["운영 앱", "앱 사용 권한(CAN_USE)이 있어야 열립니다"];
+      if (win) { win.location = info.link; return toast(`${what[0]}를 엽니다: ${agent.agent_id} ${info.version}`, "ok", what[1]); }
+      return modal(`${what[0]}: ${agent.agent_id} ${info.version}`, h("div", {}, h("p", {}, "브라우저가 새 창을 막았습니다. 아래 링크로 여세요."),
+        h("a", { class: "btn primary", href: info.link, target: "_blank" }, `${what[0]} 열기 ↗`), h("p", { class: "muted mt" }, what[1])));
     }
+    if (win) win.close();
     if (!info.allowed || !info.archive) return toast("가져올 수 없습니다", "bad", "운영 UC Skill 읽기 권한이 필요합니다 (담당자에게 권한 요청)");
     await download(info.archive.url.replace(API, ""), `${agent.agent_id}-${info.version}.zip`);
     toast(`가져옴: ${agent.agent_id} ${info.version}`, "ok", "풀어서 aops run으로 쓰거나 Genie Code 폴더에 올리세요");
-  } catch (e) { fail(e); }
+  } catch (e) { if (win) win.close(); fail(e); }
 }
 
 // ── 배포 요청함 (aops gates · approve · reject · deploy --cancel) ─────────────

@@ -51,9 +51,10 @@ class UserSpaceMixin:
             return result["body"] or {}
         message = result.get("error") or ""
         if result["status"] in (401, 403) and "scope" in message.lower():
-            raise ServiceError(403, "missing_scope", f"aops 앱에 {scope} 사용자 권한 범위가 없어 내 권한으로 {what}를 할 수 없습니다. "
-                               f"관리자가 aops admin setup --only app을 다시 실행하면 더해집니다 (그 뒤 화면을 새로 열어 동의). 응답: {message[:200]}",
-                               "aops admin setup --only app")
+            raise ServiceError(403, "missing_scope", f"내 토큰에 {scope} 범위가 없어 내 권한으로 {what}를 할 수 없습니다. "
+                               "앱에 그 범위가 없으면 관리자가 aops admin setup --only app을 다시 실행합니다. 앱에는 있는데 이 메시지가 나오면 "
+                               "범위를 더하기 전에 열어 둔 화면입니다: 시크릿 창으로 열거나 이 앱 주소의 쿠키를 지운 뒤 다시 열어 동의하세요. "
+                               f"응답: {message[:200]}", "aops admin setup --only app")
         raise ServiceError(result["status"] if 400 <= result["status"] < 500 else 502, code, f"{what}에 실패했습니다: {message}", command)
 
     def _user_api(self, caller: Caller, method: str, path: str, body: dict[str, Any] | None, what: str,

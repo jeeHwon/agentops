@@ -44,7 +44,7 @@ PC에서 고치려면 [폴더 받기 (zip)]로 같은 템플릿을 받습니다.
 
 ## 쓰는 법
 
-- **Databricks App(aops 서버):** `aops admin setup`이 배포한 앱 주소를 엽니다. Databricks 로그인을 그대로 쓰고, 앱의 `CAN USE` 권한이 있으면 됩니다. 앱의 기본 사용자 권한 범위(`iam.current-user:read`·`iam.access-control:read`, 모든 앱에 늘 들어 있음)로 내 그룹을 읽어 담당 팀·승인 그룹·관리자를 판정합니다. `aops admin setup`이 더하는 범위: `files`(스킬 가져오기), `genie`(노코드 개발용 Genie를 내 권한으로), `workspace.workspace`(내 폴더에 템플릿). 범위가 바뀐 뒤 처음 열면 동의 화면이 나옵니다.
+- **Databricks App(aops 서버):** `aops admin setup`이 배포한 앱 주소를 엽니다. Databricks 로그인을 그대로 쓰고, 앱의 `CAN USE` 권한이 있으면 됩니다. 앱의 기본 사용자 권한 범위(`iam.current-user:read`·`iam.access-control:read`, 모든 앱에 늘 들어 있음)로 내 그룹을 읽어 담당 팀·승인 그룹·관리자를 판정합니다. `aops admin setup`이 더하는 범위: `files`(스킬 가져오기), `genie`(노코드 개발용 Genie를 내 권한으로), `workspace.workspace`(내 폴더에 템플릿). 범위가 바뀐 뒤에는 새로 로그인할 때 동의 화면이 나옵니다. 바뀌기 전에 연 화면(앱 세션)은 예전 범위의 토큰을 계속 쓰므로, 시크릿 창으로 열거나 앱 주소의 쿠키를 지운 뒤 다시 엽니다.
 - **내 PC에서 시험:** 레지스트리에 연결한 `aops serve`를 띄우고 `http://127.0.0.1:8000`을 엽니다. 이때 화면의 사용자는 그 PC의 Databricks CLI 프로필 사용자입니다.
 
   ```bash
