@@ -187,7 +187,7 @@ def _report_gate(gate: dict[str, Any]) -> None:
         who = gate.get("approved_by")
         _say(f"  승인됨 ({'정책 자동 승인' if who == 'policy:auto' else f'승인자 {who}' if who else '승인'}) → 배포 Job 실행 중…")
     elif deployment == "succeeded":
-        _say(f"  운영 반영 완료: {gate['agent_id']} {gate['version']} (UC Skill 내용이 이 버전으로 바뀌었습니다)")
+        _say(f"  운영 반영 완료: {gate['agent_id']} {gate['version']} (운영 대상이 이 버전으로 바뀌었습니다: 스킬은 UC Skill, 코드는 앱, 노코드는 운영용 Genie)")
     elif deployment == "failed":
         _say("  배포 실패: 서버 기록(deployments)을 확인하세요")
     elif decision == "rejected":
