@@ -1,6 +1,6 @@
 # aops 개요
 
-[README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md) · [console](console.md) · [앱 밖에 띄우기](container.md)
+[README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md) · [console](console.md) · [앱 밖에 띄우기](container.md) · [여러 워크스페이스](workspaces.md)
 
 > **지금 동작하는 범위:** 세 종류 모두 dbx 흐름 `init` → `validate`(셀프 체크) → `register` → `evaluate`(Gate) → `deploy` → `promote` → `list`·`load`가 같은 이름으로 동작합니다. 노코드는 배포가 성공할 때 버전이 등록되고(`register` 없음), 코드 기반의 평가셋 실행은 다음 단계입니다. 스킬 기반은 PC에서 `run`·`session`으로 개발합니다. 나머지는 설계이고, 표의 **지금** 열과 [명령어](commands.md)에 구분해 두었습니다.
 
@@ -83,7 +83,7 @@ dbx는 local을 포함합니다. omni와 custom은 dbx 위에 화면을 붙이�
 
 ### aops 서버
 
-- dbx 이상은 조직에 aops 서버(Databricks App) 하나를 둡니다. 관리자가 `aops admin setup`으로 한 번 배포하고, 사용자는 CLI만 설치합니다. 앱 대신 컨테이너·PC에 띄울 수도 있습니다(서버는 서비스 주체 OAuth M2M, 사람은 Databricks OAuth 로그인, [앱 밖에 띄우기](container.md)).
+- dbx 이상은 조직에 aops 서버(Databricks App) 하나를 둡니다. 관리자가 `aops admin setup`으로 한 번 배포하고, 사용자는 CLI만 설치합니다. 앱 대신 컨테이너·PC에 띄울 수도 있습니다(서버는 서비스 주체 OAuth M2M, 사람은 Databricks OAuth 로그인, [앱 밖에 띄우기](container.md)). 서버는 관리용 워크스페이스에 두고 개발·운영 워크스페이스를 따로 둘 수도 있습니다([여러 워크스페이스](workspaces.md)).
 - 레지스트리 기록, Job 실행, 권한 변경은 서버가 서비스 주체로 합니다. 그래서 사람이 기록을 고치거나 자기 요청을 승인할 수 없습니다. 승인 화면(console)도 이 서버에 있습니다. **지금:** 서버 주소의 console 화면에서 만들기·목록·셀프 체크·등록·평가·배포·되돌리기·승인·반려·취소·권한·가져오기·정책을 합니다([console](console.md)). CLI의 `aops gates`·`approve`·`reject`도 같은 API입니다.
 - 개발(`init`·`run`·`session`)과 셀프 체크(`validate`)는 서버 없이 됩니다(노코드는 워크스페이스에 만들므로 서버를 거침). 등록·평가·배포·권한 부여와 스킬 `load`는 서버를 거칩니다.
 

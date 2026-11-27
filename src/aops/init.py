@@ -58,10 +58,11 @@ description: {spec_description}
 """
 
 SPEC_KEYS = ("agent_id", "name", "build_type", "owner", "owner_group", "approvers", "service_criticality", "data_sensitivity",
-             "security_level", "consumer_group", "description")
+             "security_level", "consumer_group", "target_workspace", "description")
 SPEC_HINTS = {"service_criticality": "low | medium | high", "data_sensitivity": "public | internal | confidential | personal",
               "consumer_group": "공개 그룹 (노코드: 배포 때 운영 Genie에 CAN RUN)",
-              "approvers": "배포 요청을 승인할 사람: 이메일이나 group:<그룹>, 쉼표로"}
+              "approvers": "배포 요청을 승인할 사람: 이메일이나 group:<그룹>, 쉼표로",
+              "target_workspace": "운영 워크스페이스 (비우면 정책의 기본)"}
 
 
 def render_spec(values: dict[str, str | None], body: str | None = None) -> str:
@@ -69,6 +70,8 @@ def render_spec(values: dict[str, str | None], body: str | None = None) -> str:
     lines = ["---"]
     for key in SPEC_KEYS:
         if key == "consumer_group" and values.get("build_type") != "no_code" and not values.get(key):
+            continue
+        if key == "target_workspace" and not values.get(key):  # only with more than one workspace, when chosen
             continue
         raw = values.get(key)
         if isinstance(raw, (list, tuple)):

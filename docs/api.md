@@ -1,6 +1,6 @@
 # aops API
 
-[README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md) · [console](console.md) · [앱 밖에 띄우기](container.md)
+[README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md) · [console](console.md) · [앱 밖에 띄우기](container.md) · [여러 워크스페이스](workspaces.md)
 
 `aops serve`가 여는 HTTP API입니다. Custom Front(custom), Omnigent UI, 개발 화면, console 화면이 모두 이 API를 씁니다. dbx 에디션의 명령과 1:1로 맞습니다. 서버를 띄우면 `/api/v1/docs`에서 요청·응답 형식을 보고 바로 호출해 볼 수 있습니다.
 

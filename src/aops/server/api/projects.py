@@ -35,6 +35,8 @@ class ProjectCreate(BaseModel):
     data_sensitivity: Literal["public", "internal", "confidential", "personal"] = "internal"
     security_level: str = Field("general", description="관리자 정책의 보안 등급 코드")
     consumer_group: str | None = Field(None, description="no_code: 공개 그룹 (배포 때 운영 Genie에 CAN RUN)")
+    target_workspace: str | None = Field(None, examples=["project"],
+                                         description="code·no_code: 운영 워크스페이스 (정책의 이름). 비우면 정책의 기본. SPEC.md target_workspace가 된다")
     approvers: list[str] = Field(default_factory=list, examples=[["lead@example.com", "group:agent-approvers"]],
                                  description="배포 요청을 승인할 사람: 이메일이나 group:<그룹>. SPEC.md approvers가 되고, 요청은 이 승인자만 승인한다")
     location: str | None = Field(
@@ -131,7 +133,8 @@ def _server_url(request: Request) -> str:
 def _spec(body: "ProjectCreate", owner: str) -> dict[str, Any]:
     return {"agent_id": body.name, "name": body.display_name or body.name, "build_type": body.type, "owner": owner,
             "owner_group": body.owner_group or "", "approvers": ", ".join(body.approvers), "service_criticality": body.service_criticality,
-            "data_sensitivity": body.data_sensitivity, "security_level": body.security_level, "description": body.description or ""}
+            "data_sensitivity": body.data_sensitivity, "security_level": body.security_level, "description": body.description or "",
+            **({"target_workspace": body.target_workspace.strip()} if (body.target_workspace or "").strip() else {})}
 
 
 def template_files(body: "ProjectCreate", server: str, owner: str) -> dict[str, bytes]:

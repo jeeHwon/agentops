@@ -31,9 +31,11 @@ from .base import AGENT_ID, CRITICALITY, SENSITIVITY, VERSION_COLUMNS, Caller, S
 from .progress import Progress
 from .git import GitHub, GitSettings, commit_message, proxy_transport
 from .browse import BrowseMixin
+from .clients import WorkspacesMixin
 from .nocode import NoCodeMixin
 from .userspace import UserSpaceMixin
 from .sql import Sql, loads
+from .. import workspaces as spaces
 
 __all__ = ["AGENT_ID", "Caller", "Config", "Service", "ServiceError", "now_id"]
 
@@ -96,7 +98,7 @@ class Config:
         return self.registry.split(".")[1]
 
 
-class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
+class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin, WorkspacesMixin):
     def __init__(self, config: Config, workspace: Any = None):
         from databricks.sdk import WorkspaceClient
 
@@ -107,17 +109,32 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
 
     # ── identity ────────────────────────────────────────────────────────────
 
-    def identify(self, token: str | None, email: str | None) -> Caller:
-        """The requester: the forwarded user from Databricks Apps, or the owner of a bearer token."""
+    def identify(self, token: str | None, email: str | None, workspace_host: str | None = None) -> Caller:
+        """The requester: the forwarded user from Databricks Apps, or the owner of a bearer token.
+
+        `workspace_host` (header X-Aops-Workspace) names the workspace a bearer token belongs to: only a workspace
+        of the policy is taken, and the token is checked there (users and groups are account-wide)."""
         groups: list[str] = []
+        host = name = None
+        if workspace_host:
+            try:
+                wanted = spaces.normalize_host(workspace_host)
+            except ValueError as error:
+                raise ServiceError(400, "bad_workspace", str(error)) from error
+            if wanted != spaces.normalize_host(self.w.config.host):
+                found = self.workspaces().by_host(wanted)
+                if found is None:
+                    raise ServiceError(400, "unknown_workspace", f"정책에 없는 워크스페이스에서 온 요청입니다: {wanted}. "
+                                       "관리자가 aops admin setup --workspace로 등록합니다", "aops admin setup --workspace")
+                host, name = found.host, found.name
         if token:
-            known = self.__dict__.setdefault("_identities", {})  # sha256(token): (email, groups, when)
-            key = hashlib.sha256(token.encode()).hexdigest()
+            known = self.__dict__.setdefault("_identities", {})  # sha256(host, token): (email, groups, when)
+            key = hashlib.sha256(f"{host or ''}|{token}".encode()).hexdigest()
             hit = known.get(key)
             if hit and time.time() - hit[2] < IDENTITY_TTL:
                 email, groups = hit[0] or email, list(hit[1])
             else:
-                me = self._as_user(token, "GET", "/api/2.0/preview/scim/v2/Me")
+                me = self._as_user(token, "GET", "/api/2.0/preview/scim/v2/Me", host=host)
                 if me.get("status") == 200:
                     body = me["body"]
                     email = body.get("userName") or email  # the token's user wins over a header
@@ -127,14 +144,18 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
                     known[key] = (body.get("userName"), groups, time.time())
         if not email:
             raise ServiceError(401, "unauthenticated", "요청한 사람을 확인할 수 없습니다")
-        return Caller(email=email, token=token, groups=groups)
+        if host and not token:
+            raise ServiceError(401, "unauthenticated", "다른 워크스페이스에서 온 요청은 그 워크스페이스의 토큰이 있어야 합니다")
+        return Caller(email=email, token=token, groups=groups, workspace=name, host=host)
 
-    def _as_user(self, token: str, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-        """A REST call with the requester's own token: {"status", "body", "error"} (error: the API's message)."""
+    def _as_user(self, token: str, method: str, path: str, body: dict[str, Any] | None = None,
+                 host: str | None = None) -> dict[str, Any]:
+        """A REST call with the requester's own token: {"status", "body", "error"} (error: the API's message).
+        `host`: the workspace the token belongs to (the server's own when not given)."""
         import urllib.error
         import urllib.request
 
-        host = self.w.config.host.rstrip("/")
+        host = (host or self.w.config.host).rstrip("/")
         headers = {"Authorization": f"Bearer {token}"}
         data = None
         if body is not None:
@@ -203,6 +224,20 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
         if not row:
             raise ServiceError(404, "not_found", f"등록된 에이전트가 없습니다: {agent_id}", "aops list")
         return row
+
+    def agent_target(self, agent_id: str) -> str | None:
+        """Where the agent's production goes (with more than one workspace; a skill's is a UC skill, in none)."""
+        if not self.workspaces().configured:
+            return None
+        agent = self.agent(agent_id) or {}
+        spec = loads(agent.get("spec")) or {}
+        if agent.get("build_type") == "skill":
+            return None
+        try:
+            place = self.target_of(spec, agent.get("build_type") or "code")
+            return place.name if place else None
+        except ServiceError:
+            return spaces.spec_target(spec)  # not a production workspace of the policy: shown as written (the checks say why)
 
     def agent_approvers(self, agent_id: str) -> list[str]:
         """The agent's named approvers from its SPEC (the last registered one, or the one it was made with)."""
@@ -320,8 +355,10 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
 
         if not re.fullmatch(r"[0-9a-f]{32}", space_id or ""):
             raise ServiceError(400, "bad_space_id", "Genie 스페이스 ID는 32자리 16진수입니다 (주소의 /genie/rooms/<ID>)", "aops validate")
-        try:
-            space = self.w.genie.get_space(space_id, include_serialized_space=True)
+        try:  # the space is in the workspace the request came from; the server reads it as its service principal there
+            space = self.client(self.caller_workspace(caller)).genie.get_space(space_id, include_serialized_space=True)
+        except ServiceError:
+            raise
         except Exception as error:
             raise ServiceError(404, "space_not_readable", f"Genie 스페이스를 읽지 못했습니다 ({type(error).__name__}). "
                                "aops 서비스 주체에 편집 권한을 주거나 aops 에이전트 폴더 안에서 만드세요", "aops validate") from error
@@ -342,7 +379,8 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
         group = policy.get("approver_group")
         approver = not group or group in caller.groups or self._dev_approver(caller, policy)
         roles = ["developer"] + (["approver"] if approver else []) + (["admin"] if is_admin(caller) else [])
-        return {"user": caller.email, "groups": caller.groups, "roles": roles}
+        ws = self.caller_workspace(caller)
+        return {"user": caller.email, "groups": caller.groups, "roles": roles, "workspace": ws.summary()}
 
     def set_policy(self, caller: Caller, changes: dict[str, Any]) -> dict[str, Any]:
         """A new policy version from the console. Workspace admins only; keys that are not changed (Git) stay."""
@@ -646,7 +684,7 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
                     raise ServiceError(400, "bad_zip", f"zip을 읽을 수 없습니다: {error}", "aops validate") from error
                 source = "올린 폴더·zip"
             elif workspace_path:
-                found, _ = self.read_workspace_folder(caller, workspace_path)
+                found, _ = self.read_workspace_folder(caller, workspace_path, agent_id)
                 files, source = dict(found), workspace_path.rstrip("/")
             else:
                 if not agent:
@@ -814,7 +852,8 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
                     live = genie_rules.definition_hash(self._dev_definition(genie))
                     if live == genie_rules.definition_hash(nocode.definition_of(files)):
                         progress.begin("evaluate", "Genie 벤치마크를 시작합니다")
-                        step, results = gate_eval.evaluate_genie(self.w, genie["dev_space_id"], spec, policy, self._eval_baseline(run["agent_id"]),
+                        step, results = gate_eval.evaluate_genie(self.client(genie.get("dev_workspace")), genie["dev_space_id"], spec, policy,
+                                                                 self._eval_baseline(run["agent_id"]),
                                                                  on_progress=progress.quality_event)
                         steps.append(step)
                         benchmarked = True
@@ -903,6 +942,8 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
         policy_version, policy = self.policy()
         approvers = validate.approvers_of(loads(target.get("spec")) or {})
         self.check_someone_approves(caller, approvers, policy)
+        place = self.target_of(loads(target.get("spec")) or {}, agent.get("build_type") or "skill")
+        self.registry_ready()  # with workspaces the deploy writes where production is (a skill too: none)
         production = self.production(agent_id)
         upgrade = upgrade_type(production["current_version"] if production else None, target["version"])
         gate_id = now_id()
@@ -914,7 +955,7 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
              "ch": policy["approval_channel"], "n": int(policy["required_approvals"])},
         )
         self.event(agent_id, target["version"], "gate_requested", caller.email,
-                   {"gate_id": gate_id, "upgrade_type": upgrade, "approvers": approvers})
+                   {"gate_id": gate_id, "upgrade_type": upgrade, "approvers": approvers, **self.target_detail(place)})
 
         passed = self._passed_evaluation(agent_id, target["version"], policy_version)
         if policy["validation_mode"] == "exempt" or passed:
@@ -1054,12 +1095,15 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
             f"LEFT JOIN {self.sql.table('deployments')} d ON d.deployment_id = g.deployment_id {where} "
             f"ORDER BY g.requested_at DESC LIMIT {int(limit)}", params)
         if rows:  # each request's named approvers (from its gate_requested record)
-            named = self.sql.run(f"SELECT detail:gate_id::string AS gate_id, to_json(detail:approvers) AS approvers FROM {self.sql.table('agent_events')} "
+            named = self.sql.run(f"SELECT detail:gate_id::string AS gate_id, to_json(detail:approvers) AS approvers, "
+                                 f"detail:target_workspace::string AS target_workspace FROM {self.sql.table('agent_events')} "
                                  "WHERE event_type = 'gate_requested' AND detail:gate_id::string IN ("
                                  + ", ".join(f":g{i}" for i in range(len(rows))) + ")", {f"g{i}": r["gate_id"] for i, r in enumerate(rows)})
-            by_gate = {r["gate_id"]: loads(r.get("approvers")) or [] for r in named}
+            by_gate = {r["gate_id"]: r for r in named}
             for row in rows:
-                row["approvers"] = by_gate.get(row["gate_id"], [])
+                record = by_gate.get(row["gate_id"]) or {}
+                row["approvers"] = loads(record.get("approvers")) or []
+                row["target_workspace"] = record.get("target_workspace")
         if to_approve:
             _, policy = self.policy()
             dev = self._dev_approver(caller, policy)
@@ -1179,15 +1223,18 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
             files = package.read(self.w.files.download(target["artifact_path"]).contents.read())
             if package.files_sha256(list(files.items())) != target["source_sha256"]:
                 raise RuntimeError("버전 zip이 등록 때 해시와 다릅니다")
-            home = f"/Users/{self.w.current_user.me().user_name}/aops/agents/{agent_id}"
-            self.w.workspace.mkdirs(f"/Workspace{home}")  # MLflow and the source sync need the parent folder
+            place = self.workspace(gate.get("target_workspace"))
+            wc = self.client(place)
+            home = f"/Users/{wc.current_user.me().user_name}/aops/agents/{agent_id}"
+            wc.workspace.mkdirs(f"/Workspace{home}")  # MLflow and the source sync need the parent folder
             source = Path(tempfile.mkdtemp(prefix=f"aops-{agent_id}-")) / "src"
             changed = code.prepare(files, source, f"{home}/traces")
-            rc, log = code.deploy(source, code.app_base(agent_id), f"/Workspace{home}/app", self.config.profile)
+            profile, env = self.cli_env(place)
+            rc, log = code.deploy(source, code.app_base(agent_id), f"/Workspace{home}/app", profile, env=env)
             if rc != 0:  # agentbricks may have changed the app before it failed
                 raise RuntimeError(f"agentbricks deploy 실패 (exit {rc}). 운영 앱이 일부 바뀌었을 수 있어 확인이 필요합니다")
             name = code.app_name(agent_id)
-            url = self.w.apps.get(name).url
+            url = wc.apps.get(name).url
             production = self.production(agent_id)
             previous = production["current_version"] if production else None
             kind = "rollback" if gate["upgrade_type"] == "rollback" else "deploy"
@@ -1195,18 +1242,14 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
                 (f"UPDATE {self.sql.table('agent_versions')} SET status = 'retired' WHERE agent_id = :a AND status = 'production'", {"a": agent_id}),
                 (f"UPDATE {self.sql.table('agent_versions')} SET status = 'production' WHERE agent_id = :a AND version = :v",
                  {"a": agent_id, "v": version}),
-                (f"MERGE INTO {self.sql.table('agent_production')} t USING (SELECT :a AS agent_id) s ON t.agent_id = s.agent_id "
-                 "WHEN MATCHED THEN UPDATE SET previous_version = t.current_version, current_version = :v, target = :t, updated_by = :by, "
-                 "updated_at = current_timestamp() WHEN NOT MATCHED THEN INSERT (agent_id, current_version, previous_version, target, updated_by, updated_at) "
-                 "VALUES (:a, :v, NULL, :t, :by, current_timestamp())",
-                 {"a": agent_id, "v": version, "t": name, "by": gate["requester"]}),
+                self._production_statement(agent_id, version, name, gate["requester"], place),
                 (f"UPDATE {self.sql.table('agents')} SET lifecycle = 'production', updated_at = current_timestamp() WHERE agent_id = :a",
                  {"a": agent_id}),
                 (f"UPDATE {self.sql.table('deployments')} SET status = 'succeeded', target = :t, app_url = :u, detail = parse_json(:d), "
                  "ended_at = current_timestamp() WHERE deployment_id = :id",
-                 {"t": name, "u": url, "d": {"changed_files": changed, "log": log[-4000:]}, "id": deployment_id}),
+                 {"t": name, "u": url, "d": {"changed_files": changed, "log": log[-4000:], **self.target_detail(place)}, "id": deployment_id}),
                 self._event_statement(agent_id, version, kind, gate["requester"],
-                                      {"gate_id": gate_id, "previous": previous, "app": name, "app_url": url}),
+                                      {"gate_id": gate_id, "previous": previous, "app": name, "app_url": url, **self.target_detail(place)}),
             ])
             report = {"status": "succeeded", "agent_id": agent_id, "version": version, "previous": previous, "app": name, "app_url": url}
         except Exception as error:
@@ -1261,11 +1304,7 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
                  {"a": agent_id}),
                 (f"UPDATE {self.sql.table('agent_versions')} SET status = 'production' WHERE agent_id = :a AND version = :v",
                  {"a": agent_id, "v": version}),
-                (f"MERGE INTO {self.sql.table('agent_production')} t USING (SELECT :a AS agent_id) s ON t.agent_id = s.agent_id "
-                 "WHEN MATCHED THEN UPDATE SET previous_version = t.current_version, current_version = :v, target = :t, updated_by = :by, "
-                 "updated_at = current_timestamp() WHEN NOT MATCHED THEN INSERT (agent_id, current_version, previous_version, target, updated_by, updated_at) "
-                 "VALUES (:a, :v, NULL, :t, :by, current_timestamp())",
-                 {"a": agent_id, "v": version, "t": ", ".join(names), "by": gate["requester"]}),
+                self._production_statement(agent_id, version, ", ".join(names), gate["requester"]),
                 (f"UPDATE {self.sql.table('agents')} SET lifecycle = 'production', updated_at = current_timestamp() WHERE agent_id = :a",
                  {"a": agent_id}),
                 (f"UPDATE {self.sql.table('deployments')} SET status = 'succeeded', target = :t, ended_at = current_timestamp() "
@@ -1294,15 +1333,51 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
                                  "WHERE gate_id = :g AND decision = 'approve'", {"g": gate_id})
         row["approvals"] = int(approvals["n"]) if approvals else 0
         row["approved_by"] = approvals.get("last") if approvals else None
-        row["approvers"] = self.gate_approvers(gate_id)
+        record = self.gate_record(gate_id)
+        row["approvers"] = list(record.get("approvers") or [])
+        row["target_workspace"] = record.get("target_workspace")
         return row
+
+    def gate_record(self, gate_id: str) -> dict[str, Any]:
+        """What the request was made with (its gate_requested record): named approvers, the production workspace."""
+        row = self.sql.one(f"SELECT detail FROM {self.sql.table('agent_events')} WHERE event_type = 'gate_requested' "
+                           "AND detail:gate_id::string = :g LIMIT 1", {"g": gate_id})
+        return (loads(row.get("detail")) if row else None) or {}
 
     def gate_approvers(self, gate_id: str) -> list[str]:
         """The approvers named in SPEC.md when the request was made (kept in its gate_requested record)."""
-        row = self.sql.one(f"SELECT detail FROM {self.sql.table('agent_events')} WHERE event_type = 'gate_requested' "
-                           "AND detail:gate_id::string = :g LIMIT 1", {"g": gate_id})
-        detail = loads(row.get("detail")) if row else None
-        return list((detail or {}).get("approvers") or [])
+        return list(self.gate_record(gate_id).get("approvers") or [])
+
+    def target_of(self, spec: dict[str, Any], kind: str) -> spaces.Workspace | None:
+        """Where a code or no-code agent's production goes: SPEC.md target_workspace, else the policy default.
+        A skill's production is a UC skill (the metastore), in no one workspace."""
+        if kind == "skill":
+            return None
+        name = spaces.spec_target(spec)
+        try:
+            return self.workspaces().target(name)
+        except KeyError:
+            names = ", ".join(w.name for w in self.workspaces().with_role("target"))
+            raise ServiceError(409, "unknown_target", f"SPEC.md target_workspace {name!r}는 정책의 운영 워크스페이스({names})가 아닙니다",
+                               "SPEC.md target_workspace") from None
+
+    def target_detail(self, place: spaces.Workspace | None) -> dict[str, Any]:
+        """The production workspace for a request record (nothing with one workspace: records stay as before)."""
+        if place is None or not self.workspaces().configured:
+            return {}
+        self.registry_ready()
+        return {"target_workspace": place.name, "target_host": place.host}
+
+    def _production_statement(self, agent_id: str, version: str, target: str, by: str,
+                              place: spaces.Workspace | None = None) -> tuple[str, dict[str, Any]]:
+        """The production pointer; with more than one workspace it also keeps where production is."""
+        many = self.workspaces().configured
+        params = {"a": agent_id, "v": version, "t": target, "by": by, **({"w": self.stored(place) if place else None} if many else {})}
+        return (f"MERGE INTO {self.sql.table('agent_production')} t USING (SELECT :a AS agent_id) s ON t.agent_id = s.agent_id "
+                "WHEN MATCHED THEN UPDATE SET previous_version = t.current_version, current_version = :v, target = :t, updated_by = :by, "
+                f"{'workspace = :w, ' if many else ''}updated_at = current_timestamp() WHEN NOT MATCHED THEN INSERT (agent_id, current_version, "
+                f"previous_version, target, updated_by, updated_at{', workspace' if many else ''}) "
+                f"VALUES (:a, :v, NULL, :t, :by, current_timestamp(){', :w' if many else ''})", params)
 
     def principal_exists(self, principal: str) -> bool | None:
         """Is this approver a user or group of the workspace? None when the server cannot tell (no rights to list)."""
@@ -1417,7 +1492,8 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
         from databricks.sdk.service.apps import AppAccessControlRequest, AppPermissionLevel
 
         name = production["target"]
-        current = self.w.apps.get_permissions(name).access_control_list or []
+        wc = self.client(production.get("workspace"))
+        current = wc.apps.get_permissions(name).access_control_list or []
         grants = []
         for principal in principals:
             kind, _, who = principal.partition(":") if ":" in principal else ("group", "", principal)
@@ -1426,10 +1502,10 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
                 keep = [AppAccessControlRequest(**{k: getattr(a, k) for k in ("group_name", "user_name", "service_principal_name") if getattr(a, k)},
                                                 permission_level=AppPermissionLevel(p.permission_level.value))
                         for a in current if getattr(a, key) != who for p in (a.all_permissions or [])[:1] if not p.inherited]
-                self.w.apps.set_permissions(name, access_control_list=keep)
-                current = self.w.apps.get_permissions(name).access_control_list or []
+                wc.apps.set_permissions(name, access_control_list=keep)
+                current = wc.apps.get_permissions(name).access_control_list or []
             else:
-                self.w.apps.update_permissions(name, access_control_list=[
+                wc.apps.update_permissions(name, access_control_list=[
                     AppAccessControlRequest(**{key: who}, permission_level=AppPermissionLevel.CAN_USE)])
             grants.append({"agent_id": agent_id, "securable": f"app:{name}", "principal": principal, "permission": "CAN_USE", "granted": not revoke})
             self.event(agent_id, production["current_version"], "promote", caller.email,
@@ -1442,7 +1518,7 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
             production = self.production(agent_id)
             if not production:
                 raise ServiceError(409, "no_production", "운영 버전이 없습니다", "aops load")
-            url = self.w.apps.get(production["target"]).url
+            url = self.client(production.get("workspace")).apps.get(production["target"]).url
             self.event(agent_id, production["current_version"], "load", caller.email, {"app": production["target"]})
             return {"agent_id": agent_id, "build_type": "code", "version": production["current_version"], "link": url,
                     "allowed": True, "archive": None}
@@ -1484,7 +1560,7 @@ class Service(NoCodeMixin, UserSpaceMixin, BrowseMixin):
     def _can_read_skill(self, caller: Caller, uc_name: str) -> bool:
         """Reading SKILL.md with the requester's own token: 200 means READ_VOLUME (directly or through a group)."""
         if caller.token:
-            result = self._as_user(caller.token, "GET", f"/api/2.0/fs/files{self._skill_path(uc_name)}/SKILL.md")
+            result = self._as_user(caller.token, "GET", f"/api/2.0/fs/files{self._skill_path(uc_name)}/SKILL.md", host=caller.host)
             if result["status"] in (200, 404):
                 return result["status"] == 200
         effective = self.w.grants.get_effective("skill", uc_name, principal=caller.email)

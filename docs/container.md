@@ -13,6 +13,7 @@ aops 서버는 보통 Databricks App(`aops admin setup`의 `app` 단계)으로 �
 - **서버:** 레지스트리 기록, 평가·배포 Job, Git 사본, 운영용 Genie·코드 운영 앱을 서비스 주체 권한으로 합니다. `DATABRICKS_HOST`·`DATABRICKS_CLIENT_ID`·`DATABRICKS_CLIENT_SECRET`을 주면 Databricks SDK가 OAuth M2M으로 씁니다.
 - **사람:** 내 테이블 목록, 내 폴더에 템플릿 쓰기, 개발용 Genie 만들기처럼 사람 권한이 필요한 일은 그 사람의 토큰으로 합니다. 누구인지와 역할은 앱에서와 같이 그 토큰의 SCIM `/Me`(이메일·그룹)로 정합니다. 관리자는 `admins` 그룹, 승인자는 정책의 승인 그룹·지정 승인자, 담당자는 SPEC.md입니다. 역할을 따로 저장하지 않으므로 그룹을 바꾸면 5분 안에 반영됩니다.
 - **들어오는 길:** 브라우저(console)는 로그인 쿠키, CLI·다른 서비스는 `Authorization: Bearer <Databricks OAuth 토큰>`입니다. 노트북·Genie Code는 서버 주소가 앱(`*.databricksapps.com`)이 아니면 노트북 자신의 토큰을 보냅니다.
+- **다른 워크스페이스에서 온 요청:** 정책에 워크스페이스가 여럿이면 CLI·Genie Code가 토큰과 함께 `X-Aops-Workspace: <그 워크스페이스 주소>`를 보냅니다. 서버는 정책에 있는 주소만 받고 그 워크스페이스에서 토큰을 확인합니다. 앱 밖 서버 하나로 여러 개발 워크스페이스의 Genie Code까지 받을 수 있습니다([여러 워크스페이스](workspaces.md)).
 
 ## 브라우저 로그인 (Databricks OAuth)
 

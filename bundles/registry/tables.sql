@@ -244,6 +244,9 @@ TBLPROPERTIES ('delta.feature.catalogManaged' = 'supported');
 
 -- 나중에 더한 칸: 이전에 만든 테이블에 붙인다. 이미 있으면 aops admin setup이 건너뛴다 (FIELD_ALREADY_EXISTS)
 ALTER TABLE __SCHEMA__.agent_versions ADD COLUMNS (note STRING COMMENT '등록 사유 (선택, 등록할 때 적음). Git 커밋 메시지의 제목에도 들어간다');
+-- 워크스페이스가 여럿일 때 (정책 workspaces): 개발용·운영용이 있는 곳. 비어 있으면 aops 서버의 워크스페이스
+ALTER TABLE __SCHEMA__.genie_agents ADD COLUMNS (dev_workspace STRING COMMENT '개발용 Genie·에이전트 폴더가 있는 워크스페이스 (정책의 이름, 비면 서버의 것)', prod_workspace STRING COMMENT '운영용 Genie가 있는 워크스페이스 (정책의 이름, 비면 서버의 것)');
+ALTER TABLE __SCHEMA__.agent_production ADD COLUMNS (workspace STRING COMMENT '운영 대상이 있는 워크스페이스 (정책의 이름, 비면 서버의 것. 스킬은 UC Skill이라 없음)');
 
 -- 허용 값 (CHECK). 테이블을 만든 뒤 붙인다 (CREATE TABLE 안에는 쓸 수 없다)
 ALTER TABLE __SCHEMA__.policies DROP CONSTRAINT IF EXISTS policies_status;

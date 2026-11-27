@@ -9,6 +9,10 @@ production Genie space that the aops service principal owns.
   checked is what goes out. The version number is given when the deploy succeeds: 1.0.0 first, then major when
   the data sources change and minor otherwise.
 - promote: CAN RUN on the production space. load: its link (Genie checks CAN RUN itself).
+
+With more than one workspace (aops.workspaces) the dev space and its folder are in the development workspace
+the author's request came from, and the production space is in the request's production workspace; the aops
+service principal works in each through its own client there.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ ROOT = "/Workspace/aops/no-code"  # admin setup makes it and gives the aops serv
 PRODUCTION = "_production"  # production spaces: <root>/_production/<agent_id> (an agent id never starts with "_")
 SPACE = "genie/space.json"
 SPACE_ID = re.compile(r"^[0-9a-f]{32}$")
+GENIE_COLUMNS = "agent_id, dev_space_id, prod_space_id, folder_path, consumer_group, warehouse_id, updated_at"
 TABLE = re.compile(r"^[^.\s`]+\.[^.\s`]+\.[^.\s`]+$")
 
 NO_CODE_TOML = """\
@@ -149,13 +154,15 @@ class NoCodeMixin:
         row = self.genie_agent(agent_id)
         if not row:
             raise ServiceError(404, "not_no_code", f"노코드 에이전트가 아닙니다: {agent_id}")
+        dev, prod = self.workspace(row.get("dev_workspace")), self.workspace(row.get("prod_workspace"))
         folder_url = None
         try:
-            folder_url = f"{self._host()}/browse/folders/{self.w.workspace.get_status(row['folder_path']).object_id}"
+            folder_url = f"{dev.host}/browse/folders/{self.client(dev).workspace.get_status(row['folder_path']).object_id}"
         except Exception:
             pass
-        return {**row, "dev_url": genie_url(self._host(), row.get("dev_space_id")),
-                "prod_url": genie_url(self._host(), row.get("prod_space_id")), "folder_url": folder_url}
+        return {**row, "dev_url": genie_url(dev.host, row.get("dev_space_id")),
+                "prod_url": genie_url(prod.host, row.get("prod_space_id")), "folder_url": folder_url,
+                "dev_workspace": dev.name, "prod_workspace": prod.name if row.get("prod_space_id") else None}
 
     # ── create ──────────────────────────────────────────────────────────────
 
@@ -193,6 +200,10 @@ class NoCodeMixin:
             raise ServiceError(400, "bad_mode", "genie_mode는 new·copy·move 중 하나입니다", "aops init")
         if not caller.token:
             raise ServiceError(401, "no_user_token", "내 권한으로 Genie를 만들 토큰이 없습니다 (Databricks App으로 열거나 CLI 로그인)", "aops init")
+        ws = self.require_dev(caller, "aops init")
+        if self.workspaces().configured:
+            self.registry_ready()
+        wc = self.client(ws)
 
         warehouse = (body.get("warehouse_id") or "").strip()
         definition = None
@@ -202,19 +213,24 @@ class NoCodeMixin:
                 raise ServiceError(409, "no_definition", "그 스페이스의 정의를 읽지 못했습니다. 내게 편집(CAN EDIT) 이상 권한이 있어야 복사할 수 있습니다", "aops init")
             definition = json.loads(source_space["serialized_space"])
             warehouse = warehouse or source_space.get("warehouse_id") or ""
-        warehouse = warehouse or self.config.warehouse_id
+        warehouse = warehouse or (self.config.warehouse_id if ws.home else ws.warehouse_id or "")
+        if not warehouse:  # a warehouse belongs to its workspace: the server's own is not there
+            raise ServiceError(400, "no_warehouse", f"{ws.name} 워크스페이스의 SQL warehouse를 고르세요", "aops init")
 
-        folder = self._agent_folder(agent_id)
-        self._share_folder(folder, caller.email, body.get("owner_group"))
+        folder = self._agent_folder(agent_id, wc)
+        self._share_folder(folder, caller.email, body.get("owner_group"), wc)
         spec = {"agent_id": agent_id, "name": (body.get("display_name") or "").strip() or agent_id, "build_type": "no_code",
                 "owner": caller.email, "owner_group": (body.get("owner_group") or "").strip(), "service_criticality": crit,
                 "data_sensitivity": sens, "security_level": (body.get("security_level") or "general").strip(),
                 "consumer_group": (body.get("consumer_group") or "").strip(), "description": description,
-                "approvers": ", ".join(a.strip() for a in body.get("approvers") or [] if a and a.strip())}
+                "approvers": ", ".join(a.strip() for a in body.get("approvers") or [] if a and a.strip()),
+                **({"target_workspace": body["target_workspace"].strip()} if (body.get("target_workspace") or "").strip() else {})}
+        if spec.get("target_workspace"):
+            self.target_of(spec, "no_code")
         notes = ("이 폴더의 Genie(개발용)를 고친 뒤 aops console에서 배포를 요청합니다. 배포 요청 때 이 파일과 개발용 정의를 "
                  "함께 스냅샷으로 떠서 평가하고, 승인되면 같은 내용이 운영용 Genie로 나갑니다. 위 항목은 여기서 고칠 수 있습니다.")
-        self.w.workspace.upload(f"{folder}/SPEC.md", io.BytesIO(render_spec(spec, notes).encode("utf-8")),
-                                format=ImportFormat.AUTO, overwrite=True)
+        wc.workspace.upload(f"{folder}/SPEC.md", io.BytesIO(render_spec(spec, notes).encode("utf-8")),
+                            format=ImportFormat.AUTO, overwrite=True)
 
         title = f"{spec['name']} (개발)"
         if mode == "move":
@@ -226,7 +242,7 @@ class NoCodeMixin:
             space_id, made = self._user_genie(caller, "POST", "/api/2.0/genie/spaces", payload, "만들기")["space_id"], True
 
         warnings = []
-        if not self._sp_reads(space_id):
+        if not self._sp_reads(space_id, wc):
             warnings.append("aops 서비스 주체가 개발용 정의를 아직 읽지 못합니다. 폴더 권한이 전해지는 데 시간이 걸릴 수 있습니다. "
                             "배포 요청 전에 [점검]으로 확인하세요")
         try:
@@ -235,22 +251,30 @@ class NoCodeMixin:
                  "'registered', parse_json(:spec), :by, current_timestamp(), current_timestamp())",
                  {"id": agent_id, "name": spec["name"], "desc": description, "owner": caller.email, "group": spec["owner_group"] or None,
                   "crit": crit, "sens": sens, "sec": spec["security_level"], "spec": spec, "by": caller.email}),
-                (f"INSERT INTO {self.sql.table('genie_agents')} VALUES (:id, :dev, NULL, :folder, :consumer, :wh, current_timestamp())",
-                 {"id": agent_id, "dev": space_id, "folder": folder, "consumer": spec["consumer_group"] or None, "wh": warehouse}),
+                self._genie_row(agent_id, space_id, folder, spec["consumer_group"] or None, warehouse, ws),
                 self._event_statement(agent_id, None, "create", caller.email,
                                       {"folder": folder, "dev_space_id": space_id, "genie_mode": mode, "source_space_id": source or None,
-                                       "tables": tables, "metric_views": metric_views}),
+                                       "tables": tables, "metric_views": metric_views,
+                                       **({"workspace": ws.name} if self.workspaces().configured else {})}),
             ])
         except Exception:
             if made:
                 try:
-                    self.w.genie.trash_space(space_id)  # the server can: the space is in its folder
+                    wc.genie.trash_space(space_id)  # the server can: the space is in its folder
                 except Exception:
                     pass
             raise
         return {"agent_id": agent_id, "type": "no_code", "folder_path": folder, "dev_space_id": space_id, "genie_mode": mode,
                 "warehouse_id": warehouse, "warnings": warnings, **{k: v for k, v in self.no_code_links(agent_id).items()
                                                                     if k in ("dev_url", "folder_url")}}
+
+    def _genie_row(self, agent_id: str, space_id: str, folder: str, consumer: str | None, warehouse: str,
+                   ws: Any) -> tuple[str, dict[str, Any]]:
+        many = self.workspaces().configured
+        return (f"INSERT INTO {self.sql.table('genie_agents')} ({GENIE_COLUMNS}{', dev_workspace' if many else ''}) "
+                f"VALUES (:id, :dev, NULL, :folder, :consumer, :wh, current_timestamp(){', :ws' if many else ''})",
+                {"id": agent_id, "dev": space_id, "folder": folder, "consumer": consumer, "wh": warehouse,
+                 **({"ws": self.stored(ws)} if many else {})})
 
     def _user_genie(self, caller: Caller, method: str, path: str, body: dict[str, Any] | None, what: str) -> dict[str, Any]:
         """A Genie call with the author's own token: their rights on the tables, warehouse and spaces apply.
@@ -265,30 +289,33 @@ class NoCodeMixin:
             self._me = self.w.current_user.me().user_name
         return self._me
 
-    def _agent_folder(self, agent_id: str) -> str:
+    def _agent_folder(self, agent_id: str, wc: Any = None) -> str:
         """<root>/<agent_id>, made by the service principal. Without rights on the shared root: its home folder."""
-        for root in (ROOT, f"/Workspace/Users/{self._service_user()}/aops/no-code"):
+        wc = wc or self.w
+        me = self._service_user() if wc is self.w else wc.current_user.me().user_name
+        for root in (ROOT, f"/Workspace/Users/{me}/aops/no-code"):
             path = f"{root}/{agent_id}"
             try:
-                self.w.workspace.mkdirs(path)
+                wc.workspace.mkdirs(path)
                 return path
             except Exception as error:
                 if "permission" not in str(error).lower() and "denied" not in str(error).lower():
                     raise
         raise ServiceError(500, "no_folder", "에이전트 폴더를 만들 곳이 없습니다", "aops admin setup --only grants")
 
-    def _share_folder(self, folder: str, email: str, group: str | None) -> None:
+    def _share_folder(self, folder: str, email: str, group: str | None, wc: Any = None) -> None:
         from databricks.sdk.service.workspace import WorkspaceObjectAccessControlRequest, WorkspaceObjectPermissionLevel
 
+        wc = wc or self.w
         acl = [WorkspaceObjectAccessControlRequest(user_name=email, permission_level=WorkspaceObjectPermissionLevel.CAN_MANAGE)]
         if group and group.strip():
             acl.append(WorkspaceObjectAccessControlRequest(group_name=group.strip(), permission_level=WorkspaceObjectPermissionLevel.CAN_MANAGE))
-        status = self.w.workspace.get_status(folder)
-        self.w.workspace.update_permissions("directories", str(status.object_id), access_control_list=acl)
+        status = wc.workspace.get_status(folder)
+        wc.workspace.update_permissions("directories", str(status.object_id), access_control_list=acl)
 
-    def _sp_reads(self, space_id: str) -> bool:
+    def _sp_reads(self, space_id: str, wc: Any = None) -> bool:
         try:
-            return bool(self.w.genie.get_space(space_id, include_serialized_space=True).serialized_space)
+            return bool((wc or self.w).genie.get_space(space_id, include_serialized_space=True).serialized_space)
         except Exception:
             return False
 
@@ -296,7 +323,7 @@ class NoCodeMixin:
 
     def _dev_definition(self, genie: dict[str, Any]) -> dict[str, Any]:
         try:
-            space = self.w.genie.get_space(genie["dev_space_id"], include_serialized_space=True)
+            space = self.client(genie.get("dev_workspace")).genie.get_space(genie["dev_space_id"], include_serialized_space=True)
         except Exception as error:
             raise ServiceError(409, "space_not_readable", f"개발용 Genie를 읽지 못했습니다 ({type(error).__name__}). "
                                "aops 에이전트 폴더 안에 있어야 서비스 주체가 읽습니다", "aops deploy") from error
@@ -310,7 +337,7 @@ class NoCodeMixin:
         from .sql import loads
 
         try:
-            return self.w.workspace.download(f"{genie['folder_path']}/SPEC.md").read().decode("utf-8")
+            return self.client(genie.get("dev_workspace")).workspace.download(f"{genie['folder_path']}/SPEC.md").read().decode("utf-8")
         except Exception:
             return render_spec(loads(agent.get("spec")) or {"agent_id": agent["agent_id"], "build_type": "no_code"})
 
@@ -369,12 +396,14 @@ class NoCodeMixin:
         gate_id = now_id()
         from .. import validate
 
-        approvers = validate.approvers_of(package.front_matter(snap["files"]["SPEC.md"].decode("utf-8", "replace")))
+        snap_spec = package.front_matter(snap["files"]["SPEC.md"].decode("utf-8", "replace"))
+        approvers = validate.approvers_of(snap_spec)
         self.check_someone_approves(caller, approvers, policy)
+        place = self.target_of(snap_spec, "no_code")
         detail = {"gate_id": gate_id, "upgrade_type": change, "snapshot_sha256": sha, "snapshot_path": snap["path"],
                   "approvers": approvers,
                   "definition_sha256": genie_rules.definition_hash(snap["definition"]), "dev_space_id": snap["genie"]["dev_space_id"],
-                  "diff": diff(snap["previous"], snap["definition"])}
+                  "diff": diff(snap["previous"], snap["definition"]), **self.target_detail(place)}
         self.sql.atomic([
             (f"INSERT INTO {self.sql.table('release_gates')} VALUES (:g, :a, :v, :by, :why, current_timestamp(), :up, :p, :vm, NULL, "
              ":am, :ch, :n, NULL, NULL, 'validating', NULL, NULL, current_timestamp())",
@@ -447,13 +476,15 @@ class NoCodeMixin:
                 raise RuntimeError("스냅샷이 배포 요청 때 해시와 다릅니다" if new else "버전 zip이 등록 때 해시와 다릅니다")
             definition = definition_of(files)
             spec = front_matter(files["SPEC.md"].decode("utf-8"))
-            prod_id, action = self._put_production_space(agent_id, genie, definition, spec)
-            live = self.w.genie.get_space(prod_id, include_serialized_space=True).serialized_space
+            place = self.workspace(gate.get("target_workspace"))
+            wc = self.client(place)
+            prod_id, action = self._put_production_space(agent_id, genie, definition, spec, place)
+            live = wc.genie.get_space(prod_id, include_serialized_space=True).serialized_space
             match = bool(live) and genie_rules.definition_hash(json.loads(live)) == genie_rules.definition_hash(definition)
             consumer = (spec.get("consumer_group") or genie.get("consumer_group") or "").strip()
             principals = [f"user:{agent['owner']}"] + [f"group:{g}" for g in dict.fromkeys(
                 x for x in (agent.get("owner_group"), consumer) if x)]
-            grants = self._grant_run(prod_id, principals)
+            grants = self._grant_run(prod_id, principals, wc)
             artifact = path
             if new:  # the version number is given now, when the snapshot reaches production
                 artifact = f"/Volumes/{self.config.catalog}/{self.config.schema}/{agent_id}/{version}.zip"
@@ -461,7 +492,8 @@ class NoCodeMixin:
             production = self.production(agent_id)
             previous = production["current_version"] if production else None
             kind = "rollback" if gate["upgrade_type"] == "rollback" else "deploy"
-            url = genie_url(self._host(), prod_id)
+            url = genie_url(place.host, prod_id)
+            many = self.workspaces().configured
             statements: list[tuple[str, dict[str, Any]]] = [
                 (f"UPDATE {self.sql.table('agent_versions')} SET status = 'retired' WHERE agent_id = :a AND status = 'production'", {"a": agent_id})]
             if new:
@@ -483,19 +515,18 @@ class NoCodeMixin:
                 statements.append((f"UPDATE {self.sql.table('agent_versions')} SET status = 'production' WHERE agent_id = :a AND version = :v",
                                    {"a": agent_id, "v": version}))
             statements += [
-                (f"MERGE INTO {self.sql.table('agent_production')} t USING (SELECT :a AS agent_id) s ON t.agent_id = s.agent_id "
-                 "WHEN MATCHED THEN UPDATE SET previous_version = t.current_version, current_version = :v, target = :t, updated_by = :by, "
-                 "updated_at = current_timestamp() WHEN NOT MATCHED THEN INSERT (agent_id, current_version, previous_version, target, updated_by, updated_at) "
-                 "VALUES (:a, :v, NULL, :t, :by, current_timestamp())",
-                 {"a": agent_id, "v": version, "t": prod_id, "by": gate["requester"]}),
+                self._production_statement(agent_id, version, prod_id, gate["requester"], place),
                 (f"UPDATE {self.sql.table('agents')} SET lifecycle = 'production', updated_at = current_timestamp() WHERE agent_id = :a", {"a": agent_id}),
-                (f"UPDATE {self.sql.table('genie_agents')} SET prod_space_id = :p, consumer_group = :c, updated_at = current_timestamp() WHERE agent_id = :a",
-                 {"a": agent_id, "p": prod_id, "c": consumer or None}),
+                (f"UPDATE {self.sql.table('genie_agents')} SET prod_space_id = :p, consumer_group = :c, "
+                 f"{'prod_workspace = :w, ' if many else ''}updated_at = current_timestamp() WHERE agent_id = :a",
+                 {"a": agent_id, "p": prod_id, "c": consumer or None, **({"w": self.stored(place)} if many else {})}),
                 (f"UPDATE {self.sql.table('deployments')} SET status = 'succeeded', target = :t, app_url = :u, detail = parse_json(:d), "
                  "ended_at = current_timestamp() WHERE deployment_id = :id",
-                 {"t": prod_id, "u": url, "d": {"space_action": action, "definition_match": match, "grants": grants}, "id": deployment_id}),
+                 {"t": prod_id, "u": url, "d": {"space_action": action, "definition_match": match, "grants": grants, **self.target_detail(place)},
+                  "id": deployment_id}),
                 self._event_statement(agent_id, version, kind, gate["requester"],
-                                      {"gate_id": gate_id, "previous": previous, "space_id": prod_id, "space_action": action}),
+                                      {"gate_id": gate_id, "previous": previous, "space_id": prod_id, "space_action": action,
+                                       **self.target_detail(place)}),
             ]
             statements += [self._event_statement(agent_id, version, "promote", "policy:deploy",
                                                  {"principal": g["principal"], "permission": "CAN_RUN", "granted": True, "space_id": prod_id})
@@ -514,26 +545,51 @@ class NoCodeMixin:
         return report
 
     def _put_production_space(self, agent_id: str, genie: dict[str, Any], definition: dict[str, Any],
-                              spec: dict[str, str]) -> tuple[str, str]:
-        """Update the production space (its id and history stay), or make it in the production folder."""
+                              spec: dict[str, str], place: Any = None) -> tuple[str, str]:
+        """Update the production space (its id and history stay), or make it in the production folder.
+
+        In another workspace than the dev space: the production folder is <root>/_production/<id> there and the
+        warehouse is that workspace's (a warehouse belongs to its workspace). A production space left in a workspace
+        that is no longer the production one stays as it was; a new one is made in the new place."""
+        place = place or self.workspace(None)
+        wc = self.client(place)
+        dev = self.workspace(genie.get("dev_workspace"))
+        here = place.host == dev.host
         serialized = json.dumps(definition, ensure_ascii=False)
         title, description = spec.get("name") or agent_id, spec.get("description") or None
-        warehouse = genie.get("warehouse_id") or self.config.warehouse_id
-        if genie.get("prod_space_id"):
+        warehouse = (genie.get("warehouse_id") or self.config.warehouse_id) if here else place.warehouse_id
+        if not warehouse:
+            raise RuntimeError(f"운영 워크스페이스 {place.name}의 SQL warehouse가 정책에 없습니다 (aops admin setup --workspace ...;warehouse=<ID>)")
+        moved = self.workspace(genie.get("prod_workspace")).host != place.host
+        if genie.get("prod_space_id") and not moved:
             try:
-                self.w.genie.update_space(genie["prod_space_id"], serialized_space=serialized, title=title,
-                                          description=description, warehouse_id=warehouse)
+                wc.genie.update_space(genie["prod_space_id"], serialized_space=serialized, title=title,
+                                      description=description, warehouse_id=warehouse)
                 return genie["prod_space_id"], "updated"
             except Exception as error:
                 if not any(word in str(error).lower() for word in ("not found", "does not exist", "not_found")):
                     raise
-        folder = production_folder(genie["folder_path"], agent_id)
-        self.w.workspace.mkdirs(folder)
-        space = self.w.genie.create_space(warehouse, serialized, title=title, description=description, parent_path=folder)
+        folder = production_folder(genie["folder_path"], agent_id) if here else self._production_root(agent_id, wc)
+        wc.workspace.mkdirs(folder)
+        space = wc.genie.create_space(warehouse, serialized, title=title, description=description, parent_path=folder)
         # kept right away: if a later step fails, the next deploy updates this space instead of making another
-        self.sql.run(f"UPDATE {self.sql.table('genie_agents')} SET prod_space_id = :p, updated_at = current_timestamp() WHERE agent_id = :a",
-                     {"a": agent_id, "p": space.space_id})
+        many = self.workspaces().configured
+        self.sql.run(f"UPDATE {self.sql.table('genie_agents')} SET prod_space_id = :p, {'prod_workspace = :w, ' if many else ''}"
+                     "updated_at = current_timestamp() WHERE agent_id = :a",
+                     {"a": agent_id, "p": space.space_id, **({"w": self.stored(place)} if many else {})})
         return space.space_id, "created"
+
+    def _production_root(self, agent_id: str, wc: Any) -> str:
+        """<root>/_production/<id> in the production workspace (admin setup makes the root there), else the service
+        principal's home folder in it."""
+        for root in (ROOT, f"/Workspace/Users/{wc.current_user.me().user_name}/aops/no-code"):
+            try:
+                wc.workspace.mkdirs(f"{root}/{PRODUCTION}")
+                return f"{root}/{PRODUCTION}/{agent_id}"
+            except Exception as error:
+                if "permission" not in str(error).lower() and "denied" not in str(error).lower():
+                    raise
+        raise RuntimeError("운영 워크스페이스에 운영용 Genie 폴더를 만들 곳이 없습니다 (aops admin setup --only grants를 그 워크스페이스에서)")
 
     def _write_once(self, path: str, data: bytes, sha: str) -> None:
         try:
@@ -545,15 +601,17 @@ class NoCodeMixin:
             if package.files_sha256(list(package.read(self.w.files.download(path).contents.read()).items())) != sha:
                 raise RuntimeError(f"{path}가 이미 있고 내용이 다릅니다") from error
 
-    def _grant_run(self, space_id: str, principals: list[str]) -> list[dict[str, Any]]:
-        """CAN RUN on the production space for each principal; a failure is reported, not raised (aops promote retries)."""
+    def _grant_run(self, space_id: str, principals: list[str], wc: Any = None) -> list[dict[str, Any]]:
+        """CAN RUN on the production space for each principal; a failure is reported, not raised (aops promote retries).
+        Someone not assigned to the production workspace cannot be given it: the error says so."""
         from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
 
+        wc = wc or self.w
         results = []
         for principal in principals:
             key, who = principal_of(principal)
             try:
-                self.w.permissions.update("genie", space_id, access_control_list=[
+                wc.permissions.update("genie", space_id, access_control_list=[
                     AccessControlRequest(**{key: who}, permission_level=PermissionLevel.CAN_RUN)])
                 results.append({"principal": principal, "granted": True})
             except Exception as error:
@@ -568,17 +626,18 @@ class NoCodeMixin:
         from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
 
         space_id = production["target"]
+        wc = self.client(production.get("workspace"))
         grants = []
         for principal in principals:
             key, who = principal_of(principal)
             if revoke:
-                current = self.w.permissions.get("genie", space_id).access_control_list or []
+                current = wc.permissions.get("genie", space_id).access_control_list or []
                 keep = [AccessControlRequest(**{k: getattr(a, k) for k in ("group_name", "user_name", "service_principal_name") if getattr(a, k)},
                                              permission_level=PermissionLevel(p.permission_level.value))
                         for a in current if getattr(a, key) != who for p in (a.all_permissions or [])[:1] if not p.inherited]
-                self.w.permissions.set("genie", space_id, access_control_list=keep)
+                wc.permissions.set("genie", space_id, access_control_list=keep)
             else:
-                self.w.permissions.update("genie", space_id, access_control_list=[
+                wc.permissions.update("genie", space_id, access_control_list=[
                     AccessControlRequest(**{key: who}, permission_level=PermissionLevel.CAN_RUN)])
             grants.append({"agent_id": agent_id, "securable": f"genie:{space_id}", "principal": principal, "permission": "CAN_RUN",
                            "granted": not revoke})
@@ -592,4 +651,4 @@ class NoCodeMixin:
             raise ServiceError(409, "no_production", "운영 버전이 없습니다. 먼저 배포를 요청하세요", "aops load")
         self.event(agent_id, production["current_version"], "load", caller.email, {"space_id": production["target"]})
         return {"agent_id": agent_id, "build_type": "no_code", "version": production["current_version"],
-                "link": genie_url(self._host(), production["target"]), "allowed": True, "archive": None}
+                "link": genie_url(self.workspace(production.get("workspace")).host, production["target"]), "allowed": True, "archive": None}

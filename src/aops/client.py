@@ -47,15 +47,25 @@ class Server:
         return WorkspaceClient().apps.get(self.app)
 
     def _headers(self) -> dict[str, str]:
+        """The login, and for a server outside Databricks Apps the workspace the token belongs to (X-Aops-Workspace):
+        such a server takes tokens of every workspace in its policy and checks each where it came from."""
         from databricks.sdk import WorkspaceClient
 
+        outside = "databricksapps.com" not in urllib.parse.urlparse(self.url).netloc
         if not self.notebook:
-            return WorkspaceClient(profile=self.profile).config.authenticate()
-        if "databricksapps.com" not in urllib.parse.urlparse(self.url).netloc:
-            return WorkspaceClient().config.authenticate()  # a server outside Apps checks the notebook's own token
+            client = WorkspaceClient(profile=self.profile)
+            return {**client.config.authenticate(), **(self._workspace(client) if outside else {})}
+        if outside:
+            client = WorkspaceClient()
+            return {**client.config.authenticate(), **self._workspace(client)}  # the notebook's own token, checked there
         if self._token is None:
             self._token = notebook_app_token(self._app().oauth2_app_client_id)
         return {"Authorization": f"Bearer {self._token}"}
+
+    @staticmethod
+    def _workspace(client: Any) -> dict[str, str]:
+        host = (getattr(client.config, "host", None) or "").rstrip("/")
+        return {"X-Aops-Workspace": host} if host else {}
 
     def request(self, method: str, path: str, *, body: Any = None, data: bytes | None = None,
                 content_type: str | None = None, raw: bool = False) -> Any:

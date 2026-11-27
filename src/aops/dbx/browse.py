@@ -92,6 +92,9 @@ class BrowseMixin:
         body = self._user_api(caller, "GET", "/api/2.0/sql/warehouses", None, "SQL warehouse 목록", scope=WAREHOUSE_SCOPE,
                               command="aops init", code="list_failed")
         default = getattr(getattr(self, "config", None), "warehouse_id", None)
+        if caller.host and hasattr(self, "caller_workspace"):  # another workspace: its own warehouse is the default
+            ws = self.caller_workspace(caller)
+            default = default if ws.home else ws.warehouse_id
         items = sorted(({"id": w["id"], "name": w.get("name") or w["id"], "state": w.get("state"), "size": w.get("cluster_size"),
                          "serverless": bool(w.get("enable_serverless_compute")), "default": w["id"] == default}
                         for w in body.get("warehouses") or []), key=lambda w: (not w["default"], not w["serverless"], w["name"]))
@@ -104,7 +107,8 @@ class BrowseMixin:
         out = []
         for name in list(dict.fromkeys(tables))[:30]:
             quoted = urllib.parse.quote(name, safe="")
-            mine = self._as_user(caller.token, "GET", f"/api/2.1/unity-catalog/tables/{quoted}?include_browse=false") if caller.token else {"status": 401}
+            mine = (self._as_user(caller.token, "GET", f"/api/2.1/unity-catalog/tables/{quoted}?include_browse=false", host=caller.host)
+                    if caller.token else {"status": 401})
             if mine.get("status") != 200:
                 out.append({"full_name": name, "status": "unknown", "detail": "내 권한으로 볼 수 없는 테이블이라 확인하지 않았습니다"})
                 continue
