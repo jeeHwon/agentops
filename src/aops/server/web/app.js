@@ -59,6 +59,66 @@ const fill = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((
 const enc = encodeURIComponent;
 const short = (sha) => (sha ? sha.slice(0, 12) : "");
 
+// ── icons: small line drawings in one style (24×24, stroke), drawn here so the console needs nothing from outside ──
+// A part is a path ("M…"), a circle ("c cx,cy,r") or a rectangle ("r x,y,w,h,rx"); parts are split by "|".
+const SVGNS = "http://www.w3.org/2000/svg";
+const ICONS = {
+  grid: "r3,3,7,7,1.5|r14,3,7,7,1.5|r3,14,7,7,1.5|r14,14,7,7,1.5",
+  inbox: "M3 13h5l1.5 3h5l1.5-3h5|M5.5 5h13l2.5 8v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z",
+  upload: "M12 15V4|M7.5 8.5 12 4l4.5 4.5|M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3",
+  download: "M12 4v11|M7.5 10.5 12 15l4.5-4.5|M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3",
+  sparkle: "M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z|M18.5 16v4|M16.5 18h4",
+  sliders: "M4 7h9|M17 7h3|c15,7,2|M4 17h3|M11 17h9|c9,17,2",
+  help: "c12,12,9|M9.6 9.4a2.5 2.5 0 1 1 3.4 2.4c-.6.3-1 .8-1 1.5v.4|M12 17h.01",
+  compass: "c12,12,9|M15.5 8.5l-2 5-5 2 2-5z",
+  terminal: "r3,4,18,16,2|M7 9.5l3 2.5-3 2.5|M13 15h4",
+  plus: "M12 5v14|M5 12h14",
+  edit: "M4 20h4L19 9l-4-4L4 16z|M13.5 6.5l4 4",
+  check: "M5 12.5l4.5 4.5L19 7.5",
+  x: "M6 6l12 12|M18 6 6 18",
+  alert: "M12 4 21 20H3z|M12 10v4|M12 17h.01",
+  info: "c12,12,9|M12 11v5|M12 8h.01",
+  checklist: "r5,4,14,17,2|r9,2.5,6,3,1|M9 13l2 2 4-4",
+  package: "M3.5 7.5 12 3.5l8.5 4v9L12 20.5l-8.5-4z|M3.5 7.5 12 11.5l8.5-4|M12 11.5v9",
+  flask: "M9.5 3h5|M10.5 3v6L5 18.6A1.6 1.6 0 0 0 6.4 21h11.2a1.6 1.6 0 0 0 1.4-2.4L13.5 9V3|M7.5 15h9",
+  send: "M21 3 3 10.5l7.5 3L13.5 21z|M21 3 10.5 13.5",
+  shield: "M12 3l8 3v6c0 4.4-3.3 7.9-8 9-4.7-1.1-8-4.6-8-9V6z|M8.5 12l2.5 2.5 4.5-5",
+  key: "c8,15,4|M11 12l8.5-8.5|M16.5 6.5l2.5 2.5|M14 9l2 2",
+  live: "c12,12,2|M8 8a5.7 5.7 0 0 0 0 8|M16 8a5.7 5.7 0 0 1 0 8|M5.2 5.2a9.6 9.6 0 0 0 0 13.6|M18.8 5.2a9.6 9.6 0 0 1 0 13.6",
+  external: "M14 4h6v6|M20 4l-9 9|M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
+  search: "c11,11,7|M20 20l-4-4",
+  logout: "M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3|M10 16l-4-4 4-4|M6 12h10",
+  folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  doc: "M6 3h8l4 4v14H6z|M14 3v4h4|M9 12h6|M9 16h6",
+  code: "M8 7l-5 5 5 5|M16 7l5 5-5 5|M13.5 5l-3 14",
+  chat: "M4 5h16v11H9l-5 4z|M8 9.5h8|M8 12.5h5",
+  arrow: "M5 12h14|M13 6l6 6-6 6",
+  back: "M19 12H5|M11 6l-6 6 6 6",
+  undo: "M9 14 4 9l5-5|M4 9h10a6 6 0 0 1 0 12h-3",
+  clock: "c12,12,9|M12 7v5l3 2",
+  layers: "M12 3 3 8l9 5 9-5z|M3 13l9 5 9-5",
+  pointer: "M6 3l13 7-5.5 1.8L11 17.5z",
+  flag: "M5 21V4|M5 4h11l-2 4 2 4H5",
+};
+function icon(name, size = 16, cls = "") {
+  const make = (tag, attrs) => {
+    const el = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    return el;
+  };
+  const svg = make("svg", { viewBox: "0 0 24 24", width: size, height: size, fill: "none", stroke: "currentColor", "stroke-width": 1.9,
+    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", class: `ico-svg ${cls}`.trim() });
+  for (const part of (ICONS[name] || ICONS.info).split("|")) {
+    const n = part.slice(1).split(",").map(Number);
+    svg.append(part[0] === "c" ? make("circle", { cx: n[0], cy: n[1], r: n[2] })
+      : part[0] === "r" ? make("rect", { x: n[0], y: n[1], width: n[2], height: n[3], rx: n[4] || 0 }) : make("path", { d: part }));
+  }
+  return svg;
+}
+// An empty list: an icon, what is missing, a hint, and the one thing to do about it
+const empty = (ico, title, text = "", action = null) => h("div", { class: "empty" }, h("div", { class: "empty-ico" }, icon(ico, 22)), h("b", {}, title),
+  text ? h("div", {}, text) : null, action);
+
 function when(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -84,13 +144,16 @@ const LABEL = {
   git: { synced: ["Git", "ok"], failed: ["Git 실패", "bad"], skipped: ["Git 건너뜀", "warn"] },
 };
 const BUILD = { skill: "스킬", code: "코드", no_code: "노코드" };
-// One name and one mark per action, everywhere (screens, buttons, steps): the same words as the CLI commands
+// One name and one icon per action, everywhere (screens, buttons, steps): the same words as the CLI commands
 const ACT = {
-  edit: ["✎", "개발"], selfcheck: ["✓", "셀프 체크"], register: ["↑", "등록"], evaluate: ["◆", "평가"],
-  deploy: ["▶", "배포 요청"], approve: ["✔", "승인"], promote: ["⚑", "권한"], load: ["↓", "가져오기"],
+  edit: ["edit", "개발"], selfcheck: ["checklist", "셀프 체크"], register: ["package", "등록"], evaluate: ["flask", "평가"],
+  deploy: ["send", "배포 요청"], approve: ["shield", "승인"], promote: ["key", "권한"], load: ["download", "가져오기"],
 };
-const act = (key, extra = "") => `${ACT[key][0]} ${ACT[key][1]}${extra}`;
-const kindTag = (kind) => h("span", { class: `kind k-${kind}` }, BUILD[kind] || kind);
+const act = (key, extra = "") => [icon(ACT[key][0]), `${ACT[key][1]}${extra}`];
+const actText = (key) => ACT[key][1];
+const STEP_ICON = { edit: "edit", selfcheck: "checklist", register: "package", evaluate: "flask", approve: "shield", deploy: "live" };
+const KIND_ICON = { skill: "doc", code: "code", no_code: "chat" };
+const kindTag = (kind) => h("span", { class: `kind k-${kind}` }, icon(KIND_ICON[kind] || "doc", 13), BUILD[kind] || kind);
 const cli = (command) => h("span", { class: "cli", title: "같은 일을 하는 CLI 명령" }, command);
 // One word for the last evaluation: a run that did not pass says so; otherwise its content review decides
 function evalBadge(status, verdict) {
@@ -107,9 +170,9 @@ const MODE = { mandatory: "필수", optional: "선택", exempt: "면제", requir
 const RANK = { fail: 0, unchecked: 1, warn: 2, pass: 3, na: 4 };  // the report lists problems first
 const RECOMMEND = { approve: "승인해도 됨", changes: "고친 뒤 다시 요청", reject: "내보내지 말 것" };
 
-function segment(options, value, set) {  // a row of buttons; one is on
+function segment(options, value, set, tour = null) {  // a row of buttons; one is on (`tour` marks each for the tutorial)
   const box = h("div", { class: "seg" });
-  options.forEach(([v, label]) => box.append(h("button", { type: "button", class: v === value ? "on" : "", onclick: (e) => {
+  options.forEach(([v, label]) => box.append(h("button", { type: "button", class: v === value ? "on" : "", "data-tour": tour ? `${tour}-${v}` : null, onclick: (e) => {
     box.querySelectorAll("button").forEach((b) => b.classList.remove("on")); e.currentTarget.classList.add("on"); set(v);
   } }, label)));
   return box;
@@ -157,7 +220,7 @@ function modal(title, body, buttons = [], { wide = false } = {}) {
   const bodyEl = h("div", { class: "body" }, body);
   const back = h("div", { class: "backdrop", onclick: (e) => { if (e.target === back) close(); } },
     h("div", { class: `modal ${wide ? "wide" : ""}` },
-      h("header", {}, h("h2", {}, title), h("button", { class: "btn ghost", onclick: close, "aria-label": "닫기" }, "✕")),
+      h("header", {}, h("h2", {}, title), h("button", { class: "btn ghost", onclick: close, "aria-label": "닫기" }, icon("x", 18))),
       bodyEl,
       buttons.length ? foot : null));
   document.body.append(back);
@@ -177,38 +240,42 @@ async function download(path, filename) {
 // ── layout ─────────────────────────────────────────────────────────────────
 
 const NAV = [
-  ["작업", [["agents", "▦", "에이전트"], ["gates", "✔", "배포 요청함"]]],
-  ["도구", [["register", "↑", "폴더·zip 등록"], ["genie", "◇", "Genie 점검"]]],
-  ["관리", [["policy", "⚙", "정책·평가 프롬프트"]]],
-  ["도움말", [["guide", "?", "CLI·Genie Code"]]],
+  ["작업", [["agents", "grid", "에이전트"], ["gates", "inbox", "배포 요청함"]]],
+  ["도구", [["register", "upload", "폴더·zip 등록"], ["genie", "sparkle", "Genie 점검"]]],
+  ["관리", [["policy", "sliders", "정책·평가 프롬프트"]]],
+  ["도움말", [["help", "compass", "튜토리얼·가이드"], ["guide", "terminal", "CLI·Genie Code"]]],
 ];
+const ROLE = { developer: "개발자", approver: "승인자", admin: "관리자" };
 
 function layout(active, crumbs, content) {
   const nav = h("nav", { class: "nav" },
-    h("a", { href: "#/new", class: `new-btn ${active === "new" ? "active" : ""}` }, "+ 새 에이전트"),
+    h("a", { href: "#/new", class: `new-btn ${active === "new" ? "active" : ""}`, "data-tour": "nav-new" }, icon("plus", 16), "새 에이전트"),
     NAV.map(([group, items]) => [h("div", { class: "nav-group" }, group), items.map(([key, ico, label]) =>
-      h("a", { href: `#/${key}`, class: active === key ? "active" : "" }, h("span", { class: "ico" }, ico), label,
+      h("a", { href: `#/${key}`, class: active === key ? "active" : "", "data-tour": `nav-${key}` }, h("span", { class: "ico" }, icon(ico, 18)), label,
         key === "gates" && state.toApprove ? h("span", { class: "count", title: "내가 승인할 요청" }, state.toApprove) : null))]));
   const me = state.me;
   const side = h("aside", { class: "side" },
-    h("div", { class: "brand" }, h("div", { class: "logo" }, "ao"), h("div", {}, "aops", h("small", {}, "AgentOps console"))),
+    h("a", { class: "brand", href: "#/agents" }, h("div", { class: "logo" }, "ao"), h("div", {}, "aops", h("small", {}, "AgentOps console"))),
     nav,
     h("div", { class: "side-foot" },
-      me ? [h("div", { class: "user" }, me.user), h("div", {}, me.roles.map((r) => ({ developer: "개발자", approver: "승인자", admin: "관리자" })[r]).join(" · ")),
-        me.login === "oauth" ? h("a", { href: "#", class: "logout", onclick: async (e) => {
-          e.preventDefault();
-          await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => null);
-          location.href = "/auth/signed-out";
-        } }, "로그아웃") : null] : null,
-      state.version ? h("div", { style: "margin-top:6px" }, `aops ${state.version.aops} · ${state.version.edition}`) : null));
+      me ? h("div", { class: "who" }, h("span", { class: "avatar" }, (me.user || "?").slice(0, 1).toUpperCase()),
+        h("div", { class: "who-t" }, h("div", { class: "user", title: me.user }, me.user), h("div", { class: "muted" }, me.roles.map((r) => ROLE[r] || r).join(" · ")))) : null,
+      me && me.login === "oauth" ? h("a", { href: "#", class: "logout", onclick: async (e) => {
+        e.preventDefault();
+        await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => null);
+        location.href = "/auth/signed-out";
+      } }, icon("logout", 14), "로그아웃") : null,
+      state.version ? h("div", { class: "ver" }, `aops ${state.version.aops} · ${state.version.edition}`) : null));
   const top = h("div", { class: "topbar" }, h("div", { class: "crumbs" }, crumbs), h("div", { class: "spacer" }),
-    h("a", { class: "btn small ghost", href: `${API}/docs`, target: "_blank" }, "API 문서 ↗"));
+    h("button", { class: "btn small ghost help-btn", "data-tour": "help-btn", "aria-haspopup": "menu", onclick: (e) => openHelpMenu(e.currentTarget) }, icon("help", 16), "도움말"),
+    h("a", { class: "btn small ghost subtle", href: `${API}/docs`, target: "_blank" }, icon("doc", 15), "API 문서"));
   return h("div", { class: "shell" }, side, h("div", { class: "main" }, top, h("div", { class: "page" }, content)));
 }
 
-// Title, one line under it, the CLI command for the same thing, and the page's actions on the right
-function pageHead(title, sub, actions = [], command = null) {
+// Title (with the screen's icon), one line under it, the CLI command for the same thing, and the page's actions on the right
+function pageHead(title, sub, actions = [], command = null, ico = null) {
   return h("div", { class: "page-head" },
+    ico ? h("div", { class: "head-ico" }, icon(ico, 20)) : null,
     h("div", { class: "title" }, h("h1", {}, title), sub || command ? h("div", { class: "sub" }, sub || "", command ? cli(command) : null) : null),
     h("div", { class: "actions" }, actions));
 }
@@ -223,7 +290,7 @@ function route() {
 
 async function render() {
   for (const t of [...state.timers]) t.stop();
-  document.querySelectorAll(".backdrop").forEach((b) => b.remove());
+  document.querySelectorAll(".backdrop, .menu-pop").forEach((b) => b.remove());
   const { parts, params } = route();
   const app = document.getElementById("app");
   const show = (active, crumbs, content) => app.replaceChildren(layout(active, crumbs, content));
@@ -242,6 +309,7 @@ async function render() {
       case "new": show("new", [h("b", {}, "새 에이전트")], body); newPage(body, params); break;
       case "genie": show("genie", [h("b", {}, "Genie 점검")], body); geniePage(body, params); break;
       case "policy": show("policy", [h("b", {}, "정책·평가 프롬프트")], body); await policyPage(body); break;
+      case "help": show("help", [h("b", {}, "튜토리얼·가이드")], body); helpPage(body); break;
       case "guide": show("guide", [h("b", {}, "CLI·Genie Code")], body); await guidePage(body); break;
       default: location.hash = "#/agents";
     }
@@ -270,7 +338,7 @@ async function agentsPage(root) {
       (!q || `${a.agent_id} ${a.name} ${a.description || ""} ${a.owner}`.toLowerCase().includes(q)));
     table.replaceChildren(rows.length ? h("table", { class: "data" },
       h("thead", {}, h("tr", {}, ["에이전트", "종류", "운영", "최신", "마지막 평가", "진행 중", "담당"].map((t) => h("th", {}, t)))),
-      h("tbody", {}, rows.map((a) => h("tr", { class: "click", onclick: () => { location.hash = `#/agents/${enc(a.agent_id)}`; } },
+      h("tbody", {}, rows.map((a, i) => h("tr", { class: "click", "data-tour": i === 0 ? "agent-row" : null, onclick: () => { location.hash = `#/agents/${enc(a.agent_id)}`; } },
         h("td", {}, h("div", { class: "cell-main" }, a.name || a.agent_id),
           h("div", { class: "cell-sub" }, [a.name && a.name !== a.agent_id ? a.agent_id : null, a.description].filter(Boolean).join(" · "))),
         h("td", {}, kindTag(a.build_type)),
@@ -279,22 +347,25 @@ async function agentsPage(root) {
         h("td", {}, evalBadge(a.last_validation, a.last_review)),
         h("td", {}, a.pending_gates ? h("span", { class: "badge warn" }, `${a.pending_gates}건`) : h("span", { class: "muted" }, "–")),
         h("td", {}, h("div", {}, a.owner), h("div", { class: "cell-sub" }, when(a.updated_at)))))))
-      : h("div", { class: "empty" }, h("b", {}, items.length ? "조건에 맞는 에이전트가 없습니다" : "아직 에이전트가 없습니다"),
-        items.length ? "" : h("a", { class: "btn primary mt", href: "#/new" }, "+ 새 에이전트")));
+      : empty("grid", items.length ? "조건에 맞는 에이전트가 없습니다" : "아직 에이전트가 없습니다",
+        items.length ? "찾는 말이나 종류·상태를 바꿔 보세요" : "새 에이전트로 첫 에이전트를 만들어 보세요",
+        items.length ? null : h("a", { class: "btn primary mt", href: "#/new" }, icon("plus"), "새 에이전트")));
   };
   const mineOpen = mine.items.filter((g) => ["validating", "pending_approval"].includes(g.decision)).length;
   const toFix = items.filter(needsFix).length;
-  const todo = (n, label, hint, href, cls) => h("a", { class: `todo ${n ? cls : "zero"}`, href }, h("div", { class: "n" }, n), h("div", {}, h("b", {}, label), h("div", { class: "muted" }, hint)));
+  const todo = (n, label, hint, href, cls, ico) => h("a", { class: `todo ${n ? cls : "zero"}`, href },
+    h("span", { class: "todo-ico" }, icon(ico, 18)), h("div", { class: "grow" }, h("div", { class: "label" }, label), h("div", { class: "n" }, n), h("div", { class: "hint" }, hint)));
   root.replaceChildren(
-    pageHead("에이전트", "레지스트리에 있는 에이전트", [h("a", { class: "btn primary", href: "#/new" }, "+ 새 에이전트")], "aops list"),
-    h("div", { class: "todos" },
-      todo(state.toApprove, "승인할 요청", "내가 리포트를 보고 결정할 것", "#/gates?tab=approve", "warn"),
-      todo(mineOpen, "진행 중인 내 요청", "평가 중이거나 승인을 기다림", "#/gates?tab=mine", "info"),
-      todo(toFix, "고칠 에이전트", "마지막 평가가 실패했거나 부적합", "#/agents?filter=fix", "bad"),
-      todo(items.filter((a) => a.production_version).length, "운영 중", `전체 ${items.length}개 중`, "#/agents?filter=production", "ok")),
+    pageHead("에이전트", "레지스트리에 있는 에이전트", [h("a", { class: "btn primary", href: "#/new" }, icon("plus"), "새 에이전트")], "aops list", "grid"),
+    welcomeCard(),
+    h("div", { class: "todos", "data-tour": "todos" },
+      todo(state.toApprove, "승인할 요청", "내가 리포트를 보고 결정할 것", "#/gates?tab=approve", "warn", "shield"),
+      todo(mineOpen, "진행 중인 내 요청", "평가 중이거나 승인을 기다림", "#/gates?tab=mine", "info", "clock"),
+      todo(toFix, "고칠 에이전트", "마지막 평가가 실패했거나 부적합", "#/agents?filter=fix", "bad", "alert"),
+      todo(items.filter((a) => a.production_version).length, "운영 중", `전체 ${items.length}개 중`, "#/agents?filter=production", "ok", "live")),
     h("div", { class: "card mt" },
       h("div", { class: "toolbar", style: "padding:12px 14px 0" },
-        h("input", { type: "search", placeholder: "이름·ID·설명·담당으로 찾기", oninput: (e) => { q = e.target.value.toLowerCase(); draw(); } }),
+        h("label", { class: "search" }, icon("search", 15), h("input", { type: "search", placeholder: "이름·ID·설명·담당으로 찾기", oninput: (e) => { q = e.target.value.toLowerCase(); draw(); } })),
         segment([["", "모든 종류"], ["skill", "스킬"], ["code", "코드"], ["no_code", "노코드"]], type, (v) => { type = v; draw(); }),
         segment([["", "모든 상태"], ["production", "운영 중"], ["registered", "등록됨"], ["fix", "고칠 것"]], life, (v) => { life = v; draw(); })),
       table));
@@ -324,7 +395,7 @@ async function agentPage(root, id, params) {
   const appUrl = deploys ? (deploys.items.find((d) => d.status === "succeeded" && d.app_url) || {}).app_url || null : null;
   const openGate = gates.items.find((g) => ["validating", "pending_approval"].includes(g.decision));
   const lastGate = gates.items[0];
-  const link = (url, text) => url ? h("a", { href: url, target: "_blank" }, `${text} ↗`) : h("span", { class: "muted" }, "–");
+  const link = (url, text) => url ? h("a", { class: "ext", href: url, target: "_blank" }, text, icon("external", 12)) : h("span", { class: "muted" }, "–");
   const only = isOwner ? "" : "담당자·담당 팀만";
 
   // the lifecycle at a glance: where this agent is, and the one action of each step
@@ -351,11 +422,11 @@ async function agentPage(root, id, params) {
       text: agent.production_version ? `운영 ${agent.production_version}` : "아직 운영 버전 없음",
       act: kind === "code" ? link(appUrl, "운영 앱") : noCode ? link(nc && nc.prod_url, "운영용 Genie") : agent.production_version ? h("span", { class: "muted" }, "UC Skill") : null },
   ];
-  const stepper = h("ol", { class: "lifecycle" }, steps.map((st, n) => h("li", { class: `st ${st.state}` },
-    h("div", { class: "dot" }, st.state === "done" ? "✓" : st.state === "bad" ? "!" : n + 1),
+  const stepper = h("ol", { class: "lifecycle", "data-tour": "lifecycle" }, steps.map((st) => h("li", { class: `st ${st.state}`, "data-tour": `step-${st.key}` },
+    h("div", { class: "dot" }, icon(st.state === "done" ? "check" : st.state === "bad" ? "alert" : STEP_ICON[st.key], 15)),
     h("div", { class: "body" }, h("div", { class: "t" }, st.title), h("div", { class: "s" }, st.text), st.act ? h("div", { class: "a" }, st.act) : null))));
 
-  const info = h("div", { class: "card pad" },
+  const info = h("div", { class: "card pad", "data-tour": "agent-info" },
     h("dl", { class: "kv two-col" },
       h("dt", {}, "담당"), h("dd", {}, agent.owner, agent.owner_group ? h("span", { class: "muted" }, ` · ${agent.owner_group}`) : null),
       h("dt", {}, "지정 승인자"), h("dd", {}, agent.approvers.length ? agent.approvers.join(", ") : h("span", { class: "muted" }, "없음 (정책의 승인 그룹)")),
@@ -367,12 +438,13 @@ async function agentPage(root, id, params) {
         : [h("dt", {}, "작업 폴더"), h("dd", {}, ws ? (ws.folder_url ? link(ws.folder_url, ws.workspace_path) : h("span", { class: "mono" }, ws.workspace_path)) : h("span", { class: "muted" }, "PC (폴더·zip으로 등록)"))],
       h("dt", {}, "내 권한"), h("dd", {}, isOwner ? `담당자 (개발·${noCode ? "" : "등록·"}평가·배포 요청·권한)` : "보기 · 운영 버전 가져오기")));
 
-  const tabs = [["versions", "버전", versions.items.length], ["checks", "평가"], ["gates", "배포 요청", gates.items.length], ["deploys", "배포"], ["events", "이력"]];
+  const tabs = [["versions", "버전", versions.items.length, "layers"], ["checks", "평가", undefined, "flask"], ["gates", "배포 요청", gates.items.length, "send"],
+    ["deploys", "배포", undefined, "live"], ["events", "이력", undefined, "clock"]];
   let tab = params.get("tab") || "versions";
   const pane = h("div", {});
-  const tabBar = h("div", { class: "tabs" });
-  const drawTabs = () => tabBar.replaceChildren(...tabs.map(([key, label, n]) => h("button", { class: key === tab ? "on" : "", onclick: () => { tab = key; drawTabs(); loadTab(); } },
-    label, n !== undefined ? h("span", { class: "n" }, n) : null)));
+  const tabBar = h("div", { class: "tabs", "data-tour": "agent-tabs" });
+  const drawTabs = () => tabBar.replaceChildren(...tabs.map(([key, label, n, ico]) => h("button", { class: key === tab ? "on" : "", onclick: () => { tab = key; drawTabs(); loadTab(); } },
+    icon(ico, 15), label, n !== undefined ? h("span", { class: "n" }, n) : null)));
   const loadTab = async () => {
     pane.replaceChildren(h("div", { class: "loading" }, h("span", { class: "spinner" })));
     try {
@@ -385,12 +457,13 @@ async function agentPage(root, id, params) {
   };
   root.replaceChildren(
     h("div", { class: "page-head" },
+      h("div", { class: `head-ico kind-ico k-${kind}` }, icon(KIND_ICON[kind] || "doc", 20)),
       h("div", { class: "title" }, h("div", { class: "row" }, h("h1", {}, agent.name || agent.agent_id), kindTag(kind), badge("lifecycle", agent.lifecycle)),
         h("div", { class: "sub" }, [agent.name && agent.name !== agent.agent_id ? agent.agent_id : null, agent.description].filter(Boolean).join(" · "))),
       h("div", { class: "actions" },
-        h("button", { class: "btn", disabled: noCode ? !agent.production_version : !latest, onclick: () => openLoad(agent) }, act("load")),
-        h("button", { class: "btn", disabled: !agent.production_version || !isOwner, title: only, onclick: () => openPromote(agent) }, act("promote")),
-        h("button", { class: "btn primary", disabled: !isOwner || (!noCode && !latest), title: only || (!noCode && !latest ? "먼저 등록하세요" : ""),
+        h("button", { class: "btn", "data-tour": "act-load", disabled: noCode ? !agent.production_version : !latest, onclick: () => openLoad(agent) }, act("load")),
+        h("button", { class: "btn", "data-tour": "act-promote", disabled: !agent.production_version || !isOwner, title: only, onclick: () => openPromote(agent) }, act("promote")),
+        h("button", { class: "btn primary", "data-tour": "act-deploy", disabled: !isOwner || (!noCode && !latest), title: only || (!noCode && !latest ? "먼저 등록하세요" : ""),
           onclick: () => openDeploy(id, versions.items, agent.production_version, null, kind) }, act("deploy")))),
     h("div", { class: "card pad" }, stepper),
     h("div", { class: "mt" }, info),
@@ -401,7 +474,7 @@ async function agentPage(root, id, params) {
 
 function versionsTab(agent, versions) {
   const noCode = agent.build_type === "no_code";
-  if (!versions.length) return h("div", { class: "empty" }, h("b", {}, "버전이 없습니다"),
+  if (!versions.length) return empty("layers", "버전이 없습니다",
     noCode ? "노코드는 배포가 성공할 때 버전이 생깁니다 (처음 1.0.0, 데이터 소스가 바뀌면 major, 그 밖은 minor)." : "");
   const prodIndex = versions.findIndex((v) => v.status === "production");
   return h("table", { class: "data" },
@@ -412,12 +485,12 @@ function versionsTab(agent, versions) {
       h("td", { style: "max-width:280px" }, v.note || h("span", { class: "muted" }, "–")),
       h("td", {}, h("div", {}, v.registered_by || ""), h("div", { class: "cell-sub" }, when(v.registered_at || v.created_at))),
       h("td", {}, h("div", {}, size(v.size_bytes)), h("div", { class: "cell-sub mono" }, short(v.source_sha256))),
-      h("td", {}, v.git_url ? h("a", { href: v.git_url, target: "_blank" }, `v${v.version} ↗`) : badge("git", v.git_status)),
+      h("td", {}, v.git_url ? h("a", { class: "ext", href: v.git_url, target: "_blank" }, `v${v.version}`, icon("external", 12)) : badge("git", v.git_status)),
       h("td", { class: "num" }, h("div", { class: "row", style: "justify-content:flex-end" },
         h("button", { class: "btn ghost small", onclick: () => openVersion(agent.agent_id, v.version) }, "자세히"),
         noCode ? null : h("button", { class: "btn ghost small", onclick: () => openEvaluate(agent.agent_id, v.version) }, act("evaluate")),
         v.status !== "production" ? h("button", { class: "btn small", onclick: () => openDeploy(agent.agent_id, versions, agent.production_version, v.version, agent.build_type) },
-          prodIndex >= 0 && i > prodIndex ? "↺ 되돌리기" : act("deploy")) : null))))));
+          prodIndex >= 0 && i > prodIndex ? [icon("undo"), "되돌리기"] : act("deploy")) : null))))));
 }
 
 async function openVersion(id, version) {
@@ -444,7 +517,7 @@ async function openVersion(id, version) {
 }
 
 function checksTab(page, id) {
-  if (!page.items.length) return h("div", { class: "empty" }, h("b", {}, "평가 기록이 없습니다"), "배포를 요청하면 평가(Gate)가 먼저 돕니다. [평가]로 따로 돌릴 수도 있습니다. 셀프 체크는 기록하지 않습니다.");
+  if (!page.items.length) return empty("flask", "평가 기록이 없습니다", "배포를 요청하면 평가(Gate)가 먼저 돕니다. [평가]로 따로 돌릴 수도 있습니다. 셀프 체크는 기록하지 않습니다.");
   return h("div", {}, page.items.map((r) => h("div", { class: "card pad", style: "box-shadow:none" },
     h("div", { class: "row" }, h("b", { class: "mono" }, r.version), badge("validation", r.status), r.review ? badge("verdict", r.review.verdict) : null,
       h("span", { class: "muted" }, `정책 v${r.policy_version}`), h("span", { class: "muted right" }, when(r.started_at)),
@@ -457,7 +530,7 @@ function stepItem(step) {
   const ok = step.status === "passed";
   const cls = ok ? "ok" : step.status === "failed" ? "bad" : step.status === "warned" ? "warnm" : step.status === "running" ? "run" : "wait";
   const missed = (step.rules || []).filter((r) => !r.passed);
-  return h("li", {}, h("span", { class: `mark ${cls}` }, ok ? "✓" : step.status === "failed" ? "✕" : step.status === "warned" ? "!" : ""),
+  return h("li", {}, h("span", { class: `mark ${cls}` }, ok ? icon("check", 12) : step.status === "failed" ? icon("x", 12) : step.status === "warned" ? icon("alert", 12) : ""),
     h("div", {}, h("div", { class: "name" }, STEP_TITLE[step.name] || step.name, " ", h("span", { class: "mono muted" }, step.name),
       step.advisory ? h("span", { class: "tag" }, "승인자 판단") : null), step.detail ? h("div", { class: "detail" }, step.detail) : null,
       missed.length ? h("ul", { class: "rules" }, missed.map((r) => h("li", {}, h("span", { class: `badge ${r.level === "ERROR" ? "bad" : "warn"} plain` }, r.level), " ",
@@ -472,13 +545,13 @@ function checklist(steps) {
   const rules = steps.flatMap((s) => s.rules || []);
   const errors = rules.filter((r) => !r.passed && r.level === "ERROR").length;
   const warns = rules.filter((r) => !r.passed && r.level !== "ERROR").length;
-  const mark = (r) => r.passed ? h("span", { class: "rmark ok" }, "✓") : h("span", { class: `rmark ${r.level === "ERROR" ? "bad" : "warn"}` }, r.level === "ERROR" ? "✕" : "!");
+  const mark = (r) => r.passed ? h("span", { class: "rmark ok" }, icon("check", 14)) : h("span", { class: `rmark ${r.level === "ERROR" ? "bad" : "warn"}` }, icon(r.level === "ERROR" ? "x" : "alert", 14));
   return h("div", {},
     h("div", { class: "row" }, h("span", { class: "badge ok plain" }, `통과 ${rules.length - errors - warns}`),
       h("span", { class: `badge ${errors ? "bad" : "plain"} plain` }, `ERROR ${errors}`), h("span", { class: `badge ${warns ? "warn" : "plain"} plain` }, `WARN ${warns}`),
       h("span", { class: "muted" }, "ERROR는 배포 전 평가가 반려합니다. WARN은 막지 않습니다.")),
     steps.map((s) => h("div", { class: "check-step" },
-      h("div", { class: "row" }, h("span", { class: `mark-s ${s.status === "failed" ? "bad" : "ok"}` }, s.status === "failed" ? "✕" : "✓"),
+      h("div", { class: "row" }, h("span", { class: `mark-s ${s.status === "failed" ? "bad" : "ok"}` }, icon(s.status === "failed" ? "x" : "check", 11)),
         h("b", {}, STEP_TITLE[s.name] || s.name), h("span", { class: "mono muted" }, s.name), s.score != null ? h("span", { class: "muted" }, `준수율 ${Math.round(s.score * 100)}%`) : null),
       (s.rules || []).length ? h("ul", { class: "check-rules" }, [...s.rules].sort((a, b) => a.passed - b.passed).map((r) => h("li", { class: r.passed ? "passed" : "" },
         mark(r), h("div", {}, h("span", { class: "mono" }, r.id), " ", r.message, r.passed ? null : h("div", { class: "muted" }, `고치는 곳: ${r.fix}`)))))
@@ -486,7 +559,7 @@ function checklist(steps) {
 }
 
 function deploysTab(page) {
-  if (!page.items.length) return h("div", { class: "empty" }, h("b", {}, "배포 기록이 없습니다"));
+  if (!page.items.length) return empty("live", "배포 기록이 없습니다");
   return h("table", { class: "data" }, h("thead", {}, h("tr", {}, ["버전", "결과", "대상", "시작", "끝"].map((t) => h("th", {}, t)))),
     h("tbody", {}, page.items.map((d) => h("tr", {},
       h("td", { class: "mono cell-main" }, d.version), h("td", {}, badge("deployment", d.status), d.error ? h("div", { class: "cell-sub" }, d.error) : null),
@@ -494,7 +567,7 @@ function deploysTab(page) {
 }
 
 function eventsTab(page) {
-  if (!page.items.length) return h("div", { class: "empty" }, h("b", {}, "기록이 없습니다"));
+  if (!page.items.length) return empty("clock", "기록이 없습니다");
   const describe = (e) => {
     const d = e.detail || {};
     if (e.event_type === "git") return `${d.action === "production" ? "production 브랜치" : "커밋·태그"} ${d.status || ""}${d.error ? ` · ${d.error}` : ""}`;
@@ -524,7 +597,7 @@ function resultsTable(results) {
 }
 
 async function openSelfCheck(id, fields) {
-  const m = modal(`${act("selfcheck")}: ${id}`, h("div", { class: "loading" }, h("span", { class: "spinner" }), " 점검 중…"), [], { wide: true });
+  const m = modal([act("selfcheck"), `: ${id}`], h("div", { class: "loading" }, h("span", { class: "spinner" }), " 점검 중…"), [], { wide: true });
   const form = new FormData();
   Object.entries(fields || {}).forEach(([k, v]) => v && form.append(k, v));
   try {
@@ -537,7 +610,8 @@ async function openSelfCheck(id, fields) {
 
 // ── 평가 진행 (GET /evaluations/{id}/progress: 평가 Job이 1초 남짓마다 씀) ─────────
 
-const PSTEP = { wait: ["", "wait"], running: ["", "run"], done: ["✓", "ok"], warned: ["!", "warn"], failed: ["✕", "bad"], skipped: ["–", "skip"] };
+const PSTEP = { wait: ["", "wait"], running: ["", "run"], done: ["check", "ok"], warned: ["alert", "warn"], failed: ["x", "bad"], skipped: ["", "skip"] };
+const pmark = (st) => (PSTEP[st] && PSTEP[st][0] ? icon(PSTEP[st][0], 12) : st === "skipped" ? "–" : "");
 const RUN_DONE = ["passed", "failed", "stale", "error"];
 function elapsed(iso) {
   const t = iso ? Date.parse(iso) : NaN;
@@ -591,7 +665,7 @@ function progressPanel({ compact = false } = {}) {
     paintHead(p);
     steps.replaceChildren(...((p.steps || []).length ? p.steps : STEP_PLACEHOLDER).map((s) => h("li", {
       class: `ps ${PSTEP[s.state] ? PSTEP[s.state][1] : "wait"}`, title: s.detail || "" },
-      h("span", { class: "pdot" }, s.state === "running" ? h("span", { class: "spinner" }) : (PSTEP[s.state] || [""])[0]),
+      h("span", { class: "pdot" }, s.state === "running" ? h("span", { class: "spinner" }) : pmark(s.state)),
       h("span", { class: "ptitle" }, s.title),
       h("small", { class: "pfrac" }, s.state === "running" && s.fraction ? `${Math.round(s.fraction * 100)}%` : ""))));
     const r = p.review;
@@ -608,7 +682,7 @@ function progressPanel({ compact = false } = {}) {
     }
     list.classList.toggle("empty", !list.children.length);
     if (fresh.length && follow) list.scrollTop = list.scrollHeight;
-    job.replaceChildren(p.job && p.job.url ? h("a", { class: "muted", href: p.job.url, target: "_blank" }, "평가 Job 실행 화면 ↗") : "");
+    job.replaceChildren(p.job && p.job.url ? h("a", { class: "muted ext", href: p.job.url, target: "_blank" }, "평가 Job 실행 화면", icon("external", 12)) : "");
   }
 
   const el = h("div", { class: "progress" }, head, bar, steps, counts, files,
@@ -638,7 +712,7 @@ function openEvaluate(id, version) {
   const status = h("div", { class: "row" }, h("b", { class: "mono" }, `${id} ${version || "(지금 개발용 정의)"}`));
   const live = h("div", { class: "mt" }, h("div", { class: "muted" }, h("span", { class: "spinner" }), " 평가를 요청하는 중…"));
   const results = h("div", {});
-  const m = modal(`${act("evaluate")}: ${id}`, h("div", {}, status, live, results), [{ label: "닫기", run: (close) => close() }], { wide: true });
+  const m = modal([act("evaluate"), `: ${id}`], h("div", {}, status, live, results), [{ label: "닫기", run: (close) => close() }], { wide: true });
   let finished = false;
   post(`/projects/${enc(id)}/evaluations`, { version }).then((run) => {
     const timer = watchProgress(run.validation_run_id, live, { onDone: async () => {
@@ -673,7 +747,7 @@ function reportView(run) {
   const cov = rv ? rv.coverage : null;
   return h("div", { class: "report" },
     rv ? h("div", { class: `verdict v-${rv.verdict}` },
-      h("div", { class: "row" }, h("span", { class: "big" }, { pass: "✓", warn: "!", fail: "✕" }[rv.verdict]),
+      h("div", { class: "row" }, h("span", { class: "big" }, icon({ pass: "check", warn: "alert", fail: "x" }[rv.verdict], 22)),
         h("div", {}, h("div", { class: "vt" }, `내용 검토 ${LABEL.verdict[rv.verdict][0]}`, h("span", { class: "muted" }, ` · 검토 모델의 권고: ${RECOMMEND[rv.recommendation] || rv.recommendation}`)),
           h("div", { class: "muted" }, `항목 ${rv.items.length}개 · 부적합 ${rv.items.filter((i) => i.status === "fail").length} · 주의 ${rv.items.filter((i) => i.status === "warn").length}`
             + ` · 파일 ${cov.files_read}/${cov.text_files} 읽음`))),
@@ -723,7 +797,7 @@ function openDeploy(id, versions, production, preset, kind) {
 
 function openNoCodeDeploy(id, production) {
   const reason = h("input", { type: "text", placeholder: "선택: 요청 사유 (예: 벤치마크 문항 보강)" });
-  modal(`${act("deploy")} (노코드)`, h("div", {},
+  modal([act("deploy"), " (노코드)"], h("div", {},
     h("p", {}, "지금 개발용 Genie 정의를 스냅샷으로 평가합니다"),
     h("label", { class: "field" }, h("span", {}, "사유"), reason),
     h("div", { class: "note warn" }, "평가가 끝날 때까지 개발용 Genie를 고치지 마세요"),
@@ -743,7 +817,7 @@ function followDeploy(id, version, reason, kind) {
   const m = modal("배포 진행", h("div", {}, head, list, outcome), [cancelBtn, h("button", { class: "btn", onclick: () => m.close() }, "닫기")], { wide: true });
   const liveBox = h("div", { class: "mt-s" });
   let watching = null;
-  const item = (cls, name, detail) => h("li", {}, h("span", { class: `mark ${cls}` }, cls === "ok" ? "✓" : cls === "bad" ? "✕" : ""),
+  const item = (cls, name, detail) => h("li", {}, h("span", { class: `mark ${cls}` }, cls === "ok" ? icon("check", 12) : cls === "bad" ? icon("x", 12) : ""),
     h("div", {}, h("div", { class: "name" }, name), detail ? h("div", { class: "detail" }, detail) : null));
   post(`/projects/${enc(id)}/deploy-requests`, { version, reason }).then((gate) => {
     gateId = gate.gate_id;
@@ -785,7 +859,7 @@ function followDeploy(id, version, reason, kind) {
         if (g.deployment_status === "succeeded") {
           toast(`운영 반영 완료: ${id} ${g.version}`, "ok");
           if (kind === "no_code") get(`/no-code/agents/${enc(id)}`).then((nc) => nc.prod_url && outcome.replaceChildren(h("div", { class: "note mt" },
-            "운영용 Genie: ", h("a", { href: nc.prod_url, target: "_blank" }, `${nc.prod_url} ↗`), nc.consumer_group ? ` · ${nc.consumer_group} CAN RUN` : ""))).catch(() => {});
+            "운영용 Genie: ", h("a", { class: "ext", href: nc.prod_url, target: "_blank" }, nc.prod_url, icon("external", 12)), nc.consumer_group ? ` · ${nc.consumer_group} CAN RUN` : ""))).catch(() => {});
         }
       }
       if (personDecides) {
@@ -836,7 +910,7 @@ function openPromote(agent) {
       toast(revoke ? "권한을 회수했습니다" : "권한을 주었습니다", "ok");
     } catch (e) { fail(e); }
   };
-  modal(`${act("promote")}: ${agent.agent_id}`, h("div", {},
+  modal([act("promote"), `: ${agent.agent_id}`], h("div", {},
     h("label", { class: "field" }, h("span", {}, "대상 (한 줄에 하나)"), input,
       h("small", {}, agent.build_type === "code"
         ? "group:<그룹> · user:<이메일> · sp:<application ID>. 코드 기반은 운영 앱에 CAN_USE를 겁니다. 받은 사람은 앱을 열어 씁니다."
@@ -859,7 +933,7 @@ async function openLoad(agent) {
       const what = agent.build_type === "no_code" ? ["운영용 Genie", "CAN RUN 권한이 있어야 열립니다"] : ["운영 앱", "앱 사용 권한(CAN_USE)이 있어야 열립니다"];
       if (win) { win.location = info.link; return toast(`${what[0]}를 엽니다: ${agent.agent_id} ${info.version}`, "ok", what[1]); }
       return modal(`${what[0]}: ${agent.agent_id} ${info.version}`, h("div", {}, h("p", {}, "브라우저가 새 창을 막았습니다. 아래 링크로 여세요."),
-        h("a", { class: "btn primary", href: info.link, target: "_blank" }, `${what[0]} 열기 ↗`), h("p", { class: "muted mt" }, what[1])));
+        h("a", { class: "btn primary", href: info.link, target: "_blank" }, `${what[0]} 열기`, icon("external", 14)), h("p", { class: "muted mt" }, what[1])));
     }
     if (win) win.close();
     if (!info.allowed || !info.archive) return toast("가져올 수 없습니다", "bad", "운영 UC Skill 읽기 권한이 필요합니다 (담당자에게 권한 요청)");
@@ -873,16 +947,16 @@ async function openLoad(agent) {
 async function gatesPage(root, params) {
   let tab = params.get("tab") || (state.toApprove ? "approve" : "mine");
   const pane = h("div", {});
-  const tabBar = h("div", { class: "tabs" });
+  const tabBar = h("div", { class: "tabs", "data-tour": "gates-tabs" });
   const tabs = [["approve", "승인할 요청", "?to_approve=true"], ["mine", "내 요청", "?mine=true"], ["all", "전체", ""]];
   const load = async () => {
     tabBar.replaceChildren(...tabs.map(([key, label]) => h("button", { class: key === tab ? "on" : "", onclick: () => { tab = key; load(); } },
-      label, key === "approve" && state.toApprove ? h("span", { class: "n" }, state.toApprove) : null)));
+      icon({ approve: "shield", mine: "send", all: "inbox" }[key], 15), label, key === "approve" && state.toApprove ? h("span", { class: "n" }, state.toApprove) : null)));
     pane.replaceChildren(h("div", { class: "loading" }, h("span", { class: "spinner" })));
     const page = await get(`/release-gates${tabs.find((t) => t[0] === tab)[2]}`);
     pane.replaceChildren(gatesTable(page, { agent: true, approve: tab === "approve" }));
   };
-  root.replaceChildren(pageHead("배포 요청함", "요청마다 평가 리포트를 보고 승인·반려합니다", [], "aops gates · approve · reject"),
+  root.replaceChildren(pageHead("배포 요청함", "요청마다 평가 리포트를 보고 승인·반려합니다", [], "aops gates · approve · reject", "inbox"),
     h("div", { class: "card pad" }, tabBar, pane));
   await load();
 }
@@ -890,11 +964,11 @@ async function gatesPage(root, params) {
 // Deploy requests: each row opens its report page, where the approver decides
 function gatesTable(page, { agent, approve }) {
   const rows = page.items;
-  if (!rows.length) return h("div", { class: "empty" }, h("b", {}, approve ? "승인할 배포 요청이 없습니다" : "배포 요청이 없습니다"),
+  if (!rows.length) return empty("inbox", approve ? "승인할 배포 요청이 없습니다" : "배포 요청이 없습니다",
     approve ? "내가 지정 승인자(또는 승인 그룹)인 요청만 나옵니다. 내 요청은 내가 승인할 수 없습니다." : "");
   return h("table", { class: "data" },
     h("thead", {}, h("tr", {}, [agent ? "에이전트" : "버전", "상태", "내용 검토", "승인자", "요청", ""].map((t) => h("th", {}, t)))),
-    h("tbody", {}, rows.map((g) => h("tr", { class: "click", onclick: () => { location.hash = `#/gates/${enc(g.gate_id)}`; } },
+    h("tbody", {}, rows.map((g, i) => h("tr", { class: "click", "data-tour": i === 0 ? "gate-row" : null, onclick: () => { location.hash = `#/gates/${enc(g.gate_id)}`; } },
       h("td", {}, agent ? [h("div", { class: "cell-main" }, g.agent_id), h("div", { class: "cell-sub mono" }, `${g.version} · ${UPGRADE[g.upgrade_type] || g.upgrade_type}`)]
         : [h("div", { class: "cell-main mono" }, g.version), h("div", { class: "cell-sub" }, UPGRADE[g.upgrade_type] || g.upgrade_type)]),
       h("td", {}, badge("decision", g.decision), g.deployment_status ? [" ", badge("deployment", g.deployment_status)] : null,
@@ -915,8 +989,8 @@ function gateProgress(g, run) {
       : g.decision === "rejected" ? ["bad", "반려"] : g.decision === "canceled" ? ["bad", "취소"] : ["wait", "평가 뒤"];
   const dp = g.deployment_status === "succeeded" ? ["done", `운영 ${g.version}`] : g.deployment_status === "running" ? ["run", "운영 반영 중"]
     : g.deployment_status === "failed" ? ["bad", "배포 실패"] : ["wait", "승인 뒤"];
-  return h("ol", { class: "lifecycle three" }, [["평가", ev], ["승인", ap], ["운영 반영", dp]].map(([t, [st, text]], n) => h("li", { class: `st ${st}` },
-    h("div", { class: "dot" }, st === "done" ? "✓" : st === "bad" ? "!" : n + 1), h("div", { class: "body" }, h("div", { class: "t" }, t), h("div", { class: "s" }, text)))));
+  return h("ol", { class: "lifecycle three" }, [["평가", ev, "flask"], ["승인", ap, "shield"], ["운영 반영", dp, "live"]].map(([t, [st, text], ico]) => h("li", { class: `st ${st}` },
+    h("div", { class: "dot" }, icon(st === "done" ? "check" : st === "bad" ? "alert" : ico, 15)), h("div", { class: "body" }, h("div", { class: "t" }, t), h("div", { class: "s" }, text)))));
 }
 
 async function gatePage(root, id) {
@@ -936,7 +1010,7 @@ async function gatePage(root, id) {
       await refreshCounts(); render();
     } catch (e) { fail(e); }
   };
-  const panel = g.can_approve ? h("div", { class: "card pad decide" },
+  const panel = g.can_approve ? h("div", { class: "card pad decide", "data-tour": "gate-decide" },
     h("h2", {}, "승인자 결정"),
     g.approve_as_exception ? h("div", { class: "note warn" }, "개발용 예외로 결정합니다 (정책 dev_approvers): ",
       g.requester === (state.me && state.me.user) ? "내 요청입니다. " : "지정 승인자가 아닙니다. ", "승인은 감사 이력에 예외로 남습니다.") : null,
@@ -948,7 +1022,7 @@ async function gatePage(root, id) {
   const waiting = g.decision === "pending_approval" && !g.can_approve
     ? h("div", { class: "note mt-s" }, g.requester === (state.me && state.me.user) ? "내 요청입니다. 지정 승인자가 이 리포트를 보고 결정합니다."
       : `이 요청은 ${g.approvers.length ? `지정 승인자(${g.approvers.join(", ")})` : "승인 그룹"}가 결정합니다.`) : null;
-  const request = h("div", { class: "card pad" }, h("h2", {}, "요청"),
+  const request = h("div", { class: "card pad", "data-tour": "gate-request" }, h("h2", {}, "요청"),
     h("dl", { class: `kv ${panel ? "" : "two-col"}` },
       h("dt", {}, "사유"), h("dd", {}, g.reason || "–"),
       h("dt", {}, "지정 승인자"), h("dd", {}, g.approvers.length ? g.approvers.join(", ") : h("span", { class: "muted" }, "없음 (정책의 승인 그룹)")),
@@ -959,11 +1033,11 @@ async function gatePage(root, id) {
     pageHead(`배포 요청 ${g.agent_id} ${g.version}`, `${UPGRADE[g.upgrade_type] || g.upgrade_type} · 요청 ${g.requester} · ${when(g.requested_at)}`, [
       h("a", { class: "btn", href: `#/agents/${enc(g.agent_id)}` }, "에이전트 보기"),
       open && g.requester === (state.me && state.me.user) ? h("button", { class: "btn danger", onclick: async () => {
-        try { await post(`/release-gates/${enc(id)}/cancel`); toast("취소했습니다", "ok"); render(); } catch (e) { fail(e); } } }, "요청 취소") : null]),
-    h("div", { class: "card pad" }, gateProgress(g, run)),
+        try { await post(`/release-gates/${enc(id)}/cancel`); toast("취소했습니다", "ok"); render(); } catch (e) { fail(e); } } }, "요청 취소") : null], null, "send"),
+    h("div", { class: "card pad", "data-tour": "gate-progress" }, gateProgress(g, run)),
     panel ? h("div", { class: "grid two mt" }, request, panel) : h("div", { class: "mt" }, request),
     g.decision === "validating" ? h("div", { class: "card pad mt" }, h("h2", {}, "평가 진행"), live)
-      : run ? h("div", { class: "card pad mt" }, h("h2", {}, "평가 리포트"), run.failure_reason ? h("div", { class: "note bad" }, run.failure_reason) : null, reportView(run))
+      : run ? h("div", { class: "card pad mt", "data-tour": "gate-report" }, h("h2", {}, "평가 리포트"), run.failure_reason ? h("div", { class: "note bad" }, run.failure_reason) : null, reportView(run))
         : h("div", { class: "card pad mt" }, h("p", { class: "muted" }, "평가 기록이 없습니다")));
   if (g.decision === "validating") {
     const runId = g.validation_run_id || (run && run.validation_run_id);
@@ -991,17 +1065,18 @@ function registerPage(root, params) {
   const result = h("div", {});
   const version = h("input", { type: "text", placeholder: "비우면 자동 (처음 1.0.0)", style: "width:200px" });
   const note = h("input", { type: "text", placeholder: "선택: 무엇을 바꿨는지 (예: 사내 주소·고객 정보 제거)", maxlength: 500 });
-  const submit = h("button", { class: "btn primary", disabled: true, onclick: () => send() }, act("register"));
-  const checkBtn = h("button", { class: "btn", disabled: true, title: "템플릿 구성을 지금 바로 점검 (기록 안 함)", onclick: () => selfCheck() }, act("selfcheck"));
+  const submit = h("button", { class: "btn primary", "data-tour": "reg-submit", disabled: true, onclick: () => send() }, act("register"));
+  const checkBtn = h("button", { class: "btn", "data-tour": "reg-check", disabled: true, title: "템플릿 구성을 지금 바로 점검 (기록 안 함)", onclick: () => selfCheck() }, act("selfcheck"));
   const folderInput = h("input", { type: "file", webkitdirectory: true, multiple: true, style: "display:none", onchange: (e) => pickFolder([...e.target.files]) });
   const zipInput = h("input", { type: "file", accept: ".zip", style: "display:none", onchange: (e) => e.target.files[0] && pickZip(e.target.files[0]) });
-  const drop = h("div", { class: "drop" },
+  const drop = h("div", { class: "drop", "data-tour": "reg-drop" },
+    h("div", { class: "drop-ico" }, icon("upload", 22)),
     h("p", {}, h("b", {}, "에이전트 폴더를 고르거나 zip을 놓으세요")),
     h("div", { class: "row", style: "justify-content:center" },
-      h("button", { class: "btn", onclick: () => folderInput.click() }, "폴더 고르기"), h("button", { class: "btn", onclick: () => zipInput.click() }, "zip 고르기")),
+      h("button", { class: "btn", onclick: () => folderInput.click() }, icon("folder"), "폴더 고르기"), h("button", { class: "btn", onclick: () => zipInput.click() }, icon("package"), "zip 고르기")),
     folderInput, zipInput);
   const wsPath = h("input", { type: "text", placeholder: "/Workspace/Users/<나>/aops/<이름>", style: "flex:1", value: params.get("path") || "" });
-  const wsBox = h("div", { class: "row mt" }, h("span", { class: "muted" }, "또는 워크스페이스 폴더:"), wsPath,
+  const wsBox = h("div", { class: "row mt", "data-tour": "reg-ws" }, h("span", { class: "muted" }, "또는 워크스페이스 폴더:"), wsPath,
     h("button", { class: "btn", onclick: () => pickWorkspace() }, "이 폴더로"));
 
   function pickWorkspace() {
@@ -1096,19 +1171,19 @@ function registerPage(root, params) {
       toast(`등록: ${picked.name} ${row.version}`, "ok");
     } catch (e) { fail(e); }
     submit.disabled = false;
-    submit.replaceChildren(act("register"));
+    fill(submit, act("register"));
   }
 
   const bumpSeg = h("div", { class: "seg" }, [["fix", "fix (1.0.x)"], ["minor", "minor (1.x.0)"], ["major", "major (x.0.0)"]].map(([v, label]) =>
     h("button", { class: v === bump ? "on" : "", onclick: (e) => { bump = v; bumpSeg.querySelectorAll("button").forEach((b) => b.classList.remove("on")); e.target.classList.add("on"); } }, label)));
   if (params.get("path")) pickWorkspace();
   root.replaceChildren(
-    pageHead(expected ? `${expected} 새 버전 등록` : "폴더·zip 등록", expected ? "작업 폴더나 PC 폴더·zip으로 새 버전을 저장합니다" : "PC 폴더·zip·워크스페이스 폴더를 버전으로 저장합니다. 처음이면 에이전트가 생깁니다", [], "aops register"),
+    pageHead(expected ? `${expected} 새 버전 등록` : "폴더·zip 등록", expected ? "작업 폴더나 PC 폴더·zip으로 새 버전을 저장합니다" : "PC 폴더·zip·워크스페이스 폴더를 버전으로 저장합니다. 처음이면 에이전트가 생깁니다", [], "aops register", "upload"),
     h("div", { class: "card pad" }, drop, wsBox, info,
-      h("div", { class: "grid two mt" },
+      h("div", { class: "grid two mt", "data-tour": "reg-version" },
         h("div", { class: "field" }, h("span", {}, "버전 올리는 폭"), bumpSeg, h("small", {}, "처음 등록은 1.0.0")),
         h("label", { class: "field" }, h("span", {}, "또는 버전 직접"), version)),
-      h("label", { class: "field" }, h("span", {}, "사유"), note, h("small", {}, "버전 기록과 Git 커밋 메시지에 남습니다")),
+      h("label", { class: "field", "data-tour": "reg-note" }, h("span", {}, "사유"), note, h("small", {}, "버전 기록과 Git 커밋 메시지에 남습니다")),
       h("div", { class: "row" }, h("span", { class: "muted" }, "등록은 버전을 저장할 뿐입니다. 평가와 승인은 배포 요청 때 합니다."),
         h("span", { class: "right row" }, checkBtn, submit))),
     result);
@@ -1171,7 +1246,7 @@ function tablePicker() {
       return h("span", { class: "chip", title: a ? a.detail : "" }, h("span", { class: "mono" }, n),
         picked.get(n).kind === "metric_view" ? h("span", { class: "tag" }, "메트릭 뷰") : null,
         h("span", { class: `badge ${cls}` }, label),
-        h("button", { type: "button", class: "x", "aria-label": `${n} 빼기`, onclick: () => { picked.delete(n); drawChips(); drawList(); } }, "✕"));
+        h("button", { type: "button", class: "x", "aria-label": `${n} 빼기`, onclick: () => { picked.delete(n); drawChips(); drawList(); } }, icon("x", 12)));
     }));
     const missing = all.filter((n) => (access.get(n) || {}).status === "missing");
     fill(status, missing.length ? h("div", { class: "note warn mt-s" }, `aops 서비스 주체가 ${missing.length}개를 읽지 못합니다: 개발용 Genie는 지금 만들 수 있지만, `
@@ -1255,7 +1330,7 @@ function approverPicker(required) {
   const draw = () => {
     fill(chips, chosen.map((c, i) => h("span", { class: "chip" }, c.name !== c.principal ? [h("b", {}, c.name), h("span", { class: "mono muted" }, c.principal)] : h("span", { class: "mono" }, c.principal),
       c.principal.toLowerCase() === me() ? h("span", { class: "badge warn" }, "나") : null,
-      h("button", { type: "button", class: "x", "aria-label": `${c.principal} 빼기`, onclick: () => { chosen.splice(i, 1); draw(); } }, "✕"))));
+      h("button", { type: "button", class: "x", "aria-label": `${c.principal} 빼기`, onclick: () => { chosen.splice(i, 1); draw(); } }, icon("x", 12)))));
     const others = chosen.filter((c) => c.principal.toLowerCase() !== me());
     fill(warn, chosen.length && !others.length ? h("div", { class: "note warn mt-s" }, "나만 승인자이면 내 배포 요청을 승인할 사람이 없습니다. 다른 사람이나 그룹을 더하세요.")
       : !chosen.length && required ? h("div", { class: "note warn mt-s" }, "정책이 승인자 지정을 요구합니다. 한 명 이상 고르세요.") : null);
@@ -1346,8 +1421,9 @@ function newPage(root, params) {
   const kindBox = h("div", {});
   const help = h("div", {});
   const genieBox = h("div", {});
-  const submit = h("button", { class: "btn primary", onclick: () => make() });
-  const zipBtn = h("button", { class: "btn", onclick: () => downloadZip() }, "폴더 받기 (zip)");
+  const submit = h("button", { class: "btn primary", "data-tour": "new-submit", onclick: () => make() });
+  const zipBtn = h("button", { class: "btn", onclick: () => downloadZip() }, icon("download"), "폴더 받기 (zip)");
+  const kindHint = h("div", { class: "kind-hint" });
 
   const drawGenie = () => {
     if (kind !== "no_code") return;
@@ -1365,6 +1441,11 @@ function newPage(root, params) {
 
   const drawKind = () => {
     drawGenie();
+    const g = kindGuide(kind);
+    fill(kindHint, h("span", { class: `kind-ico k-${kind}` }, icon(g.ico, 16)),
+      h("div", { class: "grow" }, h("div", {}, h("b", {}, "이럴 때: "), g.when, h("span", { class: "muted" }, ` (예: ${g.examples.join(" · ")})`)),
+        h("div", { class: "muted" }, g.run)),
+      h("a", { class: "btn ghost small", href: "#/help" }, "종류 비교"));
     fill(kindBox, kind === "no_code" ? genieBox : [
       kind === "skill" ? h("label", { class: "field" }, h("span", {}, "기본 하네스 (PC에서 aops run)"), f.harness) : null,
       kind === "code" ? h("label", { class: "field" }, h("span", {}, "프레임워크 (Agent Bricks)"), f.framework) : null,
@@ -1380,7 +1461,7 @@ function newPage(root, params) {
       no_code: [["개발", "개발용 Genie"], ["셀프 체크", "Genie 정의 규칙"], ["등록", "없음 (배포 때 버전)"],
         ["평가", "형식 → 내용 검토 → 벤치마크"], ["승인", "승인자가 리포트를 보고"], ["운영", "운영용 Genie"]],
     }[kind];
-    fill(help, h("h2", {}, "만든 뒤 흐름"), h("ol", { class: "flow" }, flow.map(([t, d], n) => h("li", {}, h("span", { class: "dot" }, n + 1),
+    fill(help, h("h2", {}, "만든 뒤 흐름"), h("ol", { class: "flow" }, flow.map(([t, d], n) => h("li", {}, h("span", { class: "dot" }, icon(FLOW_ICON[n], 13)),
       h("div", {}, h("b", {}, t), h("div", { class: "muted" }, d))))),
       kind === "code" ? h("div", { class: "note mt" }, "처음 한 번은 30초쯤 걸립니다") : null);
   };
@@ -1444,7 +1525,7 @@ function newPage(root, params) {
           h("dt", {}, "개발용 Genie"), h("dd", { class: "mono" }, row.dev_space_id),
           h("dt", {}, "warehouse"), h("dd", { class: "mono" }, row.warehouse_id || "–")),
         row.warnings.map((w) => h("div", { class: "note warn mt" }, w)),
-        h("div", { class: "row mt" }, row.links.map((l, i) => h("a", { class: `btn ${i === 0 ? "primary" : ""}`, href: l.url, target: "_blank" }, `${l.label} ↗`)),
+        h("div", { class: "row mt" }, row.links.map((l, i) => h("a", { class: `btn ${i === 0 ? "primary" : ""}`, href: l.url, target: "_blank" }, l.label, icon("external", 14))),
           h("a", { class: "btn ghost", href: `#/agents/${enc(row.agent_id)}` }, "에이전트 보기 →"))));
       toast(`만들었습니다: ${row.agent_id}`, "ok", "Genie에서 고친 뒤 에이전트 화면에서 점검·배포 요청");
     } catch (e) { fail(e); }
@@ -1453,12 +1534,13 @@ function newPage(root, params) {
   }
 
   drawKind();
-  const sec = (n, title, ...kids) => h("section", { class: "form-sec" }, h("div", { class: "sec-t" }, h("span", { class: "sec-n" }, n), title), kids);
+  const SEC_TOUR = { 1: "new-kind", 2: "new-basic", 3: "new-class", 4: "new-approvers", 5: "new-where" };
+  const sec = (n, title, ...kids) => h("section", { class: "form-sec", "data-tour": SEC_TOUR[n] }, h("div", { class: "sec-t" }, h("span", { class: "sec-n" }, n), title), kids);
   root.replaceChildren(
-    pageHead("새 에이전트", "종류를 고르고 SPEC 항목을 적으면 에이전트의 SPEC.md가 됩니다", [], "aops init"),
+    pageHead("새 에이전트", "종류를 고르고 SPEC 항목을 적으면 에이전트의 SPEC.md가 됩니다", [], "aops init", "plus"),
     h("div", { class: "grid new-grid" },
       h("div", { class: "card pad" },
-        sec(1, "종류", segment(KINDS, kind, (v) => { kind = v; drawKind(); })),
+        sec(1, "종류", segment(KINDS.map(([v, label]) => [v, [icon(KIND_ICON[v], 15), label]]), kind, (v) => { kind = v; drawKind(); }, "kind"), kindHint),
         sec(2, "기본 정보",
           h("div", { class: "grid two" },
             h("label", { class: "field" }, h("span", {}, "이름 (agent_id)"), f.name, h("small", {}, "영문 소문자·숫자·하이픈")),
@@ -1473,7 +1555,7 @@ function newPage(root, params) {
         sec(4, "승인자", approvers.el),
         sec(5, "만들 곳", kindBox),
         h("div", { class: "form-foot row" }, h("span", { class: "muted" }, `담당자(owner)는 나입니다${state.me ? ` (${state.me.user})` : ""}.`), h("span", { class: "right row" }, zipBtn, submit))),
-      h("div", { class: "card pad help" }, help)),
+      h("div", { class: "card pad help", "data-tour": "new-flow" }, help)),
     result);
 }
 
@@ -1486,7 +1568,7 @@ function workspaceCard(row) {
       h("dt", {}, "폴더"), h("dd", { class: "mono" }, row.location),
       h("dt", {}, "파일"), h("dd", {}, `${row.files.length}개`, row.open_file ? h("span", { class: "muted" }, ` · 처음 열 파일 ${row.open_file}`) : null)),
     h("div", { class: "note mt" }, "Genie Code에 이렇게 말해 보세요: ", h("code", {}, prompt)),
-    h("div", { class: "row mt" }, row.links.map((l, i) => h("a", { class: `btn ${i === 0 ? "primary" : ""}`, href: l.url, target: "_blank" }, `${l.label} ↗`)),
+    h("div", { class: "row mt" }, row.links.map((l, i) => h("a", { class: `btn ${i === 0 ? "primary" : ""}`, href: l.url, target: "_blank" }, l.label, icon("external", 14))),
       h("a", { class: "btn", href: `#/register?agent=${enc(row.agent_id)}&path=${enc(row.location)}` }, "이 폴더에서 등록"),
       h("a", { class: "btn ghost", href: `#/agents/${enc(row.agent_id)}` }, "에이전트 보기 →")));
 }
@@ -1521,9 +1603,9 @@ function geniePage(root, params) {
     } catch (e) { result.replaceChildren(); fail(e); }
   };
   root.replaceChildren(
-    pageHead("Genie 점검", "아무 Genie 스페이스나 노코드 정의 규칙으로 지금 점검합니다 (기록하지 않음)", [], "aops validate --agent"),
+    pageHead("Genie 점검", "아무 Genie 스페이스나 노코드 정의 규칙으로 지금 점검합니다 (기록하지 않음)", [], "aops validate --agent", "sparkle"),
     h("div", { class: "card pad" },
-      h("div", { class: "row" }, input, h("button", { class: "btn primary", onclick: run }, "점검")),
+      h("div", { class: "row" }, input, h("button", { class: "btn primary", onclick: run }, icon("search"), "점검")),
       h("div", { class: "note mt" }, "aops 서비스 주체가 읽을 수 있는 스페이스만 됩니다")),
     result);
   if (input.value) run();
@@ -1556,9 +1638,9 @@ async function policyPage(root) {
   };
   const git = pol.git;
   root.replaceChildren(
-    pageHead("정책·평가 프롬프트", current ? `지금 정책 v${current.policy_version} · ${current.created_by} · ${when(current.created_at)}` : "적용된 정책이 없습니다", [], "aops admin setup --only policy"),
+    pageHead("정책·평가 프롬프트", current ? `지금 정책 v${current.policy_version} · ${current.created_by} · ${when(current.created_at)}` : "적용된 정책이 없습니다", [], "aops admin setup --only policy", "sliders"),
     h("div", { class: "grid two", style: "align-items:start" },
-      h("div", { class: "card pad" }, h("h2", {}, "평가·승인 규칙"),
+      h("div", { class: "card pad", "data-tour": "pol-rules" }, h("h2", {}, "평가·승인 규칙"),
         h("div", { class: "field" }, h("span", {}, "평가 방식"), segFor("validation_mode", [["mandatory", "필수"], ["optional", "선택"], ["exempt", "면제"]]),
           h("small", {}, "필수: 실패하면 반려 · 선택: 실패해도 승인자에게 · 면제: 평가 없이")),
         h("div", { class: "field" }, h("span", {}, "승인 방식"), segFor("approval_mode", [["required", "사람 승인"], ["optional", "선택"], ["auto", "자동 승인"]]),
@@ -1577,7 +1659,7 @@ async function policyPage(root) {
           h("dt", {}, "Git 사본"), h("dd", {}, git ? `${git.provider} · ${git.owner} · 연결 ${git.connection} · ${git.mode} (저장소 ${git.repo_prefix}<agent_id>)` : "꺼짐")),
         )),
     await reviewPromptsCard(isAdmin),
-    h("div", { class: "card mt" }, h("table", { class: "data" },
+    h("div", { class: "card mt", "data-tour": "pol-history" }, h("table", { class: "data" },
       h("thead", {}, h("tr", {}, ["버전", "상태", "평가", "승인", "승인 그룹", "올린 사람", "시각"].map((t) => h("th", {}, t)))),
       h("tbody", {}, page.items.map((p) => h("tr", {},
         h("td", { class: "mono cell-main" }, `v${p.policy_version}`), h("td", {}, p.status === "active" ? h("span", { class: "badge ok" }, "적용 중") : h("span", { class: "badge plain" }, "이전")),
@@ -1607,7 +1689,7 @@ async function reviewPromptsCard(isAdmin) {
         if (m) found.push([m[1], m[2]]);
       }
       fill(items, found.length ? found.map(([id, t]) => h("li", {}, h("span", { class: "rmark ok" }, "•"), h("div", {}, h("span", { class: "mono" }, id), ` ${t}`)))
-        : h("li", {}, h("span", { class: "rmark bad" }, "✕"), h("div", {}, "'## 체크리스트' 아래에 '- <id>: <통과 조건>' 줄이 없습니다")));
+        : h("li", {}, h("span", { class: "rmark bad" }, icon("x", 14)), h("div", {}, "'## 체크리스트' 아래에 '- <id>: <통과 조건>' 줄이 없습니다")));
     };
     text.addEventListener("input", preview);
     preview();
@@ -1632,7 +1714,7 @@ async function reviewPromptsCard(isAdmin) {
     label, h("span", { class: "n" }, `v${data.active[k].version}`))));
   drawTabs();
   draw();
-  return h("div", { class: "card pad mt" }, h("h2", {}, "평가 프롬프트 (배포 전 내용 검토)"),
+  return h("div", { class: "card pad mt", "data-tour": "pol-prompts" }, h("h2", {}, "평가 프롬프트 (배포 전 내용 검토)"),
     h("p", { class: "muted" }, "공통 + 종류별 체크리스트로 모든 파일을 검토합니다. 저장하면 새 버전"),
     tabs, box);
 }
@@ -1640,10 +1722,10 @@ async function reviewPromptsCard(isAdmin) {
 // ── 안내: CLI ↔ 화면 ↔ Genie Code ───────────────────────────────────────────
 
 const SCREEN = {
-  "aops init": "+ 새 에이전트", "aops list": "에이전트", "aops load": `에이전트 → ${act("load")}`, "aops validate": `에이전트 → ${act("selfcheck")} · Genie 점검`,
-  "aops evaluate": `에이전트 → ${act("evaluate")}`, "aops register": `에이전트 → ${act("register")} · 폴더·zip 등록`, "aops deploy": `에이전트 → ${act("deploy")}`,
+  "aops init": "새 에이전트", "aops list": "에이전트", "aops load": `에이전트 → ${actText("load")}`, "aops validate": `에이전트 → ${actText("selfcheck")} · Genie 점검`,
+  "aops evaluate": `에이전트 → ${actText("evaluate")}`, "aops register": `에이전트 → ${actText("register")} · 폴더·zip 등록`, "aops deploy": `에이전트 → ${actText("deploy")}`,
   "aops deploy --cancel": "배포 요청 → 요청 취소", "aops gates": "배포 요청함", "aops approve": "배포 요청 → 승인", "aops reject": "배포 요청 → 반려",
-  "aops promote": `에이전트 → ${act("promote")}`, "aops admin setup": "정책·평가 프롬프트 (정책만, 나머지는 CLI)",
+  "aops promote": `에이전트 → ${actText("promote")}`, "aops admin setup": "정책·평가 프롬프트 (정책만, 나머지는 CLI)",
 };
 
 // the routes this console uses where a command also has design-only routes
@@ -1657,12 +1739,12 @@ async function guidePage(root) {
   const working = rows.filter((r) => SCREEN[r.command]);
   const pcOnly = ["aops run \"<질문>\"", "aops session list", "aops session switch --harness", "aops session show"];
   root.replaceChildren(
-    pageHead("CLI·Genie Code", "화면·PC CLI·Genie Code가 같은 aops 서버 API를 부릅니다. 어디서 하든 같은 기록이 남습니다", [], "aops --help"),
+    pageHead("CLI·Genie Code", "화면·PC CLI·Genie Code가 같은 aops 서버 API를 부릅니다. 어디서 하든 같은 기록이 남습니다", [], "aops --help", "terminal"),
     h("div", { class: "grid three" },
-      h("div", { class: "card pad" }, h("h2", {}, "이 화면"), h("p", { class: "muted" }, "브라우저에서 만들기·셀프 체크·등록·평가·배포·승인·권한·정책. Databricks 로그인 그대로 씁니다.")),
-      h("div", { class: "card pad" }, h("h2", {}, "PC CLI"), h("p", { class: "muted" }, "aops run으로 Claude·Codex 하네스를 바꿔 가며 개발하고 같은 명령으로 등록·배포합니다."),
+      h("div", { class: "card pad" }, h("h2", { class: "h-ico" }, icon("grid", 16), "이 화면"), h("p", { class: "muted" }, "브라우저에서 만들기·셀프 체크·등록·평가·배포·승인·권한·정책. Databricks 로그인 그대로 씁니다.")),
+      h("div", { class: "card pad" }, h("h2", { class: "h-ico" }, icon("terminal", 16), "PC CLI"), h("p", { class: "muted" }, "aops run으로 Claude·Codex 하네스를 바꿔 가며 개발하고 같은 명령으로 등록·배포합니다."),
         h("div", { class: "cmd" }, "aops register --bump fix\naops deploy")),
-      h("div", { class: "card pad" }, h("h2", {}, "Genie Code"), h("p", { class: "muted" }, "워크스페이스 스킬 aops: \"이 에이전트 등록해줘\", \"배포해줘\". 노트북에서 같은 CLI 코드가 내 신원으로 돕니다."),
+      h("div", { class: "card pad" }, h("h2", { class: "h-ico" }, icon("sparkle", 16), "Genie Code"), h("p", { class: "muted" }, "워크스페이스 스킬 aops: \"이 에이전트 등록해줘\", \"배포해줘\". 노트북에서 같은 CLI 코드가 내 신원으로 돕니다."),
         h("div", { class: "cmd" }, "에이전트 폴더 …/price-helper 를\nfix 버전으로 등록하고 배포해줘"))),
     h("div", { class: "card mt" }, h("table", { class: "data" },
       h("thead", {}, h("tr", {}, ["CLI 명령", "이 화면", "API"].map((t) => h("th", {}, t)))),
@@ -1671,6 +1753,377 @@ async function guidePage(root) {
     h("div", { class: "card pad mt" }, h("h2", {}, "PC에서만 하는 것"),
       h("p", { class: "muted" }, "하네스(Claude·Codex) 실행은 PC에서만"),
       h("div", {}, pcOnly.map((c) => h("span", { class: "tag mono" }, c)))));
+}
+
+// ── 도움말: 어떤 에이전트를 만들까 · 버튼 사전 · 투어 ───────────────────────────
+
+// When each kind is the right one, what one makes, and what the people who use it get
+const KIND_GUIDE = [
+  { kind: "skill", ico: "doc", title: "스킬 기반", when: "규칙·절차·문서 양식을 알려 주면 되는 일",
+    examples: ["할인·견적 계산 규칙", "보고서·메일 양식", "사내 업무 절차 안내"],
+    make: "SKILL.md에 지시와 규칙을 글로 적습니다. 코드는 없어도 됩니다",
+    run: "운영은 UC Skill입니다. 쓰는 사람이 [가져오기]로 받아 Claude·Codex(aops run)나 Genie Code에서 씁니다" },
+  { kind: "code", ico: "code", title: "코드 기반", when: "도구 호출·외부 API·여러 단계를 코드로 짜야 하는 일",
+    examples: ["조회 → 판단 → 답하는 상담", "사내 API를 부르는 처리", "검색 → 요약 → 메일 초안"],
+    make: "Agent Bricks 프로젝트(LangGraph·OpenAI Agents SDK)를 Genie Code나 PC에서 고칩니다",
+    run: "운영은 Databricks App(agent-bricks-<이름>)입니다. 권한을 받은 사람이 앱을 열어 씁니다" },
+  { kind: "no_code", ico: "chat", title: "노코드 (Genie)", when: "테이블 데이터에 자연어로 묻고 답을 받는 일",
+    examples: ["지역별 매출 묻기", "재고·주문 현황 조회", "지표를 질문으로 보기"],
+    make: "테이블을 고르면 개발용 Genie가 생깁니다. Genie 화면에서 지침·예시 질문을 다듬습니다",
+    run: "운영은 운영용 Genie입니다. 공개 그룹에 CAN RUN이 걸리고, 그 그룹이 Genie에서 묻습니다" },
+];
+const kindGuide = (kind) => KIND_GUIDE.find((g) => g.kind === kind) || KIND_GUIDE[0];
+
+// What every action button means (the same words on every screen and in the CLI)
+const GLOSSARY = [
+  ["edit", "에이전트 폴더나 편집기(노코드는 개발용 Genie)를 엽니다. Genie Code에 말하거나 PC에서 고칩니다"],
+  ["selfcheck", "템플릿대로 구성됐는지 체크리스트로 봅니다. 언제든 눌러도 되고 기록하지 않습니다"],
+  ["register", "지금 폴더를 버전(zip·해시)으로 저장합니다. 등록만으로는 운영에 나가지 않습니다"],
+  ["evaluate", "형식 검사 → 내용 검토(모델이 모든 파일을 읽고 리포트) → 평가셋 채점(노코드는 벤치마크). 배포 요청 때 자동으로 돕니다"],
+  ["deploy", "버전을 골라 운영에 올려 달라고 요청합니다. 평가 → 승인 → 운영 반영이 이어집니다"],
+  ["approve", "승인자가 평가 리포트를 확인하고 결정합니다. 승인하면 운영 반영이 바로 시작됩니다"],
+  ["promote", "운영 버전을 쓸 사람·그룹에 권한을 줍니다 (스킬 READ_VOLUME · 앱 CAN_USE · Genie CAN RUN)"],
+  ["load", "운영 버전을 씁니다. 스킬은 zip으로 받고, 코드·노코드는 운영 앱·Genie가 열립니다"],
+];
+const LEGEND = [["done", "check", "끝남 · 통과 · 운영 중"], ["warn", "alert", "주의 · 승인 대기"], ["bad", "alert", "고칠 것 · 실패 · 반려"],
+  ["run", "clock", "진행 중"], ["wait", "flag", "아직"]];
+const FLOW_ICON = ["edit", "checklist", "package", "flask", "shield", "live"];
+
+const store = {  // small settings of this browser (a blocked storage only forgets them)
+  get(key) { try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ } },
+};
+const TOUR_DONE = "aops.tours.done";
+
+// A tour points at the real screen, one part at a time. A step names the part by its data-tour mark; `route` opens a
+// screen first; `click` waits for the person to press that part (it is open, everything else is not); `missing` is said
+// when the part is not on the screen (no agent yet, not an approver); `stop` ends the tour there; `optional` skips it.
+const kindStep = (kind) => {
+  const g = kindGuide(kind);
+  return { el: `kind-${kind}`, click: true, title: `${g.title}: ${g.when}`, text: [`예: ${g.examples.join(" · ")}`, g.make, g.run] };
+};
+const TOURS = {
+  basics: { ico: "compass", title: "처음 둘러보기", desc: "왼쪽 메뉴와 첫 화면이 무엇인지 2분 만에", steps: [
+    { route: "#/agents", title: "aops console입니다", text: ["에이전트를 만들고 → 등록 → 평가 → 승인 → 운영까지 한곳에서 합니다.",
+      "화면·PC CLI·Genie Code가 같은 aops 서버를 쓰므로, 어디서 하든 같은 기록이 남습니다."] },
+    { el: "nav-new", title: "새 에이전트", text: "여기서 시작합니다. 스킬 기반·코드 기반·노코드(Genie) 중 하나를 고릅니다." },
+    { el: "nav-agents", title: "에이전트", text: "레지스트리의 모든 에이전트와 상태(운영 버전, 마지막 평가, 진행 중인 요청)를 봅니다." },
+    { el: "todos", title: "지금 할 일", text: "승인할 요청 · 진행 중인 내 요청 · 고칠 에이전트 · 운영 중. 카드를 누르면 그 목록으로 갑니다." },
+    { el: "nav-gates", title: "배포 요청함", text: "배포 요청이 모이는 곳입니다. 승인자는 평가 리포트를 보고 승인·반려합니다. 숫자는 내가 승인할 요청 수입니다." },
+    { el: "nav-register", title: "폴더·zip 등록", text: "PC에서 만든 에이전트 폴더나 zip을 버전으로 올립니다. 처음 올리면 에이전트가 생깁니다." },
+    { el: "nav-genie", title: "Genie 점검", text: "아무 Genie 스페이스나 노코드 규칙으로 점검합니다. 기록하지 않습니다." },
+    { el: "nav-policy", title: "정책·평가 프롬프트", text: "평가·승인 방식과 내용 검토 기준입니다. 관리자만 바꿉니다." },
+    { el: "help-btn", title: "언제든 도움말", text: "다른 투어(에이전트 고르기, 버튼의 뜻, 승인하기)는 여기서 다시 엽니다." },
+  ] },
+  create: { ico: "plus", title: "어떤 에이전트를 만들까", desc: "세 종류를 언제 쓰는지 보고, 새 에이전트 화면을 직접 눌러 봅니다", steps: [
+    { route: "#/agents", el: "nav-new", click: true, title: "새 에이전트를 눌러 보세요", text: "왼쪽 위 [새 에이전트]를 누르면 만들기 화면이 열립니다." },
+    { route: "#/new", el: "new-kind", title: "먼저 종류를 고릅니다", text: "무엇을 하는 에이전트인지에 따라 셋 중 하나입니다. 하나씩 눌러 보세요." },
+    kindStep("skill"), kindStep("code"), kindStep("no_code"),
+    { el: "new-basic", title: "이름과 설명", text: ["이름(agent_id)은 영문 소문자·숫자·하이픈입니다. 폴더·운영 자원·모든 기록이 이 이름을 씁니다.",
+      "설명은 이 에이전트가 하는 일을 한 줄로 적습니다."] },
+    { el: "new-class", title: "분류", text: ["중요도·데이터 민감도·보안 등급·담당 팀이 SPEC.md에 남습니다.",
+      "정책의 승인 방식이 '선택'이면 중요도 low + 민감도 public·internal일 때 자동 승인됩니다."] },
+    { el: "new-approvers", title: "승인자", text: "배포 요청을 승인할 사람·그룹입니다. 비우면 정책의 승인 그룹이 승인합니다. 내 요청은 내가 승인할 수 없습니다." },
+    { el: "new-where", title: "만들 곳", text: ["스킬·코드: 내 워크스페이스 폴더에 템플릿이 생기고 Genie Code로 고칩니다. [폴더 받기]로 PC에서 고쳐도 됩니다.",
+      "노코드: 테이블을 고르거나 기존 Genie 스페이스를 복사·이동합니다."] },
+    { el: "new-flow", title: "만든 뒤 흐름", text: "개발 → 셀프 체크 → 등록 → 평가 → 승인 → 운영. 고른 종류에서 무엇이 생기는지 여기 나옵니다." },
+    { el: "new-submit", title: "만들기", text: "다 적고 누르면 실제로 만들어집니다. 투어에서는 누르지 않습니다." },
+  ] },
+  agent: { ico: "grid", title: "에이전트 화면과 버튼의 뜻", desc: "한 에이전트의 6단계와 버튼이 무엇을 하는지", steps: [
+    { route: "#/agents", el: "agent-row", click: true, title: "에이전트 하나를 눌러 보세요", text: "목록의 한 줄을 누르면 그 에이전트 화면이 열립니다.",
+      missing: "아직 에이전트가 없습니다. [새 에이전트]로 하나 만든 뒤 이 투어를 다시 해 보세요.", stop: true },
+    { el: "lifecycle", title: "6단계 한눈에", text: ["개발 → 셀프 체크 → 등록 → 평가 → 승인 → 운영.",
+      "초록은 끝남, 주황은 주의·대기, 빨강은 고칠 것, 파랑은 진행 중입니다. 단계마다 그 단계의 버튼이 있습니다."] },
+    { el: "step-edit", title: "개발", text: "작업 폴더와 편집기를 엽니다. Genie Code에 \"이렇게 고쳐줘\"라고 말해 고칩니다. 노코드는 개발용 Genie를 엽니다." },
+    { el: "step-selfcheck", title: "셀프 체크", text: "템플릿대로 구성됐는지 체크리스트로 봅니다. 언제든 눌러도 되고 기록하지 않습니다. ERROR가 남아 있으면 배포 전 평가에서 반려됩니다." },
+    { el: "step-register", title: "등록", text: "지금 폴더를 버전(1.0.0, 1.1.0 …)으로 저장합니다. 등록만으로는 운영에 나가지 않습니다. 노코드는 배포가 성공할 때 버전이 생깁니다." },
+    { el: "step-evaluate", title: "평가", text: ["형식 검사 → 내용 검토(모델이 모든 파일을 읽고 리포트) → 평가셋 채점(노코드는 벤치마크).",
+      "배포 요청 때 자동으로 돌고, 미리 돌려 볼 수도 있습니다. 도는 동안 무엇을 읽고 검사하는지 실시간으로 보입니다."] },
+    { el: "step-approve", title: "승인", text: "승인자가 리포트를 보고 결정합니다. 형식 ERROR만 자동 반려이고, 내용 검토 부적합은 승인자가 판단합니다." },
+    { el: "step-deploy", title: "운영", text: "승인되면 운영에 반영됩니다. 스킬은 UC Skill, 코드는 운영 앱, 노코드는 운영용 Genie입니다." },
+    { el: "act-deploy", title: "배포 요청", text: "버전을 골라 운영에 올려 달라고 요청합니다. 평가 → 승인 → 운영 반영이 이어집니다. 담당자·담당 팀만 누를 수 있습니다." },
+    { el: "act-promote", title: "권한", text: "운영 버전을 쓸 사람·그룹에 권한을 줍니다 (스킬 READ_VOLUME · 앱 CAN_USE · Genie CAN RUN)." },
+    { el: "act-load", title: "가져오기", text: "운영 버전을 씁니다. 스킬은 zip으로 받고, 코드·노코드는 운영 앱·Genie가 열립니다." },
+    { el: "agent-tabs", title: "기록", text: "버전·평가·배포 요청·배포·이력(감사 기록)을 탭으로 봅니다. 평가 탭의 [리포트]로 지난 평가를 다시 엽니다." },
+  ] },
+  approve: { ico: "shield", title: "배포 요청 승인하기", desc: "승인자가 리포트를 읽고 결정하는 순서", steps: [
+    { route: "#/agents", el: "nav-gates", click: true, title: "배포 요청함을 눌러 보세요", text: "배포 요청은 모두 여기 모입니다." },
+    { route: "#/gates", el: "gates-tabs", title: "세 개의 탭", text: ["승인할 요청: 내가 지정 승인자(또는 승인 그룹)인 요청.", "내 요청: 내가 올린 요청. 전체: 모든 요청."] },
+    { el: "gate-row", click: true, title: "요청 하나를 열어 보세요", text: "한 줄을 누르면 그 요청의 평가 리포트와 결정 화면이 열립니다.",
+      missing: "이 탭에는 요청이 없습니다. [전체] 탭을 보거나, 에이전트 화면의 [배포 요청]으로 요청이 생긴 뒤 다시 해 보세요.", stop: true },
+    { el: "gate-progress", title: "평가 → 승인 → 운영 반영", text: "이 요청이 어디까지 왔는지 봅니다." },
+    { el: "gate-request", title: "요청 내용", text: "요청 사유, 지정 승인자, 평가·승인 방식, 결정 내용입니다." },
+    { el: "gate-report", title: "평가 리포트", text: ["맨 위는 판정(적합·주의·부적합)과 검토 모델의 의견입니다.",
+      "체크리스트는 문제 항목이 먼저 나오고, 근거는 파일:줄로 나옵니다. 아래에 품질 평가와 형식 검사 결과가 있습니다."],
+      missing: "아직 평가 리포트가 없습니다. 평가가 도는 중이면 이 자리에 진행이 보입니다." },
+    { el: "gate-decide", title: "승인자 결정", text: ["리포트를 확인했다고 체크하고, 의견을 적어 [승인]합니다. 반려는 사유가 필요합니다.", "승인하면 운영 반영이 바로 시작됩니다."],
+      missing: "결정 칸은 이 요청의 승인자에게만 보입니다. 내 요청은 내가 승인할 수 없습니다." },
+  ] },
+  register: { ico: "upload", title: "폴더·zip으로 등록하기", desc: "PC에서 만든 에이전트를 버전으로 올리기", steps: [
+    { route: "#/register", el: "reg-drop", title: "폴더나 zip 고르기", text: ["aops init으로 만든 에이전트 폴더(aops.toml이 있는 곳)를 고르거나 zip을 끌어 놓습니다.",
+      "runs·.git·.venv 같은 폴더와 CLAUDE.md·AGENTS.md는 빠집니다."] },
+    { el: "reg-ws", title: "워크스페이스 폴더", text: "Genie Code로 고친 워크스페이스 폴더는 경로를 적어 바로 등록합니다." },
+    { el: "reg-version", title: "버전", text: "fix·minor·major 중 올릴 폭을 고르거나 버전을 직접 적습니다. 처음 등록은 1.0.0입니다." },
+    { el: "reg-note", title: "사유", text: "무엇을 바꿨는지 적습니다. 버전 기록과 Git 커밋 메시지에 남습니다." },
+    { el: "reg-check", title: "셀프 체크", text: "올리기 전에 템플릿 구성을 점검합니다. 기록하지 않습니다." },
+    { el: "reg-submit", title: "등록", text: "버전을 저장합니다. 평가와 승인은 배포 요청 때 합니다." },
+  ] },
+  policy: { ico: "sliders", title: "관리자: 정책과 평가 프롬프트", desc: "평가·승인 규칙과 내용 검토 기준 바꾸기", steps: [
+    { route: "#/policy", el: "pol-rules", title: "평가·승인 규칙", text: ["평가 방식: 필수(실패하면 반려) · 선택(실패해도 승인자에게) · 면제.",
+      "승인 방식: 사람 승인 · 선택(중요도·민감도가 낮으면 자동) · 자동 승인. 바꾸면 새 정책 버전이 됩니다."] },
+    { el: "pol-prompts", title: "평가 프롬프트", text: ["내용 검토 모델이 따르는 체크리스트입니다. 공통 + 종류별로 넷이고, 저장하면 새 버전이 됩니다.",
+      "평가마다 어떤 버전을 썼는지 리포트에 남습니다."] },
+    { el: "pol-history", title: "정책 이력", text: "누가 언제 어떤 정책을 적용했는지 남습니다." },
+  ] },
+};
+
+// The tour for the screen one is on, and where in it to start
+function contextTour() {
+  const { parts } = route();
+  switch (parts[0] || "agents") {
+    case "agents": return parts[1] ? { id: "agent", at: 1 } : { id: "basics", at: 0 };
+    case "new": return { id: "create", at: 1 };
+    case "gates": return { id: "approve", at: parts[1] ? 3 : 1 };
+    case "register": return { id: "register", at: 0 };
+    case "policy": return { id: "policy", at: 0 };
+    default: return { id: "basics", at: 0 };
+  }
+}
+
+const tour = { id: null, i: 0, dir: 1, token: 0, el: null, parts: null, layer: null, tick: null, raf: 0 };
+const tourSel = (name) => `[data-tour="${name}"]`;
+const shown = (el) => !!el && el.isConnected && el.getClientRects().length > 0;
+
+function startTour(id, at = 0) {
+  if (!TOURS[id]) return;
+  endTour(false);
+  document.querySelectorAll(".menu-pop").forEach((m) => m.remove());
+  const nudge = () => { const c = tour.parts.card; c.classList.remove("nudge"); void c.offsetWidth; c.classList.add("nudge"); };
+  const block = (cls = "") => h("div", { class: `tour-block ${cls}`, onclick: nudge });
+  tour.parts = { top: block(), right: block(), bottom: block(), left: block(), cover: block("tour-cover"),
+    ring: h("div", { class: "tour-ring" }), card: h("div", { class: "tour-card", role: "dialog", "aria-live": "polite" }) };
+  tour.layer = h("div", { class: "tour" }, Object.values(tour.parts));
+  document.body.append(tour.layer);
+  Object.assign(tour, { id, i: at, dir: 1 });
+  document.addEventListener("keydown", tourKeys);
+  document.addEventListener("click", tourClick, true);
+  window.addEventListener("resize", placeTour);
+  window.addEventListener("scroll", placeTour, true);
+  tour.tick = setInterval(placeTour, 400);  // the screen under the tour still loads and moves
+  showStep();
+}
+
+function endTour(finished) {
+  if (!tour.id) return;
+  const t = TOURS[tour.id];
+  const id = tour.id;
+  tour.layer.remove();
+  document.removeEventListener("keydown", tourKeys);
+  document.removeEventListener("click", tourClick, true);
+  window.removeEventListener("resize", placeTour);
+  window.removeEventListener("scroll", placeTour, true);
+  clearInterval(tour.tick);
+  Object.assign(tour, { id: null, el: null, parts: null, layer: null, token: tour.token + 1 });
+  if (finished) {
+    store.set(TOUR_DONE, [...new Set([...(store.get(TOUR_DONE) || []), id])]);
+    toast(`투어를 마쳤습니다: ${t.title}`, "ok", "다른 투어는 오른쪽 위 [도움말]에서");
+    if (location.hash.startsWith("#/help")) render();
+  }
+}
+
+function goStep(i) {
+  tour.dir = i >= tour.i ? 1 : -1;
+  tour.i = Math.max(0, i);
+  showStep();
+}
+
+async function showStep() {
+  const step = TOURS[tour.id].steps[tour.i];
+  if (!step) return endTour(true);
+  const token = ++tour.token;
+  tour.el = null;
+  if (step.route && location.hash.split("?")[0] !== step.route) location.hash = step.route;
+  paintCard(step, "wait");
+  placeTour();
+  let el = null;
+  const since = Date.now();
+  for (const until = since + 6000; step.el && Date.now() < until && token === tour.token;) {
+    el = document.querySelector(tourSel(step.el));
+    if (shown(el)) break;
+    el = null;
+    if (Date.now() - since > 1500 && !document.querySelector(".page .loading, .page .spinner")) break;  // the screen is drawn and has no such part
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+  if (token !== tour.token) return;  // moved on, or the tour ended
+  if (step.el && !el && step.optional) return goStep(tour.i + tour.dir);
+  tour.el = el;
+  if (el) el.scrollIntoView({ block: el.getBoundingClientRect().height > innerHeight * 0.6 ? "start" : "center", behavior: "smooth" });
+  paintCard(step, step.el && !el ? "missing" : "show");
+  placeTour();
+}
+
+function paintCard(step, mode) {
+  const t = TOURS[tour.id];
+  const n = t.steps.length;
+  const missing = mode === "missing";
+  const clickable = step.click && mode === "show";
+  const last = tour.i === n - 1 || (missing && step.stop);
+  const next = last ? h("button", { class: "btn small primary", onclick: () => endTour(tour.i === n - 1) }, tour.i === n - 1 ? "마치기" : "닫기")
+    : clickable ? h("button", { class: "btn small", onclick: () => tour.el && tour.el.click() }, "대신 눌러 주기")
+      : h("button", { class: "btn small primary", disabled: mode === "wait", onclick: () => goStep(tour.i + 1) }, "다음", icon("arrow", 14));
+  fill(tour.parts.card,
+    h("div", { class: "tour-head" }, h("span", { class: "tour-ico" }, icon(t.ico, 15)), h("span", { class: "grow muted" }, `${t.title} · ${tour.i + 1}/${n}`),
+      h("button", { class: "btn ghost small", title: "투어 끝내기 (Esc)", "aria-label": "투어 끝내기", onclick: () => endTour(false) }, icon("x", 14))),
+    h("div", { class: "tour-bar" }, h("div", { style: `width:${Math.round(((tour.i + 1) / n) * 100)}%` })),
+    h("h3", {}, step.title),
+    mode === "wait" ? h("p", { class: "muted" }, h("span", { class: "spinner" }), " 화면을 여는 중…")
+      : [].concat(missing ? step.missing || "이 화면에 그 부분이 없습니다. [다음]으로 넘어가세요." : step.text).map((x) => h("p", {}, x)),
+    clickable ? h("div", { class: "tour-hint" }, icon("pointer", 14), "표시된 곳을 직접 눌러 보세요") : null,
+    h("div", { class: "tour-foot" },
+      tour.i > 0 ? h("button", { class: "btn small ghost", onclick: () => goStep(tour.i - 1) }, icon("back", 14), "이전") : null,
+      h("span", { class: "right" }, next)));
+}
+
+// The marked part stays lit; the rest is dimmed and does not take clicks (the part does on a `click` step)
+function placeTour() {
+  if (!tour.id) return;
+  cancelAnimationFrame(tour.raf);
+  tour.raf = requestAnimationFrame(() => {
+    if (!tour.parts) return;
+    const step = TOURS[tour.id].steps[tour.i];
+    if (tour.el && !tour.el.isConnected && step.el) tour.el = document.querySelector(tourSel(step.el));  // the screen drew itself again
+    const { top, right, bottom, left, cover, ring, card } = tour.parts;
+    const W = document.documentElement.clientWidth, H = innerHeight;
+    const box = (part, x, y, w, ht) => { part.style.cssText = `left:${x}px;top:${y}px;width:${Math.max(0, w)}px;height:${Math.max(0, ht)}px`; };
+    const el = shown(tour.el) ? tour.el : null;
+    let [x, y, x2, y2] = [W / 2, H / 2, W / 2, H / 2];
+    if (el) {
+      const r = el.getBoundingClientRect();
+      [x, y, x2, y2] = [Math.max(4, r.left - 6), Math.max(4, r.top - 6), Math.min(W - 4, r.right + 6), Math.min(H - 4, r.bottom + 6)];
+      [x2, y2] = [Math.max(x, x2), Math.max(y, y2)];
+      if (r.height > H * 0.6) y2 = Math.min(y2, y + H * 0.45);  // a tall part: light where it starts, the card goes below
+    }
+    box(top, 0, 0, W, y); box(bottom, 0, y2, W, H - y2); box(left, 0, y, x, y2 - y); box(right, x2, y, W - x2, y2 - y);
+    box(cover, x, y, x2 - x, y2 - y);
+    cover.style.display = el && step.click ? "none" : "";
+    box(ring, x, y, x2 - x, y2 - y);
+    ring.classList.toggle("off", !el);
+    const cw = card.offsetWidth, ch = card.offsetHeight, gap = 14;
+    let [cx, cy] = [(W - cw) / 2, (H - ch) / 2];
+    if (el) {
+      if (y2 + gap + ch <= H - 8) [cx, cy] = [x, y2 + gap];
+      else if (y - gap - ch >= 8) [cx, cy] = [x, y - gap - ch];
+      else if (x2 + gap + cw <= W - 8) [cx, cy] = [x2 + gap, y];
+      else if (x - gap - cw >= 8) [cx, cy] = [x - gap - cw, y];
+      else [cx, cy] = [W - cw - 24, H - ch - 24];
+    }
+    card.style.left = `${Math.min(Math.max(8, cx), W - cw - 8)}px`;
+    card.style.top = `${Math.min(Math.max(8, cy), H - ch - 8)}px`;
+  });
+}
+
+function tourClick(e) {
+  if (!tour.id || !tour.el || !TOURS[tour.id].steps[tour.i].click || !tour.el.contains(e.target)) return;
+  const at = tour.i;
+  setTimeout(() => { if (tour.id && tour.i === at) goStep(at + 1); }, 60);  // after the click did its own work (a screen, a choice)
+}
+
+function tourKeys(e) {
+  if (!tour.id) return;
+  if (e.key === "Escape") { e.preventDefault(); return endTour(false); }
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName)) return;
+  const steps = TOURS[tour.id].steps;
+  if (e.key === "ArrowRight" && !steps[tour.i].click && tour.i < steps.length - 1) goStep(tour.i + 1);
+  if (e.key === "ArrowLeft" && tour.i > 0) goStep(tour.i - 1);
+}
+
+// The top bar's [도움말]: this screen's tour first, then every tour, then the help page
+function openHelpMenu(anchor) {
+  const open = document.querySelector(".menu-pop");
+  if (open) return open.remove();
+  const here = contextTour();
+  const done = store.get(TOUR_DONE) || [];
+  const r = anchor.getBoundingClientRect();
+  const item = (ico, label, onclick, extra = null, cls = "") => h("button", { class: `menu-item ${cls}`, onclick }, icon(ico, 16), h("span", { class: "grow" }, label), extra);
+  const menu = h("div", { class: "menu-pop", style: `top:${r.bottom + 6}px;right:${Math.max(8, document.documentElement.clientWidth - r.right)}px` },
+    item("compass", [h("b", {}, "이 화면 둘러보기"), h("div", { class: "muted" }, TOURS[here.id].title)], () => startTour(here.id, here.at), null, "strong"),
+    h("div", { class: "menu-cap" }, "투어"),
+    Object.entries(TOURS).map(([id, t]) => item(t.ico, t.title, () => startTour(id), done.includes(id) ? h("span", { class: "ok-text", title: "마친 투어" }, icon("check", 14)) : null)),
+    h("div", { class: "menu-sep" }),
+    item("help", "도움말 전체 (종류 고르기 · 버튼 사전)", () => { menu.remove(); location.hash = "#/help"; }));
+  document.body.append(menu);
+  const away = (e) => { if (!menu.contains(e.target) && !anchor.contains(e.target)) { menu.remove(); document.removeEventListener("click", away, true); } };
+  document.addEventListener("click", away, true);
+}
+
+// First visit: offer the tour once, above the agent list
+function welcomeCard() {
+  if (store.get("aops.welcome")) return null;
+  const close = () => { store.set("aops.welcome", 1); card.remove(); };
+  const card = h("div", { class: "welcome" },
+    h("span", { class: "tile-ico" }, icon("compass", 20)),
+    h("div", { class: "grow" }, h("b", {}, "처음이신가요?"), h("div", { class: "muted" }, "화면을 직접 눌러 보며 2분 만에 익힙니다. 어떤 종류의 에이전트를 만들지도 골라 드립니다.")),
+    h("button", { class: "btn primary", onclick: () => { close(); startTour("basics"); } }, icon("compass"), "둘러보기 시작"),
+    h("a", { class: "btn", href: "#/help", onclick: () => store.set("aops.welcome", 1) }, "종류 고르기"),
+    h("button", { class: "btn ghost", title: "다시 보지 않기", "aria-label": "닫기", onclick: close }, icon("x")));
+  return card;
+}
+
+// Two questions to the kind that fits
+function kindChooser() {
+  const box = h("div", { class: "card pad chooser" });
+  const ask = (n, q, hint, yes, no) => fill(box,
+    h("div", { class: "muted" }, `질문 ${n}/2`),
+    h("div", { class: "q mt-s" }, q), h("div", { class: "muted mt-s" }, hint),
+    h("div", { class: "row mt" }, h("button", { class: "btn", onclick: yes }, icon("check"), "예"), h("button", { class: "btn", onclick: no }, icon("x"), "아니요")));
+  const answer = (kind) => {
+    const g = kindGuide(kind);
+    fill(box, h("div", { class: "row" }, h("span", { class: `kind-ico k-${kind}` }, icon(g.ico, 20)),
+      h("div", {}, h("div", { class: "muted" }, "추천"), h("div", { class: "big-t" }, g.title))),
+      h("p", { class: "mt" }, h("b", {}, "언제: "), g.when),
+      h("p", { class: "muted" }, g.run),
+      h("div", { class: "row mt" }, h("a", { class: "btn primary", href: `#/new?type=${kind}` }, icon("plus"), "이 종류로 만들기"),
+        h("button", { class: "btn ghost", onclick: first }, "다시 고르기")));
+  };
+  const second = () => ask(2, "도구 호출·외부 API·여러 단계를 코드로 짜야 하나요?", "예: 사내 API를 부르고, 결과를 보고 다음 일을 정하는 상담",
+    () => answer("code"), () => answer("skill"));
+  const first = () => ask(1, "답을 테이블 데이터에서 찾나요?", "예: 매출·재고·주문처럼 SQL로 조회하는 질문", () => answer("no_code"), second);
+  first();
+  return box;
+}
+
+function kindCard(g) {
+  return h("div", { class: "card pad kind-card" },
+    h("div", { class: "kc-head" }, h("span", { class: `kind-ico k-${g.kind}` }, icon(g.ico, 20)), h("b", {}, g.title)),
+    h("dl", {},
+      h("dt", {}, "언제"), h("dd", {}, g.when),
+      h("dt", {}, "예"), h("dd", { class: "ex" }, g.examples.map((x) => h("span", { class: "tag" }, x))),
+      h("dt", {}, "만들기"), h("dd", {}, g.make),
+      h("dt", {}, "운영"), h("dd", {}, g.run)),
+    h("div", { class: "foot" }, h("a", { class: "btn small", href: `#/new?type=${g.kind}` }, icon("plus", 14), "이 종류로 만들기")));
+}
+
+function helpPage(root) {
+  const done = store.get(TOUR_DONE) || [];
+  root.replaceChildren(
+    pageHead("튜토리얼·가이드", "화면을 직접 눌러 보며 배웁니다. 언제든 오른쪽 위 [도움말]에서 다시 엽니다", [], null, "compass"),
+    h("h2", { class: "sec-h" }, "투어"),
+    h("div", { class: "tour-grid" }, Object.entries(TOURS).map(([id, t]) => h("button", { class: "tour-tile", onclick: () => startTour(id) },
+      h("span", { class: "tile-ico" }, icon(t.ico, 20)),
+      h("div", { class: "grow" }, h("b", {}, t.title), h("div", { class: "muted" }, t.desc)),
+      h("span", { class: `tile-meta ${done.includes(id) ? "done" : ""}` }, done.includes(id) ? [icon("check", 13), "마침"] : `${t.steps.length}단계`)))),
+    h("h2", { class: "sec-h mt" }, "어떤 에이전트를 만들까"),
+    h("div", { class: "grid chooser-grid" }, kindChooser(), h("div", { class: "card pad chooser-note" },
+      h("div", { class: "h-ico" }, icon("info", 16), h("b", {}, "애매할 때")),
+      h("ul", { class: "plain-list" }, h("li", {}, "규칙·글로 되는 일은 스킬 기반"), h("li", {}, "테이블 데이터에 묻는 일은 노코드"),
+        h("li", {}, "흐름을 코드로 짜야 하는 일만 코드 기반")))),
+    h("div", { class: "grid three mt" }, KIND_GUIDE.map(kindCard)),
+    h("h2", { class: "sec-h mt" }, "버튼 사전"),
+    h("div", { class: "card" }, h("table", { class: "data gloss" }, h("tbody", {}, GLOSSARY.map(([key, text]) => h("tr", {},
+      h("td", { style: "width:170px" }, h("span", { class: "gloss-name" }, act(key))), h("td", { class: "muted" }, text)))))),
+    h("h2", { class: "sec-h mt" }, "색의 뜻"),
+    h("div", { class: "card pad legend" }, LEGEND.map(([st, ico, text]) => h("div", { class: `lg st ${st}` }, h("span", { class: "dot" }, icon(ico, 13)), text))),
+    h("div", { class: "note mt" }, "같은 일을 PC CLI·Genie Code로 하는 방법은 ", h("a", { href: "#/guide" }, "CLI·Genie Code"), "에 있습니다."));
 }
 
 // ── start ──────────────────────────────────────────────────────────────────
