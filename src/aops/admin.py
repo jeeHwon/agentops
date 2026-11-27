@@ -77,6 +77,17 @@ def add_command(sub: argparse._SubParsersAction) -> None:
     setup.add_argument("--git-owner", help="Git 사본: 에이전트 저장소를 둘 GitHub 조직")
     setup.add_argument("--git-repo-prefix", help="Git 사본: 저장소 이름 = <접두어><agent_id> (기본 aops-)")
     setup.add_argument("--no-git", action="store_true", help="Git 사본을 끈다 (저장소는 그대로 둔다)")
+    setup.add_argument("--workspace", action="append", default=None, metavar="NAME=URL;roles=dev,target[;catalogs=a,b][;warehouse=ID]",
+                       help="여러 워크스페이스 (docs/workspaces.md): 개발(dev)·운영(target) 워크스페이스를 정책에 더하거나 바꾼다. 여러 번. "
+                            "catalogs: 운영 데이터가 있어도 되는 카탈로그, warehouse: 그 워크스페이스의 warehouse(운영용 Genie, 개발용 Genie 기본). "
+                            "주지 않으면 지금 정책 값을 그대로 둔다")
+    setup.add_argument("--default-target", help="기본 운영 워크스페이스 (SPEC.md target_workspace가 없을 때)")
+    setup.add_argument("--workspace-secret-scope", help="다른 워크스페이스를 부를 aops 서비스 주체의 OAuth client ID·secret이 든 시크릿 범위 "
+                                                       "(키 client-id · client-secret). 서버와 평가·배포 Job이 읽는다")
+    setup.add_argument("--no-workspaces", action="store_true", help="워크스페이스 목록을 지운다 (다시 서버의 워크스페이스 하나)")
+    setup.add_argument("--for-workspace", metavar="NAME",
+                       help="정책의 다른 워크스페이스(개발·운영)를 그 워크스페이스 관리자 프로필로 준비: --service-principal의 "
+                            "no-code 폴더 권한과 warehouse CAN_USE, (--server-url이 있으면) Genie Code 스킬. 레지스트리·서버 단계는 하지 않는다")
     setup.add_argument("--users-group", help="aops를 쓰는 사람들의 계정 그룹. 레지스트리 조회(USE·SELECT)와 "
                        "Genie Code가 쓰는 aops 코드 폴더 읽기(CAN_READ)를 준다")
     setup.add_argument("--genie-skills", default=GENIE_SKILLS,
@@ -92,6 +103,8 @@ def cmd_admin(args: argparse.Namespace) -> int:
 
     steps = [s.strip() for s in args.only.split(",")] if args.only else list(STEPS)
     container = getattr(args, "service_principal", None)  # a server outside Databricks Apps (docs/container.md)
+    if getattr(args, "for_workspace", None):
+        return setup_other_workspace(args)
     if container and "app" in steps:
         steps.remove("app")
         print("aops: --service-principal: 서버는 컨테이너로 띄우니 app 단계는 건너뜁니다")
@@ -110,9 +123,16 @@ def cmd_admin(args: argparse.Namespace) -> int:
 
     current = _active_policy(sql) if ("policy" in steps or "grants" in steps) else None
     git = (json.loads(current["body"]) if current else {}).get("git")
+    scope = ((json.loads(current["body"]) if current else {}).get("workspace_credentials") or {}).get("secret_scope")
     if "policy" in steps:
         body = policy_body(args, json.loads(current["body"]) if current else None)
         git = body.get("git")
+        scope = (body.get("workspace_credentials") or {}).get("secret_scope")
+        for name, entry in (body.get("workspaces") or {}).items():
+            print(f"  워크스페이스 {name}: {entry['host']} ({', '.join(entry.get('roles') or [])})"
+                  + (f", 운영 데이터 카탈로그 {', '.join(entry['catalogs'])}" if entry.get("catalogs") else ""))
+        if body.get("workspaces"):
+            print("  그 워크스페이스마다 관리자 프로필로: aops admin setup --for-workspace <이름> --service-principal <aops 서비스 주체> ... --apply")
         print(f"\n[policy] 정책: {json.dumps(body, ensure_ascii=False)}")
         if git and not (args.git_connection or args.no_git):
             print("  git: 지금 정책의 설정을 그대로 둡니다 (바꾸려면 --git-connection·--git-owner, 끄려면 --no-git)")
@@ -195,6 +215,8 @@ def cmd_admin(args: argparse.Namespace) -> int:
                 _grant_warehouse(w, args.warehouse, sp)
             if app is not None or container:
                 _put_no_code_root(w, sp)
+            if scope:
+                _grant_scope(w, scope, sp)
 
     if "genie" in steps:
         target = f"{args.genie_skills.rstrip('/')}/aops/SKILL.md"
@@ -276,6 +298,19 @@ def _put_genie_source(w: Any, args: argparse.Namespace, me: str) -> str:
     return f"{root}/src"
 
 
+def _grant_scope(w: Any, scope: str, sp: str) -> None:
+    """The server and its Jobs read the cross-workspace credentials from this scope as the server's service principal."""
+    from databricks.sdk.service.workspace import AclPermission
+
+    try:
+        w.secrets.put_acl(scope, sp, AclPermission.READ)
+        print(f"  시크릿 범위 {scope}: {sp} READ (키 client-id · client-secret: 다른 워크스페이스를 부를 서비스 주체)")
+    except Exception as error:
+        print(f"  aops: 시크릿 범위 {scope}에 READ를 주지 못했습니다 ({str(error).splitlines()[0][:120]}). "
+              f"범위를 만들고 두 키를 넣은 뒤 다시: databricks secrets create-scope {scope}; "
+              f"databricks secrets put-secret {scope} client-id; databricks secrets put-secret {scope} client-secret")
+
+
 def _put_no_code_root(w: Any, sp: str) -> None:
     """The folder that holds no-code agent folders; the aops service principal manages what is inside."""
     from databricks.sdk.service.workspace import WorkspaceObjectAccessControlRequest, WorkspaceObjectPermissionLevel
@@ -324,7 +359,97 @@ def policy_body(args: argparse.Namespace, current: dict[str, Any] | None) -> dic
                "repo_prefix": args.git_repo_prefix or "aops-", "mode": "commit"}
     if git:
         body["git"] = git
+    body.update(workspace_settings(args, current))
     return body
+
+
+def parse_workspace(text: str) -> tuple[str, dict[str, Any]]:
+    """`NAME=URL;roles=dev,target;catalogs=a,b;warehouse=ID` → (name, {host, roles, catalogs, warehouse_id})."""
+    head, *rest = [part.strip() for part in text.split(";") if part.strip()]
+    name, _, url = head.partition("=")
+    entry: dict[str, Any] = {"host": url.strip(), "roles": ["dev", "target"]}
+    for part in rest:
+        key, _, value = part.partition("=")
+        values = [v.strip() for v in value.split(",") if v.strip()]
+        if key.strip() == "roles":
+            entry["roles"] = values
+        elif key.strip() == "catalogs":
+            entry["catalogs"] = values
+        elif key.strip() in ("warehouse", "warehouse_id"):
+            entry["warehouse_id"] = value.strip()
+        else:
+            raise SystemExit(f"aops: --workspace의 {key!r}를 모릅니다 (roles · catalogs · warehouse)")
+    return name.strip(), entry
+
+
+def workspace_settings(args: argparse.Namespace, current: dict[str, Any] | None) -> dict[str, Any]:
+    """workspaces · default_target · workspace_credentials: kept from the active policy unless given."""
+    from . import workspaces
+
+    out: dict[str, Any] = {k: current[k] for k in ("workspaces", "default_target", "workspace_credentials") if k in (current or {})}
+    if getattr(args, "no_workspaces", False):
+        return {}
+    listed = dict(out.get("workspaces") or {})
+    for text in getattr(args, "workspace", None) or []:
+        name, entry = parse_workspace(text)
+        try:
+            entry["host"] = workspaces.normalize_host(entry["host"])
+        except ValueError as error:
+            raise SystemExit(f"aops: --workspace {name}: {error}") from None
+        listed[name] = entry
+    problems = workspaces.check_entries(listed)
+    if problems:
+        raise SystemExit("aops: --workspace: " + "; ".join(problems))
+    if listed:
+        out["workspaces"] = listed
+    if getattr(args, "default_target", None):
+        out["default_target"] = args.default_target
+    if out.get("default_target"):
+        roles = (listed.get(out["default_target"]) or {}).get("roles") or []
+        if "target" not in roles:
+            raise SystemExit(f"aops: --default-target {out['default_target']}는 roles에 target이 있는 --workspace여야 합니다")
+    if getattr(args, "workspace_secret_scope", None):
+        out["workspace_credentials"] = {"secret_scope": args.workspace_secret_scope, "client_id_key": "client-id",
+                                        "client_secret_key": "client-secret"}
+    return out
+
+
+def setup_other_workspace(args: argparse.Namespace) -> int:
+    """Another workspace of the policy, with an admin profile of that workspace: the pieces aops needs there.
+
+    The registry, the server and the Jobs stay in the server's workspace. Here: the aops service principal is
+    assigned (an account admin assigns it), it manages /Workspace/aops/no-code (dev folders and production Genie
+    spaces), it may use the warehouse, and Genie Code gets the aops skill (only for a server outside Apps: a
+    notebook here cannot get a token for an app in another workspace)."""
+    from databricks.sdk import WorkspaceClient
+
+    sp = getattr(args, "service_principal", None)
+    if not sp:
+        raise SystemExit("aops: --for-workspace에는 그 워크스페이스에서 일할 aops 서비스 주체 --service-principal <application ID>가 필요합니다")
+    w = WorkspaceClient(profile=args.profile)
+    me = w.current_user.me().user_name
+    print(f"aops admin setup --for-workspace {args.for_workspace} · {w.config.host} · {'실행' if args.apply else '미리보기'} (관리자 {me})")
+    found = list(w.service_principals.list(filter=f'applicationId eq "{sp}"', attributes="applicationId,displayName"))
+    print(f"\n[assign] aops 서비스 주체 {sp}: {'이 워크스페이스에 있음' if found else '이 워크스페이스에 없음'}")
+    if not found:
+        print("  계정 관리자가 계정 콘솔에서 이 서비스 주체를 이 워크스페이스에 배정해야 합니다 (Workspaces → Permissions)")
+        return 1
+    print(f"\n[grants] {NO_CODE_ROOT}: {sp} CAN_MANAGE · SQL warehouse {args.warehouse}: {sp} CAN_USE")
+    print("  노코드 데이터 테이블: 서비스 주체에 SELECT (데이터 주인이 줌)")
+    if args.apply:
+        _put_no_code_root(w, sp)
+        _grant_warehouse(w, args.warehouse, sp)
+    if getattr(args, "server_url", None):
+        target = f"{args.genie_skills.rstrip('/')}/aops/SKILL.md"
+        print(f"\n[genie] Genie Code 스킬 {target} → aops 서버 {args.server_url} (노트북 토큰과 이 워크스페이스 주소를 보냄)")
+        if args.apply:
+            source = _put_genie_source(w, args, me)
+            _put_genie_skill(w, target, genie_skill(source, args.app, args.server_url))
+    else:
+        print("\n[genie] 건너뜀: 다른 워크스페이스의 노트북은 aops 앱의 토큰을 받을 수 없습니다. 앱 밖 서버면 --server-url을 주세요 (docs/workspaces.md)")
+    if not args.apply:
+        print("\n미리보기입니다. 실행하려면 --apply를 붙이세요.")
+    return 0
 
 
 def _active_policy(sql: Any) -> dict[str, Any] | None:

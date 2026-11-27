@@ -161,6 +161,13 @@ function evalBadge(status, verdict) {
   if (["failed", "error", "stale"].includes(status) || !verdict) return badge("validation", status);
   return h("span", { class: `badge ${LABEL.verdict[verdict][1]}` }, { pass: "통과", warn: "주의 있음", fail: "부적합 있음" }[verdict]);
 }
+// More than one workspace (policy workspaces): names, roles, the default production one
+const spaces = () => {
+  const pol = state.policy || {};
+  const listed = Object.entries(pol.workspaces || {}).map(([name, w]) => ({ name, ...w }));
+  return { many: listed.length > 0, listed, targets: listed.filter((w) => (w.roles || []).includes("target")), fallback: pol.default_target || null };
+};
+const targetOf = (spec) => (spec && spec.target_workspace) || spaces().fallback || (spaces().targets[0] || {}).name || "서버 워크스페이스";
 const UPGRADE = { initial: "첫 배포", major: "major", minor: "minor", patch: "patch", rollback: "되돌리기" };
 const EVENT = {
   create: "만들기", register: "등록", validate: "검사(옛)", evaluate: "평가", gate_requested: "배포 요청", gate_approved: "승인", gate_rejected: "반려",
@@ -259,7 +266,8 @@ function layout(active, crumbs, content) {
     nav,
     h("div", { class: "side-foot" },
       me ? h("div", { class: "who" }, h("span", { class: "avatar" }, (me.user || "?").slice(0, 1).toUpperCase()),
-        h("div", { class: "who-t" }, h("div", { class: "user", title: me.user }, me.user), h("div", { class: "muted" }, me.roles.map((r) => ROLE[r] || r).join(" · ")))) : null,
+        h("div", { class: "who-t" }, h("div", { class: "user", title: me.user }, me.user), h("div", { class: "muted" }, me.roles.map((r) => ROLE[r] || r).join(" · ")),
+          spaces().many && me.workspace ? h("div", { class: "muted", title: me.workspace.host }, icon("layers", 12), ` ${me.workspace.name}`) : null)) : null,
       me && me.login === "oauth" ? h("a", { href: "#", class: "logout", onclick: async (e) => {
         e.preventDefault();
         await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => null);
@@ -436,6 +444,10 @@ async function agentPage(root, id, params) {
         h("dt", {}, "에이전트 폴더"), h("dd", {}, nc && nc.folder_url ? link(nc.folder_url, nc.folder_path) : (nc && nc.folder_path) || "–"),
         h("dt", {}, "공개 그룹"), h("dd", {}, (nc && nc.consumer_group) || h("span", { class: "muted" }, "없음 (SPEC.md consumer_group)"))]
         : [h("dt", {}, "작업 폴더"), h("dd", {}, ws ? (ws.folder_url ? link(ws.folder_url, ws.workspace_path) : h("span", { class: "mono" }, ws.workspace_path)) : h("span", { class: "muted" }, "PC (폴더·zip으로 등록)"))],
+      spaces().many ? [
+        h("dt", {}, "개발 워크스페이스"), h("dd", {}, (noCode ? nc && nc.dev_workspace : ws && ws.workspace) || h("span", { class: "muted" }, "서버 워크스페이스")),
+        h("dt", {}, "운영 워크스페이스"), h("dd", {}, kind === "skill" ? h("span", { class: "muted" }, "UC Skill (워크스페이스에 매이지 않음)")
+          : (noCode && nc && nc.prod_workspace) || agent.target_workspace || targetOf({}))] : null,
       h("dt", {}, "내 권한"), h("dd", {}, isOwner ? `담당자 (개발·${noCode ? "" : "등록·"}평가·배포 요청·권한)` : "보기 · 운영 버전 가져오기")));
 
   const tabs = [["versions", "버전", versions.items.length, "layers"], ["checks", "평가", undefined, "flask"], ["gates", "배포 요청", gates.items.length, "send"],
@@ -538,7 +550,7 @@ function stepItem(step) {
 }
 
 const STEP_TITLE = { format: "SPEC.md", config: "aops.toml", instructions: "지시", skills: "스킬", evals: "평가셋", project: "Agent Bricks 프로젝트",
-  definition: "Genie 정의 규칙", secrets: "비밀값·금지 파일", review: "내용 검토", evaluate: "품질 평가", integrity: "무결성", record: "기록" };
+  definition: "Genie 정의 규칙", target: "운영 위치", secrets: "비밀값·금지 파일", review: "내용 검토", evaluate: "품질 평가", integrity: "무결성", record: "기록" };
 
 // The self-check as a checklist: every rule of every step, the ones to fix first with where to fix them.
 function checklist(steps) {
@@ -1027,6 +1039,7 @@ async function gatePage(root, id) {
       h("dt", {}, "사유"), h("dd", {}, g.reason || "–"),
       h("dt", {}, "지정 승인자"), h("dd", {}, g.approvers.length ? g.approvers.join(", ") : h("span", { class: "muted" }, "없음 (정책의 승인 그룹)")),
       h("dt", {}, "평가·승인 방식"), h("dd", {}, `${MODE[g.validation_policy_mode]} · ${MODE[g.approval_mode] || g.approval_mode} (승인 ${g.approvals}/${g.required_approvals})`),
+      g.target_workspace ? [h("dt", {}, "운영 워크스페이스"), h("dd", {}, g.target_workspace)] : null,
       h("dt", {}, "결정"), h("dd", {}, g.decision_reason || (g.approved_by ? `승인 ${g.approved_by === "policy:auto" ? "정책 자동" : g.approved_by}` : "–"))),
     waiting, h("div", { class: "muted mt-s mono", style: "font-size:11.5px" }, `gate ${g.gate_id}${run ? ` · 평가 ${run.validation_run_id}` : ""}`));
   root.replaceChildren(
@@ -1411,6 +1424,8 @@ function newPage(root, params) {
     harness: choose([["claude", "claude"], ["codex", "codex"]], "claude"),
     framework: choose([["langgraph", "LangGraph"], ["openai", "OpenAI Agents SDK"]], "langgraph"),
     consumer: input("선택: 운영 Genie를 쓸 계정 그룹"),
+    target: h("select", {}, h("option", { value: "" }, `기본 (${spaces().fallback || "정책의 기본"})`),
+      spaces().targets.map((w) => h("option", { value: w.name }, `${w.name} · ${w.host}`))),
     location: input("비우면 /Workspace/Users/<나>/aops/<이름>"),
   };
   const approvers = approverPicker(!!(state.policy && state.policy.approvers_required));
@@ -1436,8 +1451,12 @@ function newPage(root, params) {
           move: "그 스페이스를 에이전트 폴더로 옮깁니다 (ID·대화 이력 유지). 내가 CAN MANAGE여야 합니다." }[genieMode])),
       genieMode === "new" ? p.tables.el : p.space.el,
       genieMode === "move" ? null : p.warehouse.el,
-      h("label", { class: "field" }, h("span", {}, "공개 그룹 (consumer_group)"), f.consumer, h("small", {}, "배포 때 운영용 Genie에 CAN RUN")));
+      h("label", { class: "field" }, h("span", {}, "공개 그룹 (consumer_group)"), f.consumer, h("small", {}, "배포 때 운영용 Genie에 CAN RUN")),
+      targetField());
   };
+  const targetField = () => kind === "skill" || spaces().targets.length < 2 ? null
+    : h("label", { class: "field" }, h("span", {}, "운영 워크스페이스"), f.target,
+      h("small", {}, "운영용 Genie·운영 앱이 생기는 곳 (SPEC.md target_workspace). 운영 데이터는 그 워크스페이스가 허용한 카탈로그에서만"));
 
   const drawKind = () => {
     drawGenie();
@@ -1449,7 +1468,8 @@ function newPage(root, params) {
     fill(kindBox, kind === "no_code" ? genieBox : [
       kind === "skill" ? h("label", { class: "field" }, h("span", {}, "기본 하네스 (PC에서 aops run)"), f.harness) : null,
       kind === "code" ? h("label", { class: "field" }, h("span", {}, "프레임워크 (Agent Bricks)"), f.framework) : null,
-      h("label", { class: "field" }, h("span", {}, "워크스페이스 위치"), f.location, h("small", {}, "이미 있는 폴더에는 만들지 않습니다"))]);
+      h("label", { class: "field" }, h("span", {}, "워크스페이스 위치"), f.location, h("small", {}, "이미 있는 폴더에는 만들지 않습니다")),
+      targetField()]);
     submit.textContent = kind === "no_code" ? "만들기" : "내 워크스페이스에 만들기";
     zipBtn.style.display = kind === "no_code" ? "none" : "";
     f.description.placeholder = kind === "no_code" ? "필수: 이 Genie가 답하는 질문 (운영 Genie 설명이 됩니다)" : "이 에이전트가 하는 일을 한 줄로";
@@ -1468,7 +1488,8 @@ function newPage(root, params) {
 
   const body = () => ({ name: f.name.value.trim(), type: kind, harness: f.harness.value, framework: f.framework.value, display_name: f.display.value.trim() || null,
     description: f.description.value.trim() || null, owner_group: f.group.value.trim() || null, service_criticality: f.crit.value,
-    data_sensitivity: f.sens.value, security_level: f.sec.value, approvers: approvers.values() });
+    data_sensitivity: f.sens.value, security_level: f.sec.value, approvers: approvers.values(),
+    target_workspace: kind !== "skill" && f.target.value ? f.target.value : null });
   const approversReady = (b) => {
     const others = b.approvers.filter((a) => !state.me || a.toLowerCase() !== state.me.user.toLowerCase());
     if (state.policy && state.policy.approvers_required && !b.approvers.length) { toast("승인자를 한 명 이상 고르세요 (정책)", "bad"); return false; }
@@ -1658,6 +1679,7 @@ async function policyPage(root) {
           h("dt", {}, "보안 등급"), h("dd", {}, (pol.security_levels || []).join(" · ")),
           h("dt", {}, "Git 사본"), h("dd", {}, git ? `${git.provider} · ${git.owner} · 연결 ${git.connection} · ${git.mode} (저장소 ${git.repo_prefix}<agent_id>)` : "꺼짐")),
         )),
+    workspacesCard(pol),
     await reviewPromptsCard(isAdmin),
     h("div", { class: "card mt", "data-tour": "pol-history" }, h("table", { class: "data" },
       h("thead", {}, h("tr", {}, ["버전", "상태", "평가", "승인", "승인 그룹", "올린 사람", "시각"].map((t) => h("th", {}, t)))),
@@ -1665,6 +1687,24 @@ async function policyPage(root) {
         h("td", { class: "mono cell-main" }, `v${p.policy_version}`), h("td", {}, p.status === "active" ? h("span", { class: "badge ok" }, "적용 중") : h("span", { class: "badge plain" }, "이전")),
         h("td", {}, MODE[p.policy.validation_mode] || p.policy.validation_mode), h("td", {}, MODE[p.policy.approval_mode] || p.policy.approval_mode),
         h("td", {}, p.policy.approver_group || "–"), h("td", {}, p.created_by), h("td", { class: "muted" }, when(p.created_at))))))));
+}
+
+// The workspaces of the policy: who builds where, where production goes (changed with aops admin setup --workspace)
+function workspacesCard(pol) {
+  const listed = Object.entries(pol.workspaces || {});
+  const roles = { dev: "개발", target: "운영" };
+  return h("div", { class: "card pad mt" }, h("h2", { class: "h-ico" }, icon("layers", 16), "워크스페이스"),
+    listed.length ? [
+      h("table", { class: "data" }, h("thead", {}, h("tr", {}, ["이름", "주소", "역할", "운영 데이터 카탈로그", "warehouse"].map((t) => h("th", {}, t)))),
+        h("tbody", {}, listed.map(([name, w]) => h("tr", {},
+          h("td", { class: "cell-main" }, name, name === pol.default_target ? h("span", { class: "tag", style: "margin-left:6px" }, "기본 운영") : null),
+          h("td", { class: "mono" }, w.host), h("td", {}, (w.roles || []).map((r) => roles[r] || r).join(" · ")),
+          h("td", { class: "mono" }, (w.catalogs || []).join(", ") || h("span", { class: "muted" }, "제한 없음")),
+          h("td", { class: "mono" }, w.warehouse_id || "–"))))),
+      h("p", { class: "muted mt-s" }, "사람은 개발 워크스페이스에서 만들고, 운영 자원(운영용 Genie·운영 앱)은 운영 워크스페이스에 aops 서비스 주체가 만듭니다. ",
+        "운영 데이터는 그 워크스페이스의 카탈로그에서만 씁니다. ", pol.workspace_credentials ? `다른 워크스페이스는 시크릿 범위 ${pol.workspace_credentials.secret_scope}의 서비스 주체로 부릅니다.` : "")]
+      : h("p", { class: "muted" }, "aops 서버의 워크스페이스 하나에서 개발과 운영을 합니다. 여럿을 쓰려면 aops admin setup --workspace (docs/workspaces.md)"),
+    h("div", { class: "cmd mt-s" }, "aops admin setup ... --workspace \"project=https://…;roles=dev,target;catalogs=project;warehouse=<ID>\" --default-target project --only policy --apply"));
 }
 
 const PROMPT_KIND = [["common", "공통"], ["skill", "스킬 기반"], ["code", "코드 기반"], ["no_code", "노코드"]];

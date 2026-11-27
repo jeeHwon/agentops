@@ -1,6 +1,6 @@
 # 레지스트리·승인 (dbx)
 
-[README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md) · [console](console.md) · [앱 밖에 띄우기](container.md)
+[README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md) · [console](console.md) · [앱 밖에 띄우기](container.md) · [여러 워크스페이스](workspaces.md)
 
 > **지금 동작하는 범위:** 스킬 기반·코드 기반·노코드(코드 기반의 품질 평가 제외). 정책은 `aops admin setup`의 옵션이나 console 정책 화면(관리자)으로 정하고, 승인은 console 배포 요청함이나 `aops gates`·`approve`·`reject`(aops 서버의 승인 API)로 합니다. `aops admin policy`는 설계입니다. 아래에서 **지금:**으로 표시한 줄이 현재 구현입니다.
 
@@ -74,14 +74,14 @@
 | `agents` | 등록된 에이전트와 SPEC 정보 (담당자·담당 팀·중요도·민감도). 다시 등록하면 새 SPEC 값으로 바뀌고, 담당자는 SPEC에 적혀 있을 때만 바뀜 | `register` (노코드는 배포 Job) |
 | `agent_versions` | 저장된 버전, 버전 zip 경로·해시·크기, 상태(`registered`·`production`·`retired`), 등록 사유(`note`) | `register`, 배포 Job |
 | `agent_version_skills` | 버전마다 들어 있는 스킬과 UC Skill 이름(첫 배포 때 만들어짐)·해시 | `register` |
-| `genie_agents` | 노코드: 개발용·운영용 Genie Agent와 에이전트 폴더, 공개 그룹, warehouse | console 노코드 만들기, 배포 Job(운영용 space ID) |
+| `genie_agents` | 노코드: 개발용·운영용 Genie Agent와 에이전트 폴더, 공개 그룹, warehouse. 워크스페이스가 여럿이면 개발용·운영용이 있는 워크스페이스(`dev_workspace`·`prod_workspace`) | console 노코드 만들기, 배포 Job(운영용 space ID) |
 | `validation_runs` | 평가(Gate) 실행 (정책 버전, 단계별 결과, 실패 이유). `checks:review`에 승인자용 내용 검토 리포트(항목별 판정·근거·의견, 읽은 파일, 프롬프트 버전, 모델) | evaluate Job |
 | 볼륨 `aops_runs` | 평가 진행 문서 (실행마다 `<run_id>.json`, 단계·%·읽는 파일·최근 활동, 파일 내용 없음). 평가 Job이 처음 쓸 때 만들고 aops 서버가 읽음 | evaluate Job |
 | `eval_results` | 평가 문항별 결과 (판정·이유·정답·답). 노코드 운영 버전의 결과가 회귀 기준 | evaluate Job |
 | `release_gates` | 배포 요청과 판정 (`validating` → `pending_approval` → `approved`·`rejected`·`canceled`). 승인 대기 이유는 `decision_reason` | `deploy`, aops 서버 |
 | `approvals` | 승인·반려 이력 (추가만). 자동 승인은 `policy:auto` | aops 서버 |
 | `deployments` | 배포 결과 (`running`·`succeeded`·`failed`) | aops 서버, 배포 Job |
-| `agent_production` | 에이전트별 운영 버전과 이전 버전 | 배포 Job |
+| `agent_production` | 에이전트별 운영 버전과 이전 버전. 워크스페이스가 여럿이면 운영 대상이 있는 워크스페이스(`workspace`) | 배포 Job |
 | `agent_version_git` | Git 사본(선택): 버전마다 저장소·커밋·태그·상태(`synced`·`failed`·`skipped`)와 이유 | `register`, 배포 Job (정책에 `git`이 있을 때) |
 | `agent_events` | 감사 이력: `create`(노코드 만들기)·`register`·`gate_requested`(노코드는 스냅샷 해시·경로·변경 내용)·`evaluate`(0.1.0.dev15까지는 `validate`)·`gate_approved`·`gate_rejected`·`gate_canceled`·`deploy`·`rollback`·`promote`·`load`·`git` | 각 단계 |
 | `rate_cards` | 모델별 단가 (비용 계산용) | 관리자 (설계) |

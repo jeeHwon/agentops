@@ -49,6 +49,8 @@ class AgentStatus(Agent):
     pending_gates: int = Field(0, examples=[1])
     approvers: list[str] = Field(default_factory=list, description="지정 승인자 (SPEC.md approvers, 에이전트 한 건을 볼 때)")
     source_missing: bool = Field(False, description="고등급이라 소스 없이 정보만 등록됨 (\"소스 없음\")")
+    target_workspace: str | None = Field(None, examples=["project"],
+                                         description="운영 워크스페이스 (SPEC.md target_workspace, 없으면 정책 기본. 워크스페이스가 여럿이고 코드·노코드일 때, 에이전트 한 건을 볼 때)")
     updated_at: datetime | None = None
 
 
@@ -341,7 +343,8 @@ def get_agent(agent_id: str, request: Request) -> AgentStatus:
     svc = service_for(None)
     caller_of(request, svc)
     row = svc.agent_status(agent_id)
-    return AgentStatus(**{**row, "pending_gates": int(row.get("pending_gates") or 0), "approvers": svc.agent_approvers(agent_id)})
+    return AgentStatus(**{**row, "pending_gates": int(row.get("pending_gates") or 0), "approvers": svc.agent_approvers(agent_id),
+                          "target_workspace": svc.agent_target(agent_id)})
 
 
 @router.get("/agents/{agent_id}/versions", summary="버전 목록", **command(None, DBX, screen="console 레지스트리"))

@@ -56,6 +56,8 @@ RULES: dict[str, tuple[str, str, str]] = {
     "spec.approvers_format": ("ERROR", "approvers의 값마다 이메일이나 group:<그룹> 형태다", "SPEC.md approvers"),
     "spec.approvers_other": ("ERROR", "approvers에 담당자(owner) 말고 한 명(또는 그룹) 이상 있다 (본인 요청은 본인이 승인할 수 없다)", "SPEC.md approvers"),
     "spec.approvers_exist": ("ERROR", "approvers의 사람·그룹이 이 워크스페이스에 있다 (서버에서만 확인)", "SPEC.md approvers (워크스페이스 계정·그룹 이름)"),
+    "spec.target_workspace": ("ERROR", "target_workspace(운영 워크스페이스)를 적었으면 정책의 운영 워크스페이스 중 하나다 "
+                                       "(비우면 정책의 기본 운영 워크스페이스)", "SPEC.md target_workspace (aops admin setup --workspace의 이름)"),
     "nocode.consumer_group": ("WARN", "공개 그룹(consumer_group)이 있다. 없으면 운영용 Genie는 담당자·담당 팀만 쓴다", "에이전트 폴더의 SPEC.md consumer_group"),
     "config.present": ("ERROR", "aops.toml이 있고 TOML로 읽힌다", "aops.toml (aops init이 만든 형식)"),
     "config.name": ("ERROR", "aops.toml [project] name이 SPEC.md agent_id와 같다", "aops.toml [project] name"),
@@ -77,6 +79,9 @@ RULES: dict[str, tuple[str, str, str]] = {
     "project.command": ("WARN", "app.yaml에 앱을 띄우는 command가 있다", "app.yaml command"),
     "project.lock": ("WARN", "uv.lock으로 의존 버전이 고정돼 있다 (없으면 배포 때마다 최신 버전)", "uv lock으로 uv.lock 만들기"),
     "project.sample": ("WARN", "템플릿 샘플 도구(agent/tools/sample_tool.py)를 지웠거나 내 도구로 바꿨다", "agent/tools/"),
+    "target.catalogs": ("ERROR", "운영 워크스페이스가 데이터 카탈로그를 정해 두었으면 데이터 소스가 모두 그 카탈로그에 있다 "
+                                 "(개인 카탈로그의 데이터로 운영하지 않는다. 워크스페이스가 여럿일 때만)",
+                        "Genie Data → 운영 워크스페이스가 허용한 카탈로그(예: project)의 테이블로"),
     "secrets.values": ("ERROR", "파일에 비밀값(" + "·".join(SECRET_PATTERNS) + ")이 없다", "비밀값은 Databricks secret·UC 연결로"),
     "secrets.files": ("ERROR", "금지 파일(.env, *.pem, id_rsa)이 없다 (.env.example 같은 예시는 됨)", "파일 지우기"),
 }
@@ -88,6 +93,7 @@ STEPS: dict[str, dict[str, Any]] = {  # order, title and the kinds a step runs f
     "evals": {"title": "평가셋", "kinds": ("skill",)},
     "project": {"title": "Agent Bricks 프로젝트", "kinds": ("code",)},
     "definition": {"title": "Genie 정의 규칙", "kinds": ("no_code",)},
+    "target": {"title": "운영 위치", "kinds": ("no_code",)},
     "secrets": {"title": "비밀값·금지 파일", "kinds": KINDS},
 }
 
@@ -212,9 +218,54 @@ def check_spec(files: dict[str, bytes], kind: str | None = None, policy: dict[st
     rules.append(result("spec.body", bool(body) and SPEC_BODY not in body and len(re.sub(r"^#.*$", "", body, flags=re.M).strip()) > 0,
                         None if body and SPEC_BODY not in body else "SPEC.md 본문이 템플릿 안내문 그대로입니다"))
     rules += approver_rules(spec, policy, lookup)
+    rules += target_rules(spec, kind, policy)
     if kind == "no_code":
         rules.append(result("nocode.consumer_group", bool(spec.get("consumer_group"))))
     return step("format", rules, "SPEC.md 필수 항목과 값이 맞습니다", "SPEC.md: ")
+
+
+def target_rules(spec: dict[str, Any], kind: str, policy: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """`spec.target_workspace`, only when it is written or the policy lists workspaces (one workspace: as before)."""
+    from . import workspaces
+
+    name = workspaces.spec_target(spec)
+    listed = workspaces.entries(policy)
+    if not name and not listed:
+        return []
+    if kind == "skill":  # a skill's production is a UC skill: it is in no one workspace
+        return [result("spec.target_workspace", True, None)]
+    known = workspaces.Workspaces.from_policy(policy, "https://home.invalid")
+    try:
+        place = known.target(name)
+    except KeyError:
+        names = ", ".join(w.name for w in known.with_role("target"))
+        return [result("spec.target_workspace", False, f"target_workspace {name!r}는 정책의 운영 워크스페이스({names})가 아닙니다")]
+    return [result("spec.target_workspace", True, f"운영 워크스페이스 {place.name}")]
+
+
+def check_target(files: dict[str, bytes], policy: dict[str, Any] | None) -> dict[str, Any] | None:
+    """`target` (no-code, with workspaces): the data sources are in the catalogs the production workspace allows."""
+    import json
+
+    from . import workspaces
+
+    if not workspaces.entries(policy):
+        return None
+    spec = spec_of(files)
+    known = workspaces.Workspaces.from_policy(policy, "https://home.invalid")
+    try:
+        place = known.target(workspaces.spec_target(spec))
+    except KeyError:
+        return step("target", [result("target.catalogs", False, "운영 워크스페이스를 정하지 못했습니다 (SPEC.md target_workspace)")], "")
+    try:
+        data = (json.loads(files["genie/space.json"].decode("utf-8")).get("data_sources") or {})
+    except (KeyError, ValueError):
+        data = {}
+    sources = {x.get("identifier", "") for k in ("tables", "metric_views") for x in (data.get(k) or [])}
+    bad = workspaces.outside(sources, place.catalogs)
+    message = (f"허용 밖: {', '.join(bad[:5])} (운영 워크스페이스 {place.name}의 카탈로그 {', '.join(place.catalogs)})" if bad
+               else f"운영 워크스페이스 {place.name}" + (f": 카탈로그 {', '.join(place.catalogs)} 안의 데이터만 씁니다" if place.catalogs else ""))
+    return step("target", [result("target.catalogs", not bad, message)], message)
 
 
 def read_toml(files: dict[str, bytes], rel: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -374,6 +425,9 @@ def check(files: dict[str, bytes], kind: str | None = None, policy: dict[str, An
         steps.append(check_project(files))
     else:
         steps.append(check_definition(files, policy))
+        target = check_target(files, policy)
+        if target:
+            steps.append(target)
     steps.append(check_secrets(files))
     return steps
 

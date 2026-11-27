@@ -221,12 +221,12 @@ def test_rollback_updates_the_same_space_without_a_new_version():
 
 def test_dev_space_is_made_with_the_authors_token_only():
     svc = service()
-    svc._as_user = lambda token, method, path, body=None: {"status": 403, "body": None,
+    svc._as_user = lambda token, method, path, body=None, host=None: {"status": 403, "body": None,
                                                            "error": "Provided OAuth token does not have required scopes: genie"}
     with pytest.raises(ServiceError) as error:
         svc._user_genie(Caller("dev@x.com", "t"), "POST", "/api/2.0/genie/spaces", {}, "만들기")
     assert error.value.code == "missing_scope" and "admin setup --only app" in error.value.message
-    svc._as_user = lambda token, method, path, body=None: {"status": 403, "body": None, "error": "no SELECT on main.s.orders"}
+    svc._as_user = lambda token, method, path, body=None, host=None: {"status": 403, "body": None, "error": "no SELECT on main.s.orders"}
     with pytest.raises(ServiceError) as error:
         svc._user_genie(Caller("dev@x.com", "t"), "POST", "/api/2.0/genie/spaces", {}, "만들기")
     assert error.value.code == "genie_failed" and error.value.status == 403  # the author's own rights: no fallback
@@ -242,7 +242,7 @@ def test_create_writes_folder_spec_space_and_rows():
     svc = service(genie=SimpleNamespace(get_space=lambda *a, **k: SimpleNamespace(serialized_space="{}")), workspace=workspace)
     svc.agent = lambda a: None
     sent = []
-    svc._as_user = lambda token, method, path, body=None: sent.append((method, path, body)) or {"status": 200, "body": {"space_id": "n" * 32}}
+    svc._as_user = lambda token, method, path, body=None, host=None: sent.append((method, path, body)) or {"status": 200, "body": {"space_id": "n" * 32}}
     svc.genie_agent = lambda a: {**GENIE, "dev_space_id": "n" * 32}
     with pytest.raises(ServiceError):
         svc.create_no_code(Caller("dev@x.com", "t"), {"name": "sales", "description": "매출", "tables": ["orders"]})
@@ -286,7 +286,7 @@ def user_workspace(tree):
 
     calls = []
 
-    def as_user(token, method, path, body=None):
+    def as_user(token, method, path, body=None, host=None):
         calls.append((method, path.split("?")[0], body))
         query = dict(urllib.parse.parse_qsl(path.split("?", 1)[1])) if "?" in path else {}
         if path.startswith("/api/2.0/workspace/get-status"):

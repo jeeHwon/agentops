@@ -1,6 +1,6 @@
 """Server information: health, version, the signed-in user, and the CLI ↔ API map."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
@@ -28,6 +28,9 @@ class Me(BaseModel):
     roles: list[Literal["developer", "approver", "admin"]] = Field(examples=[["developer"]])
     login: Literal["apps", "oauth", "token", "local"] | None = Field(
         None, description="이 요청이 들어온 길: apps(Databricks Apps), oauth(이 서버의 로그인, 로그아웃 가능), token(bearer), local(PC 프로필)")
+    workspace: dict[str, Any] | None = Field(
+        None, description="이 요청의 토큰이 통하는 워크스페이스 {name, host, roles(dev·target), catalogs, warehouse_id, home}. "
+                          "사용자 권한 일(내 폴더·개발용 Genie)은 이 워크스페이스에서 한다")
 
 
 class CommandRow(BaseModel):

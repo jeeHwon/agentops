@@ -12,7 +12,7 @@
 | --- | --- |
 | 스킬 | `format` → `config` → `instructions` → `skills` → `evals` → `secrets` |
 | 코드 | `format` → `config` → `project` → `secrets` |
-| 노코드 | `format` → `definition` → `secrets` |
+| 노코드 | `format` → `definition` → `target` → `secrets` |
 
 ## `format` SPEC.md (스킬 · 코드 · 노코드)
 
@@ -30,6 +30,7 @@
 | `spec.approvers_format` | ERROR | approvers의 값마다 이메일이나 group:<그룹> 형태다 | SPEC.md approvers |
 | `spec.approvers_other` | ERROR | approvers에 담당자(owner) 말고 한 명(또는 그룹) 이상 있다 (본인 요청은 본인이 승인할 수 없다) | SPEC.md approvers |
 | `spec.approvers_exist` | ERROR | approvers의 사람·그룹이 이 워크스페이스에 있다 (서버에서만 확인) | SPEC.md approvers (워크스페이스 계정·그룹 이름) |
+| `spec.target_workspace` | ERROR | target_workspace(운영 워크스페이스)를 적었으면 정책의 운영 워크스페이스 중 하나다 (비우면 정책의 기본 운영 워크스페이스) | SPEC.md target_workspace (aops admin setup --workspace의 이름) |
 | `nocode.consumer_group` (노코드) | WARN | 공개 그룹(consumer_group)이 있다. 없으면 운영용 Genie는 담당자·담당 팀만 쓴다 | 에이전트 폴더의 SPEC.md consumer_group |
 
 ## `config` aops.toml (스킬 · 코드)
@@ -96,6 +97,12 @@
 | `text.length` | WARN | Text Instruction이 2,000자 이하 | Instructions → Text 2,000자 이하로 |
 | `text.sections` | WARN | Text에 표준 섹션(PURPOSE·CONSTRAINTS·요약 지침)이 있다 | Instructions → Text 표준 템플릿(PURPOSE·CONSTRAINTS·요약 지침) |
 | `sources.allowed` | OFF | 허용된 카탈로그·스키마의 데이터만 쓴다 (기본 꺼짐, 정책에서 켬) | Data → 허용된 카탈로그·스키마의 테이블만 |
+
+## `target` 운영 위치 (노코드)
+
+| 규칙 | 수준 | 보는 것 | 고치는 곳 |
+| --- | --- | --- | --- |
+| `target.catalogs` | ERROR | 운영 워크스페이스가 데이터 카탈로그를 정해 두었으면 데이터 소스가 모두 그 카탈로그에 있다 (개인 카탈로그의 데이터로 운영하지 않는다. 워크스페이스가 여럿일 때만) | Genie Data → 운영 워크스페이스가 허용한 카탈로그(예: project)의 테이블로 |
 
 ## `secrets` 비밀값·금지 파일 (스킬 · 코드 · 노코드)
 

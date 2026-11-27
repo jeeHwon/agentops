@@ -17,6 +17,7 @@ Databricks 위에서 AI 에이전트를 개발부터 운영까지 관리하는 �
 - **운영 모니터링:** 사용량·비용과 실행 중인 에이전트를 한 화면에서 봅니다.
 - **console 화면:** aops 서버 주소를 브라우저로 열면 만들기·셀프 체크·등록·평가·배포·승인·권한·정책을 화면에서 합니다 ([console](docs/console.md)). 평가 중에는 단계·%·읽는 파일·무엇을 검사하는지를 실시간으로 봅니다. 오른쪽 위 [도움말]의 투어가 실제 화면을 짚어 가며 어떤 에이전트를 언제 쓰는지, 버튼이 무엇을 하는지 알려 줍니다.
 - **앱 밖 서버:** aops 서버를 Databricks App 대신 컨테이너·PC에 띄우고, 사람은 Databricks OAuth로 로그인합니다 ([앱 밖에 띄우기](docs/container.md)).
+- **여러 워크스페이스:** 서버는 관리용 워크스페이스에 두고, 사람은 개인·프로젝트 워크스페이스에서 개발하고, 운영용 Genie·운영 앱은 정책이 정한 운영 워크스페이스에 만듭니다. 기본은 워크스페이스 하나입니다 ([여러 워크스페이스](docs/workspaces.md), 실제 여러 워크스페이스에서는 시험 전).
 - **Custom Front:** 조직의 웹·서비스가 aops 서버 API에 연결해 dbx 기능을 그대로 씁니다 (custom 에디션).
 
 ## 지금 되는 것
@@ -127,6 +128,7 @@ aops serve                 # aops API 서버 (custom)
 - [레지스트리·승인](docs/registry.md): 관리자 정책, aops 서버, 권한, 테이블
 - [API](docs/api.md): `aops serve`의 HTTP API와 명령 대응표
 - [앱 밖에 띄우기](docs/container.md): 컨테이너·PC의 aops 서버, Databricks OAuth 로그인, 서비스 주체
+- [여러 워크스페이스](docs/workspaces.md): 서버·개발·운영 워크스페이스를 나눌 때의 설정, 신원, 권한
 
 ## 라이선스
 

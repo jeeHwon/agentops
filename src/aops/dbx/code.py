@@ -107,11 +107,20 @@ def _agentbricks_cli() -> Path:
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
-def deploy(source: Path, base: str, workspace_path: str, profile: str | None = None, timeout: int = 1500) -> tuple[int, str]:
-    """`agentbricks deploy <base>`; (exit code, the tail of its output without terminal codes)."""
+AUTH_VARIABLES = ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET",
+                  "DATABRICKS_CONFIG_PROFILE", "DATABRICKS_AUTH_TYPE")
+
+
+def deploy(source: Path, base: str, workspace_path: str, profile: str | None = None, timeout: int = 1500,
+           env: dict[str, str] | None = None) -> tuple[int, str]:
+    """`agentbricks deploy <base>`; (exit code, the tail of its output without terminal codes).
+
+    `env` points the CLI at another workspace (the production one) as the aops service principal there: it
+    replaces the server's own Databricks login variables."""
     cmd = [str(agentbricks_cli())] + (["--profile", profile] if profile else []) + [
         "deploy", base, "--source", str(source), "--workspace-path", workspace_path]
-    env = {**os.environ, "AGENTBRICKS_DISABLE_TELEMETRY": "1", "AGENTBRICKS_DISABLE_AGENT_HINT": "1",
+    base_env = {k: v for k, v in os.environ.items() if not (env and k in AUTH_VARIABLES)}
+    env = {**base_env, **(env or {}), "AGENTBRICKS_DISABLE_TELEMETRY": "1", "AGENTBRICKS_DISABLE_AGENT_HINT": "1",
            "PATH": f"{VENV / 'bin'}:{os.environ.get('PATH', '')}"}
     done = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=timeout)
     out = ANSI.sub("", (done.stdout or "") + "\n" + (done.stderr or "")).replace("\r", "\n")

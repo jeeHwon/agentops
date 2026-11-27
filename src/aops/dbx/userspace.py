@@ -7,6 +7,7 @@
   `aops register` (harness settings and run records left out).
 
 The server never reads or writes a person's folder as itself: what the requester cannot see, aops cannot take.
+The token works in the workspace it came from (aops.workspaces), so the folder is there and so are its links.
 """
 
 from __future__ import annotations
@@ -61,10 +62,11 @@ class UserSpaceMixin:
                   scope: str = WORKSPACE_SCOPE, command: str = "aops init", code: str = "workspace_failed") -> dict[str, Any]:
         if not caller.token:
             raise ServiceError(401, "no_user_token", "내 권한으로 워크스페이스를 다룰 토큰이 없습니다 (Databricks App으로 열거나 CLI 로그인)", command)
-        return self._user_result(self._as_user(caller.token, method, path, body), what, scope, command, code)
+        return self._user_result(self._as_user(caller.token, method, path, body, host=caller.host), what, scope, command, code)
 
     def _status(self, caller: Caller, path: str) -> dict[str, Any] | None:
-        result = self._as_user(caller.token, "GET", "/api/2.0/workspace/get-status?" + urllib.parse.urlencode({"path": path}))
+        result = self._as_user(caller.token, "GET", "/api/2.0/workspace/get-status?" + urllib.parse.urlencode({"path": path}),
+                               host=caller.host)
         if result["status"] == 404 or "RESOURCE_DOES_NOT_EXIST" in (result.get("error") or "") or "does not exist" in (result.get("error") or ""):
             return None
         return self._user_result(result, "폴더 확인", WORKSPACE_SCOPE, "aops init")
@@ -80,6 +82,9 @@ class UserSpaceMixin:
             raise ServiceError(409, "exists", f"이미 있는 에이전트입니다: {name}", "aops init")
         if not caller.token:
             raise ServiceError(401, "no_user_token", "내 권한으로 워크스페이스를 다룰 토큰이 없습니다", "aops init")
+        ws = self.require_dev(caller, "aops init")
+        if spec.get("target_workspace"):
+            self.target_of(spec, kind)  # a production workspace of the policy, or 409 now rather than at the deploy request
         target = check_location(location or f"/Workspace/Users/{caller.email}/aops/{name}")
         if self._status(caller, target):
             raise ServiceError(409, "folder_exists", f"이미 있는 폴더입니다: {target}. 다른 위치를 적거나 그 폴더를 지운 뒤 다시 하세요", "aops init")
@@ -100,7 +105,8 @@ class UserSpaceMixin:
               "group": spec.get("owner_group") or None, "crit": spec.get("service_criticality") or "medium",
               "sens": spec.get("data_sensitivity") or "internal", "sec": spec.get("security_level") or "general",
               "spec": spec, "by": caller.email}),
-            self._event_statement(name, None, "create", caller.email, {**links, "build_type": kind, "files": len(kept)}),
+            self._event_statement(name, None, "create", caller.email, {**links, "build_type": kind, "files": len(kept),
+                                                                       **({"workspace": ws.name} if self.workspaces().configured else {})}),
         ])
         return {"agent_id": name, "type": kind, "files": sorted(kept), **links}
 
@@ -109,17 +115,25 @@ class UserSpaceMixin:
         root = check_location(root)
         spec = package.front_matter(files.get("SPEC.md", b"").decode("utf-8", "replace"))
         entry = entry_file(str(spec.get("build_type") or "skill").replace("-", "_"), files)
-        host = self.w.config.host.rstrip("/")
+        host = self.user_host(caller)
         folder = (self._status(caller, root) or {}).get("object_id")
         opened = (self._status(caller, f"{root}/{entry}") or {}).get("object_id") if entry in files else None
-        return {"workspace_path": root, "folder_url": f"{host}/browse/folders/{folder}" if folder else None,
-                "open_url": f"{host}/editor/files/{opened}" if opened else None, "open_file": entry if opened else None}
+        out = {"workspace_path": root, "folder_url": f"{host}/browse/folders/{folder}" if folder else None,
+               "open_url": f"{host}/editor/files/{opened}" if opened else None, "open_file": entry if opened else None}
+        if self.workspaces().configured:  # where the folder is (a token from another workspace cannot read it)
+            out["workspace"] = self.caller_workspace(caller).name
+        return out
 
     # ── register from a workspace folder ────────────────────────────────────
 
-    def read_workspace_folder(self, caller: Caller, path: str) -> tuple[list[tuple[str, bytes]], list[str]]:
-        """(relative path, content) of the files `aops register` would take, and what was left out (notebooks)."""
+    def read_workspace_folder(self, caller: Caller, path: str, agent_id: str | None = None) -> tuple[list[tuple[str, bytes]], list[str]]:
+        """(relative path, content) of the files `aops register` would take, and what was left out (notebooks).
+        The agent's own folder (where it was made or last registered from) is read only with a token of its workspace."""
         root = check_location(path)
+        if agent_id and self.workspaces().configured:
+            known = self.agent_workspace(agent_id) or {}
+            if known.get("workspace") and (known.get("workspace_path") or "").rstrip("/") == root:
+                self.same_workspace(caller, known["workspace"], "이 에이전트 폴더", "aops register")
         if not self._status(caller, root):
             raise ServiceError(404, "no_folder", f"폴더가 없거나 내게 읽을 권한이 없습니다: {root}", "aops register")
         bare = lambda p: p[len("/Workspace"):] if p.startswith("/Workspace/") else p  # noqa: E731
@@ -159,4 +173,4 @@ class UserSpaceMixin:
         row = self.sql.one(f"SELECT detail FROM {self.sql.table('agent_events')} WHERE agent_id = :a AND event_type IN ('create', 'register') "
                            "AND detail:workspace_path IS NOT NULL ORDER BY at DESC LIMIT 1", {"a": agent_id})
         detail = loads(row.get("detail")) if row else None
-        return {k: detail.get(k) for k in ("workspace_path", "folder_url", "open_url", "open_file")} if detail else None
+        return {k: detail.get(k) for k in ("workspace_path", "folder_url", "open_url", "open_file", "workspace")} if detail else None

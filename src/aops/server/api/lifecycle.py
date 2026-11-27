@@ -107,6 +107,8 @@ class ReleaseGate(BaseModel):
                                  description="지정 승인자 (요청 때 SPEC.md approvers). 있으면 이 사람·그룹만 승인하고 자동 승인하지 않는다")
     reason: str | None = Field(None, description="요청 사유")
     review_verdict: Literal["pass", "warn", "fail"] | None = Field(None, description="근거 평가의 내용 검토 판정 (목록)")
+    target_workspace: str | None = Field(None, examples=["project"],
+                                         description="운영 워크스페이스 (요청 때 고정, 워크스페이스가 여럿일 때). 비면 서버의 워크스페이스")
 
 
 class ReleaseGateDetail(ReleaseGate):
@@ -197,6 +199,8 @@ class NoCodeAgent(BaseModel):
     prod_url: str | None = Field(None, description="운영용 Genie (서비스 주체 소유, 공개 그룹 CAN RUN)")
     consumer_group: str | None = None
     warehouse_id: str | None = None
+    dev_workspace: str | None = Field(None, description="개발용 Genie·폴더가 있는 워크스페이스 (정책의 이름)")
+    prod_workspace: str | None = Field(None, description="운영용 Genie가 있는 워크스페이스")
 
 
 @router.get("/no-code/agents/{agent_id}", summary="노코드 에이전트의 폴더·개발용·운영용 Genie", **command(None, DBX, screen="console 에이전트"))
@@ -211,6 +215,7 @@ class AgentWorkspace(BaseModel):
     folder_url: str | None = None
     open_url: str | None = Field(None, description="처음 열 파일의 편집기 주소 (Genie Code 패널과 함께 열림)")
     open_file: str | None = Field(None, examples=["agent/agent.py"])
+    workspace: str | None = Field(None, description="그 폴더가 있는 워크스페이스 (워크스페이스가 여럿일 때). 그 워크스페이스의 토큰으로만 읽는다")
 
 
 @router.get("/agents/{agent_id}/workspace", summary="에이전트의 워크스페이스 폴더 (스킬·코드)", **command(None, DBX, screen="console 에이전트"))
@@ -268,7 +273,7 @@ def register(
     svc = service_for("aops register")
     if workspace_path and archive is None and not files:
         caller = caller_of(request, svc)
-        found, skipped = svc.read_workspace_folder(caller, workspace_path)
+        found, skipped = svc.read_workspace_folder(caller, workspace_path, project_id)
         data = package.build_entries([(rel, content, 0o644) for rel, content in found]).data
         source = {**svc.workspace_links(caller, workspace_path, dict(found)), "skipped": skipped}
         row = svc.register(caller, project_id, data, version, bump, source=source, note=note)

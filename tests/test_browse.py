@@ -23,7 +23,7 @@ def user_service(pages):
     svc.config = SimpleNamespace(warehouse_id="wh-default")
     calls = []
 
-    def as_user(token, method, path, body=None):
+    def as_user(token, method, path, body=None, host=None):
         base, _, query = path.partition("?")
         calls.append((method, base, dict(urllib.parse.parse_qsl(query))))
         answers = pages[base]
@@ -102,7 +102,7 @@ def test_the_service_principal_access_of_picked_tables():
     svc = object.__new__(Service)
     svc._me = "sp-app-id"
     hidden = {"main.secret.t"}
-    svc._as_user = lambda token, method, path, body=None: {"status": 404 if urllib.parse.unquote(path.split("/")[-1].split("?")[0]) in hidden else 200}
+    svc._as_user = lambda token, method, path, body=None, host=None: {"status": 404 if urllib.parse.unquote(path.split("/")[-1].split("?")[0]) in hidden else 200}
     answers = {
         "main.sales.orders": {"privilege_assignments": [{"principal": "sp-app-id", "privileges": [{"privilege": "SELECT", "inherited_from_type": "SCHEMA"}]}]},
         "main.hr.people": {"privilege_assignments": []},

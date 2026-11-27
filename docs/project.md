@@ -1,6 +1,6 @@
 # 프로젝트 폴더와 aops.toml
 
-[README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md) · [console](console.md) · [앱 밖에 띄우기](container.md)
+[README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md) · [console](console.md) · [앱 밖에 띄우기](container.md) · [여러 워크스페이스](workspaces.md)
 
 ## 지금 `aops init`이 만드는 폴더 (스킬 기반)
 
@@ -49,6 +49,8 @@ security_level: general
 description: 이 에이전트가 하는 일을 한 줄로 적습니다 (에이전트 목록에 보입니다)
 ---
 ```
+
+- `target_workspace`(코드 기반·노코드, 선택): 정책에 워크스페이스가 여럿일 때 운영 자원이 생길 운영 워크스페이스의 이름입니다. 비우면 정책의 기본입니다([여러 워크스페이스](workspaces.md)). 스킬 기반은 운영이 UC Skill이라 쓰지 않습니다.
 
 ### `aops.toml`
 

@@ -1,6 +1,6 @@
 # aops 명령어
 
-[README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md) · [console](console.md) · [앱 밖에 띄우기](container.md)
+[README](../README.md) · [개요](overview.md) · [명령어](commands.md) · [프로젝트 폴더](project.md) · [레지스트리·승인](registry.md) · [API](api.md) · [console](console.md) · [앱 밖에 띄우기](container.md) · [여러 워크스페이스](workspaces.md)
 
 > **지금** 열: ● 동작 · ◐ 일부 동작 · – 설계. 명령마다 **지금:** 줄에 현재 구현을 적었습니다. 스킬·코드 기반·노코드 세 종류가 같은 명령으로 동작하고, 종류마다 다른 점은 각 명령의 **지금:** 줄에 있습니다.
 
@@ -398,6 +398,10 @@ aops admin setup --profile <프로필> --registry <catalog>.<schema> --warehouse
   [--approver-group <그룹>] [--git-connection <UC 연결> --git-owner <GitHub 조직> [--git-repo-prefix aops-] | --no-git] \
   [--users-group <그룹>] [--genie-skills <스킬 폴더>] [--only tables,policy,dist,app,grants,genie] [--apply]
   [--service-principal <application ID> [--server-url https://…]]   # 서버를 앱 밖(컨테이너)에 띄울 때
+  [--workspace "NAME=URL;roles=dev,target[;catalogs=a,b][;warehouse=ID]" ...] [--default-target NAME] \
+  [--workspace-secret-scope SCOPE] [--no-workspaces]                    # 여러 워크스페이스 (정책)
+aops admin setup --profile <그 워크스페이스 관리자> --registry <catalog>.<schema> --warehouse <그곳 warehouse> \
+  --for-workspace NAME --service-principal <application ID> [--server-url https://…] [--apply]   # 다른 워크스페이스 준비
 aops admin policy set <policy.toml>      # 설계 (지금은 console 정책 화면·POST /api/v1/admin/policies)
 aops admin policy show|diff              # 설계
 ```
@@ -405,6 +409,8 @@ aops admin policy show|diff              # 설계
 관리자만 씁니다.
 
 - **앱 밖의 서버 (`--service-principal`):** 서버를 컨테이너로 띄울 때 그 서버의 서비스 주체를 줍니다. `app` 단계는 건너뛰고 `grants`가 그 주체에 같은 권한과 warehouse `CAN_USE`를 줍니다. `--server-url`을 주면 Genie Code 스킬이 앱 대신 그 주소를 부릅니다. 끝에 컨테이너 환경 변수를 보여 줍니다([앱 밖에 띄우기](container.md)).
+
+- **여러 워크스페이스 (`--workspace`):** 정책에 개발(`dev`)·운영(`target`) 워크스페이스를 적습니다. 서버·레지스트리·Job은 서버 워크스페이스에 그대로 있고, 사람은 개발 워크스페이스에서 만들고, 운영용 Genie·운영 앱은 운영 워크스페이스에 aops 서비스 주체가 만듭니다. 적은 워크스페이스마다 그곳 관리자가 `--for-workspace`로 서비스 주체의 폴더·warehouse 권한과 (앱 밖 서버면) Genie Code 스킬을 준비합니다([여러 워크스페이스](workspaces.md)).
 
 - `setup`: 조직 공통 자원을 준비합니다.
   - 레지스트리 스키마와 테이블, 정책, Job용 aops 패키지, aops 서버(console 화면 + API, Databricks App), 서비스 주체 권한, Genie Code 스킬
@@ -416,7 +422,7 @@ aops admin policy show|diff              # 설계
 - `policy`: 관리자 정책을 올리고 버전을 관리합니다.
 - **지금:** `setup`이 여섯 단계로 동작합니다. 미리보기가 기본이고 `--apply`일 때만 실행합니다.
   1. `tables`: 레지스트리 스키마(없으면), 테이블 15개와 뷰 `agent_status`
-  2. `policy`: 옵션의 평가·승인 방식으로 정책 버전을 올림 (`policy` 명령 대신). Git 사본은 `--git-connection`·`--git-owner`로 켜고 `--no-git`으로 끔. git 옵션이 없으면 지금 정책의 git 설정을 그대로 둠
+  2. `policy`: 옵션의 평가·승인 방식으로 정책 버전을 올림 (`policy` 명령 대신). Git 사본은 `--git-connection`·`--git-owner`로 켜고 `--no-git`으로 끔. git 옵션이 없으면 지금 정책의 git 설정을 그대로 둠. 워크스페이스(`--workspace`·`--default-target`·`--workspace-secret-scope`)도 주지 않으면 그대로 둠
   3. `dist`: Job이 설치할 aops 패키지를 빌드해 볼륨 `aops_dist`에 올림
   4. `app`: aops 서버(Databricks App)를 배포하고 레지스트리·웨어하우스·패키지 경로를 환경변수로 넣음. 코드는 `/Workspace/aops/server/<앱>`(워크스페이스 관리자만 쓰기)에 올리고, 루트에 폴더를 만들 권한이 없으면 실행한 관리자의 홈 폴더(본인과 관리자만 쓰기)에 둡니다. 그 폴더에 쓸 수 있는 주체를 보여 줌. `/Workspace/Shared`는 모든 사용자가 `CAN_MANAGE`를 물려받아 쓰지 않습니다. warehouse를 앱 자원으로 붙일 권한이 없으면 ID만 넘기고, 권한 부여가 실패하면 멈추지 않고 주인에게 부탁할 `GRANT` 문을 보여 줍니다
   5. `grants`: 서버 서비스 주체에 카탈로그·스키마·`aops_dist` 권한, Git 사본이 켜져 있으면 그 연결의 `USE CONNECTION` (사람에게는 사용·조회만). 노코드 에이전트 폴더의 상위 `/Workspace/aops/no-code`를 만들고 서비스 주체에 `CAN_MANAGE`(실패하면 서버는 서비스 주체의 홈 폴더를 씀)

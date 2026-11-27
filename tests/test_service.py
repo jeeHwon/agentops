@@ -266,13 +266,13 @@ def test_atomic_block_keeps_each_statement_parameters_apart():
 def test_a_tokens_account_is_kept_for_a_while():
     svc = object.__new__(Service)
     asked = []
-    svc._as_user = lambda token, method, path, body=None: asked.append(token) or {
+    svc._as_user = lambda token, method, path, body=None, host=None: asked.append(token) or {
         "status": 200, "body": {"userName": "dev@x.com", "groups": [{"display": "admins"}]}}
     first = svc.identify("tok", None)
     again = svc.identify("tok", None)
     assert (first.email, first.groups) == (again.email, again.groups) == ("dev@x.com", ["admins"]) and asked == ["tok"]
     svc.identify("other", None)
     assert asked == ["tok", "other"]
-    svc._as_user = lambda token, method, path, body=None: {"status": 401, "body": {}}
+    svc._as_user = lambda token, method, path, body=None, host=None: {"status": 401, "body": {}}
     with pytest.raises(Exception):
         svc.identify("bad", None)  # a token SCIM does not take is not kept, and names nobody

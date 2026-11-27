@@ -35,6 +35,9 @@ class Caller:
     email: str
     token: str | None = None
     groups: list[str] = field(default_factory=list)
+    # the workspace the token works in (its name in the policy, and its host); None: the server's own
+    workspace: str | None = None
+    host: str | None = None
 
 
 def now_id() -> str:

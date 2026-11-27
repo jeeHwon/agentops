@@ -11,6 +11,7 @@ from functools import lru_cache
 from fastapi import Request
 
 from ..dbx.service import Caller, Config, Service, ServiceError
+from ..workspaces import HEADER as WORKSPACE_HEADER
 from .common import NotImplementedYet
 
 
@@ -45,12 +46,19 @@ def caller_of(request: Request, svc: Service) -> Caller:
 
     A server started on a PC with a Databricks CLI profile and no login (`aops serve` for trying the console)
     has none of these: the browser on that PC is the profile's own user.
+
+    A bearer token may come from another workspace of the policy (a CLI or Genie Code there): the request names
+    it in X-Aops-Workspace and the server checks the token in that workspace. Inside Databricks Apps the token
+    is always the app's own workspace, so the header is not read there.
     """
     in_apps = bool(os.environ.get("DATABRICKS_APP_NAME"))
     token = request.headers.get("x-forwarded-access-token") if in_apps else None
+    workspace = None
     if not token:
         auth = request.headers.get("authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else None
+        if token and not in_apps:
+            workspace = request.headers.get(WORKSPACE_HEADER) or None
     if not token:
         token = getattr(getattr(request, "state", None), "session_token", None)  # set only by the login middleware
     email = request.headers.get("x-forwarded-email") if in_apps else None  # only the Apps proxy sets these
@@ -60,7 +68,7 @@ def caller_of(request: Request, svc: Service) -> Caller:
         token = auth[7:] if auth.lower().startswith("bearer ") else None
     if not token and not email and oauth is not None:
         raise ServiceError(401, "login_required", "로그인이 필요합니다", data={"login": "/auth/login"})
-    return svc.identify(token, email)
+    return svc.identify(token, email, workspace) if workspace else svc.identify(token, email)
 
 
 def login_kind(request: Request) -> str:
